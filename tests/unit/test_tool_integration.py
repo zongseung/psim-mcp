@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -166,3 +167,30 @@ def test_real_mode_startup_fails_without_config():
     cfg = AppConfig(psim_mode="real")
     with pytest.raises(ValueError, match="PSIM_MODE=real"):
         create_app(cfg)
+
+
+async def test_continue_design_keeps_asking_when_template_not_design_ready(mock_config: AppConfig):
+    """continue_design should not fall through to template preview without design-ready specs."""
+    app = create_app(mock_config)
+
+    raw = await app._tool_manager.call_tool(
+        "design_circuit",
+        {"description": "태양광 MPPT 회로"},
+        convert_result=False,
+    )
+    first = json.loads(raw)
+    assert first["success"] is True
+    assert first["data"]["action"] == "confirm_intent"
+
+    token = first["data"]["design_session_token"]
+    raw = await app._tool_manager.call_tool(
+        "continue_design",
+        {"design_session_token": token},
+        convert_result=False,
+    )
+    second = json.loads(raw)
+    assert second["success"] is True
+    assert second["data"]["action"] == "need_specs"
+    assert second["data"]["generation_mode"] == "awaiting_design_specs"
+    assert "voc" in second["data"]["missing_fields"]
+    assert "isc" in second["data"]["missing_fields"]
