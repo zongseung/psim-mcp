@@ -68,3 +68,43 @@ def validate_structural(spec: dict) -> ValidationResult:
         errors=errors,
         warnings=warnings,
     )
+
+
+def validate_connections(spec: dict) -> list:
+    """Validate connection endpoints reference valid component.pin pairs."""
+    from psim_mcp.data.component_library import get_component
+
+    issues = []
+    components = {c.get("id", ""): c for c in spec.get("components", [])}
+    connections = spec.get("connections", [])
+
+    for conn in connections:
+        for key in ("from", "to"):
+            endpoint = conn.get(key, "")
+            if not endpoint or "." not in endpoint:
+                issues.append(ValidationIssue(
+                    severity="error",
+                    code="CONN_BAD_FORMAT",
+                    message=f"연결 '{endpoint}'은 'ComponentID.pin_name' 형식이어야 합니다.",
+                    suggestion="예: 'V1.positive', 'SW1.drain'",
+                ))
+                continue
+            comp_id, pin_name = endpoint.split(".", 1)
+            if comp_id not in components:
+                issues.append(ValidationIssue(
+                    severity="error",
+                    code="CONN_UNKNOWN_COMP",
+                    message=f"연결이 존재하지 않는 부품 '{comp_id}'를 참조합니다.",
+                    suggestion=f"사용 가능한 부품: {', '.join(sorted(components.keys()))}",
+                ))
+            else:
+                comp_type = components[comp_id].get("type", "")
+                lib_comp = get_component(comp_type)
+                if lib_comp and pin_name not in lib_comp.get("pins", []):
+                    issues.append(ValidationIssue(
+                        severity="error",
+                        code="CONN_UNKNOWN_PIN",
+                        message=f"'{comp_type}'에 '{pin_name}' 핀이 없습니다.",
+                        suggestion=f"{comp_type}의 유효한 핀: {', '.join(lib_comp['pins'])}",
+                    ))
+    return issues

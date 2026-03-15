@@ -7,6 +7,8 @@ standard schematic conventions.  Connection wires use Manhattan routing
 
 from __future__ import annotations
 
+from psim_mcp.data.component_library import LEFT_PINS, RIGHT_PINS
+
 # Component body width — all symbols are 60px wide with pins at x=0 and x=80
 _BODY_W = 60
 _TOTAL_W = 80  # pin-to-pin
@@ -174,9 +176,6 @@ def _render_connections(components: list[dict], connections: list[dict]) -> str:
       - positive / drain / input / anode   → left pin  (x, y+15)
       - negative / source / output / cathode → right pin (x+80, y+15)
     """
-    LEFT_PINS = {"positive", "drain", "input", "anode"}
-    RIGHT_PINS = {"negative", "source", "output", "cathode"}
-
     pin_pos: dict[str, tuple[int, int]] = {}
     for comp in components:
         cid = comp.get("id", "")
@@ -223,9 +222,6 @@ def _render_connections(components: list[dict], connections: list[dict]) -> str:
 
 def _render_junctions(components: list[dict], connections: list[dict]) -> str:
     """Draw junction dots where multiple wires share a pin."""
-    LEFT_PINS = {"positive", "drain", "input", "anode"}
-    RIGHT_PINS = {"negative", "source", "output", "cathode"}
-
     pin_pos: dict[str, tuple[int, int]] = {}
     for comp in components:
         cid = comp.get("id", "")
@@ -339,3 +335,27 @@ def render_circuit_svg(
 
     parts.append('</svg>')
     return "\n".join(parts)
+
+
+def open_svg_in_browser(svg_path: str) -> None:
+    """Attempt to open an SVG file in the default browser.
+
+    This is a best-effort operation — failures are silently ignored
+    since the user can always open the file manually.
+    """
+    import os
+    import platform
+    import subprocess
+
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.Popen(["open", svg_path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif system == "Windows":
+            os.startfile(svg_path)
+        elif system == "Linux":
+            subprocess.Popen(["xdg-open", svg_path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass

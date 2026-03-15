@@ -82,11 +82,11 @@ COMPONENTS: dict[str, dict] = {
     # === Passives ===
     "Resistor": {"category": "passive", "korean": "저항", "symbol": "R",
                  "default_parameters": {"resistance": 10.0},
-                 "pins": ["pin1", "pin2"],
+                 "pins": ["pin1", "pin2", "input", "output"],
                  "psim_element_type": ""},
     "Inductor": {"category": "passive", "korean": "인덕터", "symbol": "L",
                  "default_parameters": {"inductance": 100e-6},
-                 "pins": ["pin1", "pin2"],
+                 "pins": ["pin1", "pin2", "input", "output"],
                  "psim_element_type": ""},
     "Capacitor": {"category": "passive", "korean": "커패시터", "symbol": "C",
                   "default_parameters": {"capacitance": 100e-6},

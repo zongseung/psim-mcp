@@ -8,13 +8,19 @@ import uuid
 
 
 class PreviewStore:
-    """In-memory store for circuit preview states, keyed by token."""
+    """In-memory store for circuit preview states, keyed by token.
+
+    Limitation: This is a single-process in-memory store. Preview tokens
+    are lost on process restart and cannot be shared across multiple
+    server instances. For production multi-instance deployments, consider
+    a file-based or database-backed store.
+    """
 
     DEFAULT_TTL = 3600  # 1 hour
 
-    def __init__(self, ttl: int = DEFAULT_TTL):
+    def __init__(self, ttl: int | None = None):
         self._store: dict[str, dict] = {}
-        self._ttl = ttl
+        self._ttl = ttl if ttl is not None else self.DEFAULT_TTL
 
     def save(self, preview_data: dict) -> str:
         """Save preview data and return a unique token."""

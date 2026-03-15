@@ -46,11 +46,11 @@ def validate_electrical(spec: dict) -> ValidationResult:
         comp_type_map[comp.get("id", "")] = comp.get("type", "")
 
     for net in nets:
-        connections = net.get("connections", [])
+        net_pins = net.get("pins", net.get("connections", []))
         # Parse connection strings like "V1.positive"
         pos_sources: set[str] = set()
         neg_sources: set[str] = set()
-        for conn in connections:
+        for conn in net_pins:
             parts = conn.rsplit(".", 1)
             if len(parts) != 2:
                 continue
@@ -69,7 +69,7 @@ def validate_electrical(spec: dict) -> ValidationResult:
                 ValidationIssue(
                     severity="error",
                     code="ELEC_SHORT",
-                    message=f"Source '{src_id}' has positive and negative terminals in the same net '{net.get('id', '')}'.",
+                    message=f"Source '{src_id}' has positive and negative terminals in the same net '{net.get('name', net.get('id', ''))}'.",
                     component_id=src_id,
                     suggestion="Separate source terminals into different nets.",
                 )

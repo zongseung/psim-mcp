@@ -5,16 +5,15 @@ from __future__ import annotations
 import copy
 import json
 import os
-import platform
-import subprocess
 import tempfile
 
 from psim_mcp.data.circuit_templates import TEMPLATES as _ALL_TEMPLATES, CATEGORIES as _CATEGORIES
+from psim_mcp.data.spec_mapping import SPEC_MAP as _SPEC_MAP, apply_specs as _apply_specs
 from psim_mcp.generators import get_generator
 from psim_mcp.services.preview_store import get_preview_store
 from psim_mcp.tools import tool_handler
 from psim_mcp.utils.ascii_renderer import render_circuit_ascii
-from psim_mcp.utils.svg_renderer import render_circuit_svg
+from psim_mcp.utils.svg_renderer import render_circuit_svg, open_svg_in_browser
 from psim_mcp.validators import validate_circuit
 
 
@@ -23,140 +22,6 @@ from psim_mcp.validators import validate_circuit
 # ---------------------------------------------------------------------------
 _TEMPLATES = _ALL_TEMPLATES
 
-# Keep legacy inline templates as fallback (empty — all moved to data module)
-_LEGACY_TEMPLATES: dict[str, dict] = {
-    "buck": {
-        "description": "DC-DC Buck (step-down) converter",
-        "components": [
-            {"id": "V1", "type": "DC_Source", "parameters": {"voltage": 48.0}, "position": {"x": 40, "y": 120}},
-            {"id": "SW1", "type": "MOSFET", "parameters": {"switching_frequency": 50000, "on_resistance": 0.01}, "position": {"x": 180, "y": 50}},
-            {"id": "D1", "type": "Diode", "parameters": {"forward_voltage": 0.7}, "position": {"x": 180, "y": 190}},
-            {"id": "L1", "type": "Inductor", "parameters": {"inductance": 47e-6}, "position": {"x": 340, "y": 50}},
-            {"id": "C1", "type": "Capacitor", "parameters": {"capacitance": 100e-6}, "position": {"x": 500, "y": 190}},
-            {"id": "R1", "type": "Resistor", "parameters": {"resistance": 10.0}, "position": {"x": 500, "y": 50}},
-        ],
-        "connections": [
-            {"from": "V1.positive", "to": "SW1.drain"},
-            {"from": "SW1.source", "to": "L1.input"},
-            {"from": "SW1.source", "to": "D1.cathode"},
-            {"from": "D1.anode", "to": "V1.negative"},
-            {"from": "L1.output", "to": "R1.input"},
-            {"from": "L1.output", "to": "C1.positive"},
-            {"from": "R1.output", "to": "V1.negative"},
-            {"from": "C1.negative", "to": "V1.negative"},
-        ],
-    },
-    "boost": {
-        "description": "DC-DC Boost (step-up) converter",
-        "components": [
-            {"id": "V1", "type": "DC_Source", "parameters": {"voltage": 12.0}, "position": {"x": 40, "y": 120}},
-            {"id": "L1", "type": "Inductor", "parameters": {"inductance": 100e-6}, "position": {"x": 180, "y": 50}},
-            {"id": "SW1", "type": "MOSFET", "parameters": {"switching_frequency": 100000, "on_resistance": 0.01}, "position": {"x": 340, "y": 190}},
-            {"id": "D1", "type": "Diode", "parameters": {"forward_voltage": 0.7}, "position": {"x": 340, "y": 50}},
-            {"id": "C1", "type": "Capacitor", "parameters": {"capacitance": 47e-6}, "position": {"x": 500, "y": 190}},
-            {"id": "R1", "type": "Resistor", "parameters": {"resistance": 50.0}, "position": {"x": 500, "y": 50}},
-        ],
-        "connections": [
-            {"from": "V1.positive", "to": "L1.input"},
-            {"from": "L1.output", "to": "SW1.drain"},
-            {"from": "L1.output", "to": "D1.anode"},
-            {"from": "SW1.source", "to": "V1.negative"},
-            {"from": "D1.cathode", "to": "R1.input"},
-            {"from": "D1.cathode", "to": "C1.positive"},
-            {"from": "R1.output", "to": "V1.negative"},
-            {"from": "C1.negative", "to": "V1.negative"},
-        ],
-    },
-    "half_bridge": {
-        "description": "Half-bridge inverter",
-        "components": [
-            {"id": "V1", "type": "DC_Source", "parameters": {"voltage": 400.0}, "position": {"x": 40, "y": 120}},
-            {"id": "SW1", "type": "MOSFET", "parameters": {"switching_frequency": 20000, "on_resistance": 0.05}, "position": {"x": 220, "y": 50}},
-            {"id": "SW2", "type": "MOSFET", "parameters": {"switching_frequency": 20000, "on_resistance": 0.05}, "position": {"x": 220, "y": 190}},
-            {"id": "L1", "type": "Inductor", "parameters": {"inductance": 1e-3}, "position": {"x": 400, "y": 120}},
-            {"id": "R1", "type": "Resistor", "parameters": {"resistance": 10.0}, "position": {"x": 560, "y": 120}},
-        ],
-        "connections": [
-            {"from": "V1.positive", "to": "SW1.drain"},
-            {"from": "SW1.source", "to": "SW2.drain"},
-            {"from": "SW2.source", "to": "V1.negative"},
-            {"from": "SW1.source", "to": "L1.input"},
-            {"from": "L1.output", "to": "R1.input"},
-            {"from": "R1.output", "to": "V1.negative"},
-        ],
-    },
-    "full_bridge": {
-        "description": "Full-bridge (H-bridge) inverter",
-        "components": [
-            {"id": "V1", "type": "DC_Source", "parameters": {"voltage": 400.0}, "position": {"x": 40, "y": 150}},
-            {"id": "SW1", "type": "MOSFET", "parameters": {"switching_frequency": 20000, "on_resistance": 0.05}, "position": {"x": 220, "y": 50}},
-            {"id": "SW2", "type": "MOSFET", "parameters": {"switching_frequency": 20000, "on_resistance": 0.05}, "position": {"x": 220, "y": 250}},
-            {"id": "SW3", "type": "MOSFET", "parameters": {"switching_frequency": 20000, "on_resistance": 0.05}, "position": {"x": 540, "y": 50}},
-            {"id": "SW4", "type": "MOSFET", "parameters": {"switching_frequency": 20000, "on_resistance": 0.05}, "position": {"x": 540, "y": 250}},
-            {"id": "L1", "type": "Inductor", "parameters": {"inductance": 1e-3}, "position": {"x": 380, "y": 100}},
-            {"id": "R1", "type": "Resistor", "parameters": {"resistance": 10.0}, "position": {"x": 380, "y": 200}},
-        ],
-        "connections": [
-            {"from": "V1.positive", "to": "SW1.drain"},
-            {"from": "V1.positive", "to": "SW3.drain"},
-            {"from": "SW1.source", "to": "SW2.drain"},
-            {"from": "SW3.source", "to": "SW4.drain"},
-            {"from": "SW2.source", "to": "V1.negative"},
-            {"from": "SW4.source", "to": "V1.negative"},
-            {"from": "SW1.source", "to": "L1.input"},
-            {"from": "L1.output", "to": "R1.input"},
-            {"from": "R1.output", "to": "SW3.source"},
-        ],
-    },
-}
-
-# ---------------------------------------------------------------------------
-# Specs → template parameter mapping
-# ---------------------------------------------------------------------------
-
-# Maps spec keys to (component_type, parameter_name) so that high-level
-# specifications like {"V_in": 48} get applied to the right component.
-_SPEC_MAP: dict[str, list[tuple[str, str]]] = {
-    "V_in": [("DC_Source", "voltage")],
-    "v_in": [("DC_Source", "voltage")],
-    "voltage": [("DC_Source", "voltage")],
-    "R_load": [("Resistor", "resistance")],
-    "r_load": [("Resistor", "resistance")],
-    "resistance": [("Resistor", "resistance")],
-    "load": [("Resistor", "resistance")],
-    "switching_frequency": [("MOSFET", "switching_frequency")],
-    "frequency": [("MOSFET", "switching_frequency")],
-    "freq": [("MOSFET", "switching_frequency")],
-    "inductance": [("Inductor", "inductance")],
-    "L": [("Inductor", "inductance")],
-    "capacitance": [("Capacitor", "capacitance")],
-    "C": [("Capacitor", "capacitance")],
-    "forward_voltage": [("Diode", "forward_voltage")],
-    "on_resistance": [("MOSFET", "on_resistance")],
-}
-
-
-def _apply_specs(components: list[dict], specs: dict) -> None:
-    """Apply high-level specs to template components in-place.
-
-    Handles both mapped keys (V_in → DC_Source.voltage) and derived
-    values (V_out + I_load → R_load).
-    """
-    # Derive R_load from V_out and I_load if not explicitly given
-    v_out = specs.get("V_out") or specs.get("v_out")
-    i_load = specs.get("I_load") or specs.get("i_load")
-    if v_out and i_load and "R_load" not in specs and "r_load" not in specs:
-        specs["R_load"] = v_out / i_load
-
-    for key, value in specs.items():
-        targets = _SPEC_MAP.get(key)
-        if not targets:
-            continue
-        for comp_type, param_name in targets:
-            for comp in components:
-                if comp.get("type") == comp_type:
-                    comp.setdefault("parameters", {})[param_name] = value
-                    break  # apply to first matching component only
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +38,49 @@ def register_tools(mcp, service=None):
 
     @mcp.tool(
         description=(
-            "회로도를 SVG 미리보기로 생성합니다. "
-            "Mac/Windows 모두 가능. 확인 후 confirm_circuit으로 실제 생성합니다. "
-            "specs로 사양(입력전압, 출력전압, 부하 등)을 지정하면 템플릿에 자동 반영됩니다."
+            "PSIM 부품 라이브러리를 반환합니다. "
+            "회로를 직접 설계할 때 사용 가능한 부품 타입, 핀 이름, 기본 파라미터를 확인할 수 있습니다. "
+            "preview_circuit에 커스텀 components/connections를 전달하기 전에 이 도구로 부품 정보를 확인하세요."
+        ),
+    )
+    @tool_handler("get_component_library")
+    async def get_component_library(category: str | None = None) -> str:
+        """Return available component types with pins and parameters."""
+        from psim_mcp.data.component_library import COMPONENTS, CATEGORIES
+
+        result = {}
+        for type_name, comp in COMPONENTS.items():
+            if category and comp["category"] != category.lower():
+                continue
+            result[type_name] = {
+                "category": comp["category"],
+                "pins": comp.get("pins", []),
+                "default_parameters": comp.get("default_parameters", {}),
+            }
+
+        return {
+            "success": True,
+            "data": {
+                "components": result,
+                "total": len(result),
+                "categories": list(CATEGORIES.keys()),
+            },
+            "message": (
+                f"{len(result)}개 부품 타입 사용 가능. "
+                "preview_circuit의 components에 이 타입명과 핀 이름을 사용하세요."
+            ),
+        }
+
+    @mcp.tool(
+        description=(
+            "회로도 SVG 미리보기를 생성합니다. 두 가지 모드:\n\n"
+            "모드 1 (템플릿): circuit_type='buck' + specs={'V_in': 48, 'V_out': 12} 형태로 간편 생성.\n\n"
+            "모드 2 (커스텀 설계): 임의 회로를 직접 설계. components와 connections를 직접 전달.\n"
+            "get_component_library()로 부품 타입과 핀 이름을 먼저 확인하세요.\n"
+            "components: [{\"id\": \"V1\", \"type\": \"DC_Source\", \"parameters\": {\"voltage\": 310}, \"position\": {\"x\": 0, \"y\": 0}}, ...]\n"
+            "connections: [{\"from\": \"V1.positive\", \"to\": \"SW1.drain\"}, ...]\n\n"
+            "검증 결과가 응답에 포함됩니다. 핀 이름 오류 시 올바른 핀 목록이 제안됩니다.\n"
+            "확정하려면 confirm_circuit(preview_token=..., save_path=...)을 호출하세요."
         ),
     )
     @tool_handler("preview_circuit")
@@ -203,6 +108,7 @@ def register_tools(mcp, service=None):
 
         # Try generator first
         _generator_resolved = False
+        _generation_mode = "template"
         try:
             generator = get_generator(circuit_type.lower())
         except KeyError:
@@ -225,6 +131,7 @@ def register_tools(mcp, service=None):
                     resolved_connections = []  # generator uses nets
                     resolved_nets = gen_result.get("nets", [])
                     _generator_resolved = True
+                    _generation_mode = "generator"
                 except Exception:
                     pass  # generator failed, fall back to template
 
@@ -274,14 +181,20 @@ def register_tools(mcp, service=None):
         if resolved_connections is None:
             resolved_connections = []
 
+        # If we have nets but no connections, convert for rendering
+        if resolved_nets and not resolved_connections:
+            from psim_mcp.bridge.wiring import nets_to_connections
+            resolved_connections = nets_to_connections(resolved_nets)
+
         # Run validation (non-blocking for preview, just include warnings in response)
         validation_input = {
             "components": resolved_components,
+            "connections": resolved_connections,
             "nets": resolved_nets,
         }
         validation_result = validate_circuit(validation_input)
         validation_warnings = [
-            {"code": w.code, "message": w.message, "component_id": w.component_id}
+            {"code": w.code, "message": w.message, "component_id": w.component_id, "suggestion": w.suggestion}
             for w in (validation_result.errors + validation_result.warnings)
         ]
 
@@ -306,16 +219,7 @@ def register_tools(mcp, service=None):
             f.write(svg_content)
 
         # Auto-open SVG in browser
-        try:
-            system = platform.system()
-            if system == "Darwin":
-                subprocess.Popen(["open", svg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif system == "Windows":
-                os.startfile(svg_path)
-            elif system == "Linux":
-                subprocess.Popen(["xdg-open", svg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass  # Non-critical: user can still open manually
+        open_svg_in_browser(svg_path)
 
         # Store pending preview for confirm_circuit (token-based)
         token = store.save({
@@ -341,6 +245,7 @@ def register_tools(mcp, service=None):
                     for c in resolved_components
                 ],
                 "validation_warnings": validation_warnings,
+                "generation_mode": _generation_mode,
             },
             "message": (
                 f"'{circuit_type}' 회로 미리보기 (token: {token}):\n\n"
@@ -443,6 +348,7 @@ def register_tools(mcp, service=None):
 
         # Try generator first
         _generator_resolved = False
+        _generation_mode = "template"
         try:
             generator = get_generator(circuit_type.lower())
         except KeyError:
@@ -464,6 +370,7 @@ def register_tools(mcp, service=None):
                     components = gen_result["components"]
                     connections = []  # generator uses nets
                     _generator_resolved = True
+                    _generation_mode = "generator"
                 except Exception:
                     pass  # generator failed, fall back to template
 
@@ -479,7 +386,12 @@ def register_tools(mcp, service=None):
         if connections is None:
             connections = []
 
-        return await svc.create_circuit(
+        # If we have nets but no connections, convert for rendering/adapter
+        if circuit_spec and circuit_spec.get("nets") and not connections:
+            from psim_mcp.bridge.wiring import nets_to_connections
+            connections = nets_to_connections(circuit_spec["nets"])
+
+        result = await svc.create_circuit(
             circuit_type=circuit_type,
             components=components,
             connections=connections,
@@ -487,6 +399,14 @@ def register_tools(mcp, service=None):
             simulation_settings=simulation_settings,
             circuit_spec=circuit_spec if circuit_spec else None,
         )
+
+        # Annotate result with generation mode
+        if isinstance(result, dict) and "data" in result and isinstance(result["data"], dict):
+            result["data"]["generation_mode"] = _generation_mode
+        elif isinstance(result, dict):
+            result.setdefault("data", {})["generation_mode"] = _generation_mode
+
+        return result
 
     @mcp.tool(
         description=(

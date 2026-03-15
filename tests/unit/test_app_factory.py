@@ -25,11 +25,11 @@ def test_create_app_returns_fastmcp():
     assert isinstance(app, FastMCP)
 
 
-def test_create_app_registers_13_tools():
-    """The factory must register exactly 13 tools."""
+def test_create_app_registers_15_tools():
+    """The factory must register exactly 15 tools."""
     app = create_app(AppConfig(psim_mode="mock"))
     tools = app._tool_manager._tools  # internal dict keyed by tool name
-    assert len(tools) == 13, f"Expected 13 tools, got {len(tools)}: {list(tools.keys())}"
+    assert len(tools) == 15, f"Expected 15 tools, got {len(tools)}: {list(tools.keys())}"
 
 
 def test_create_app_with_explicit_config(tmp_path: Path):
