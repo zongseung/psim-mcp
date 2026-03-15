@@ -4,6 +4,78 @@ from __future__ import annotations
 
 import re
 
+# ---------------------------------------------------------------------------
+# Constraint keyword patterns — domain concepts, NOT topology names.
+# Used by _extract_constraints() to derive design constraints from text.
+# ---------------------------------------------------------------------------
+
+_CONSTRAINT_PATTERNS: dict[str, dict] = {
+    "input_domain": {
+        "ac": re.compile(r"(ac|교류|mains|벽전원|상용전원|220v|110v)", re.I),
+        "dc": re.compile(r"(dc|직류|dc\s*bus|배터리|battery|pv|태양광|solar)", re.I),
+    },
+    "output_domain": {
+        "ac": re.compile(r"(ac\s*출력|교류\s*출력|인버|inverter|모터|motor)", re.I),
+        "dc": re.compile(r"(dc\s*출력|직류\s*출력|충전|charg|어댑터|adapter|전원)", re.I),
+    },
+    "isolation": {
+        False: re.compile(r"(비절연|non.isolated)", re.I),
+        True: re.compile(r"(절연|isolated|갈바닉|galvanic)", re.I),
+    },
+    "conversion_goal": {
+        "step_down": re.compile(r"(강압|step.down|낮추|줄이|감소|저전압)", re.I),
+        "step_up": re.compile(r"(승압|step.up|높이|올리|부스트|boost|증가|고전압)", re.I),
+        "rectification": re.compile(r"(정류|rectif|교류를\s*직류|ac\s*(to|를)\s*dc)", re.I),
+        "inversion": re.compile(r"(인버|inver|직류를\s*교류|dc\s*(to|를)\s*ac|모터\s*구동)", re.I),
+    },
+    "use_case": {
+        "charger": re.compile(r"(충전|charg|배터리)", re.I),
+        "adapter": re.compile(r"(어댑터|adapter|노트북|laptop)", re.I),
+        "auxiliary_supply": re.compile(r"(보조전원|auxiliary|aux)", re.I),
+        "power_supply": re.compile(r"(전원|power\s*supply)", re.I),
+        "motor_drive": re.compile(r"(모터|motor|드라이브|drive|서보|servo)", re.I),
+        "pv_frontend": re.compile(r"(태양광|solar|pv|mppt)", re.I),
+        "led_driver": re.compile(r"(led|조명)", re.I),
+        "telecom": re.compile(r"(텔레콤|telecom|통신)", re.I),
+        "pfc": re.compile(r"(역률|pfc|power\s*factor)", re.I),
+        "filter": re.compile(r"(필터|filter|emi)", re.I),
+    },
+    "bidirectional": {
+        True: re.compile(r"(양방향|bidirectional|v2g|v2h|충방전)", re.I),
+    },
+}
+
+
+def _extract_constraints(text: str) -> dict:
+    """Extract design constraints from natural language text.
+
+    Scans *text* for domain-level keywords (AC/DC, step-up/down, use-case,
+    isolation, bidirectional) and returns a dict of matched constraints.
+    This function does NOT reference any topology names — it only extracts
+    domain-level constraints from text.
+
+    Returns dict with keys like:
+    - input_domain: "ac" | "dc" | None
+    - output_domain: "ac" | "dc" | None
+    - isolation: True | False | None
+    - conversion_goal: "step_down" | "step_up" | "rectification" | "inversion" | None
+    - use_case: "charger" | "adapter" | ... | None
+    - bidirectional: True | None
+    """
+    constraints: dict = {}
+
+    for category, patterns in _CONSTRAINT_PATTERNS.items():
+        for value, pattern in patterns.items():
+            if pattern.search(text):
+                if category == "bidirectional":
+                    constraints["bidirectional"] = True
+                else:
+                    constraints[category] = value
+                break  # first match per category
+
+    return constraints
+
+
 from psim_mcp.data.topology_metadata import (
     get_design_ready_fields,
     get_priority_overrides,
@@ -381,6 +453,74 @@ def _get_required_fields(topology: str) -> list[str]:
     return _get_required_fields_for(topology)
 
 
+def rank_topology_candidates(constraints: dict, specs: dict) -> list[tuple[str, int]]:
+    """Rank topologies by how well they match extracted constraints.
+
+    Returns list of (topology_name, score) sorted by score descending.
+    Only includes topologies with score > 0.
+    """
+    from psim_mcp.data.topology_metadata import TOPOLOGY_METADATA
+
+    results = []
+    for name, meta in TOPOLOGY_METADATA.items():
+        score = 0
+
+        # Input domain match (+3)
+        if constraints.get("input_domain"):
+            if meta.get("input_domain") == constraints["input_domain"]:
+                score += 3
+            else:
+                score -= 2  # penalty for mismatch
+
+        # Output domain match (+3)
+        if constraints.get("output_domain"):
+            if meta.get("output_domain") == constraints["output_domain"]:
+                score += 3
+            else:
+                score -= 2
+
+        # Isolation match (+3)
+        if constraints.get("isolation") is not None:
+            if meta.get("isolated") == constraints["isolation"]:
+                score += 3
+            else:
+                score -= 3  # strong penalty
+
+        # Conversion goal match (+3)
+        goal = constraints.get("conversion_goal")
+        if goal == "step_down" and meta.get("supports_step_down"):
+            score += 3
+        elif goal == "step_up" and meta.get("supports_step_up"):
+            score += 3
+        elif goal == "rectification" and meta.get("conversion_type") == "ac_dc":
+            score += 3
+        elif goal == "inversion" and meta.get("conversion_type") in ("dc_ac", "drive"):
+            score += 3
+        elif goal and not any([
+            goal == "step_down" and meta.get("supports_step_down"),
+            goal == "step_up" and meta.get("supports_step_up"),
+        ]):
+            score -= 1
+
+        # Use case match (+2)
+        use_case = constraints.get("use_case")
+        if use_case and use_case in meta.get("typical_use_cases", []):
+            score += 2
+
+        # Bidirectional match (+2)
+        if constraints.get("bidirectional"):
+            if meta.get("supports_bidirectional"):
+                score += 2
+            else:
+                score -= 2
+
+        if score > 0:
+            results.append((name, score))
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results
+
+
 def parse_circuit_intent(description: str) -> dict:
     """Parse a natural language circuit description.
 
@@ -473,6 +613,17 @@ def parse_circuit_intent(description: str) -> dict:
             if use_case is None:
                 use_case = use_case_found
 
+    # 5b. If still no topology, try constraint-based ranking
+    constraints: dict = {}
+    if not topology:
+        constraints = _extract_constraints(description)
+        if constraints:
+            ranked = rank_topology_candidates(constraints, {})
+            if ranked:
+                topology = ranked[0][0]
+                candidates = [name for name, _score in ranked[:5]]
+                # Constraint-based match is less certain — flag for medium confidence cap
+
     # 6. Map extracted values to specs (context-aware, topology-aware)
     specs, unassigned_voltages, mapping_confidence = _map_values_to_specs(
         values, description, topology,
@@ -545,6 +696,7 @@ def parse_circuit_intent(description: str) -> dict:
         "questions": questions,
         "confidence": confidence,
         "use_case": use_case,
+        "constraints": constraints if constraints else {},
     }
 
     if unassigned_voltages:
