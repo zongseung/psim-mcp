@@ -174,28 +174,33 @@ psim-mcp/
 ├── src/
 │   └── psim_mcp/
 │       ├── __init__.py
-│       ├── server.py              # FastMCP 서버 진입점
-│       ├── config.py              # 환경 변수 기반 설정 (Pydantic)
+│       ├── server.py              # App factory (create_app, create_service, create_adapter)
+│       ├── config.py              # 환경 변수 기반 설정 (Pydantic) + real 모드 검증
 │       ├── tools/                 # MCP Tool 정의
+│       │   ├── __init__.py        # tool_handler 데코레이터, encode_response
 │       │   ├── project.py         # open_project, get_project_info
 │       │   ├── parameter.py       # set_parameter, sweep_parameter
 │       │   ├── simulation.py      # run_simulation
-│       │   └── results.py         # export_results, compare_results
+│       │   └── results.py         # export_results, compare_results, get_status
 │       ├── services/              # 비즈니스 로직
-│       │   ├── simulation_service.py
-│       │   └── validators.py
+│       │   ├── simulation_service.py  # 오케스트레이션 + _execute_with_audit
+│       │   ├── response.py        # ResponseBuilder (표준 응답 envelope)
+│       │   └── validators.py      # 입력 검증 (경로, 파라미터, 시뮬레이션 옵션)
 │       ├── adapters/              # PSIM 실행 환경 추상화
-│       │   ├── base.py            # BasePsimAdapter (ABC)
+│       │   ├── base.py            # BasePsimAdapter (ABC + is_project_open)
 │       │   ├── mock_adapter.py    # Mac 개발용 mock
-│       │   └── real_adapter.py    # Windows PSIM 연동
+│       │   └── real_adapter.py    # Windows PSIM 연동 (sanitized env)
+│       ├── bridge/
+│       │   └── bridge_script.py   # PSIM Python 3.8 브릿지 (JSON IPC)
 │       ├── models/
-│       │   └── schemas.py         # Pydantic 데이터 모델
+│       │   └── schemas.py         # Pydantic 데이터 모델 (Field 제약 포함)
 │       └── utils/
-│           ├── logging.py         # 구조화된 로깅
-│           └── paths.py           # 경로 보안 유틸리티
+│           ├── logging.py         # 구조화된 로깅 + SecurityAuditLogger
+│           ├── paths.py           # 경로 보안 유틸리티
+│           └── sanitize.py        # 출력 sanitization (LLM 컨텍스트, 응답 크기 제한)
 ├── tests/
 │   ├── conftest.py
-│   ├── unit/                      # Mac/Windows 공통 단위 테스트
+│   ├── unit/                      # 221개 단위 테스트
 │   └── integration/               # Windows + PSIM 통합 테스트
 ├── docs/
 │   ├── PRD.md                     # 제품 요구사항
@@ -205,6 +210,7 @@ psim-mcp/
 │   ├── testing-guide.md           # 테스트 코드 작성 가이드
 │   ├── security.md                # 애플리케이션 보안
 │   └── security-mcp.md            # MCP 프로토콜 보안
+├── main.py                        # psim_mcp.server.main() 위임
 ├── pyproject.toml
 ├── .env.example
 └── README.md
@@ -219,7 +225,7 @@ psim-mcp/
 ```bash
 git clone <repository-url>
 cd psim-mcp
-uv sync
+uv sync --all-extras   # dev 의존성(pytest, ruff 등) 포함
 ```
 
 ### 2. 환경 설정
@@ -273,7 +279,7 @@ uv run python -m psim_mcp.server
 ### 5. 테스트 실행
 
 ```bash
-# 단위 테스트 (Mac/Windows)
+# 전체 단위 테스트 (221개, Mac/Windows)
 uv run pytest tests/unit/ -v
 
 # 통합 테스트 (Windows + PSIM)
@@ -282,6 +288,26 @@ PSIM_MODE=real uv run pytest tests/integration/ -v
 # 커버리지 리포트
 uv run pytest tests/unit/ --cov=psim_mcp --cov-report=html
 ```
+
+**테스트 카테고리 (221개)**:
+
+| 카테고리 | 테스트 수 | 대상 |
+|----------|----------|------|
+| validators | 42 | 입력 검증 함수 |
+| schemas | 21 | Pydantic 모델 |
+| path_security | 17 | 경로 보안 |
+| mock_adapter | 15 | MockAdapter |
+| simulation_service | 12 | Service Layer |
+| error_responses | 13 | 에러 응답 일관성 |
+| sanitize | 22 | 출력 sanitization |
+| security_validation | 24 | 보안 검증 |
+| security_audit | 14 | 감사 로깅 |
+| error_sanitization | 10 | 에러 정보 누출 방지 |
+| app_factory | 7 | 앱 팩토리 |
+| tool_wrapper | 6 | tool_handler 데코레이터 |
+| response_builder | 6 | ResponseBuilder |
+| tool_integration | 7 | Tool E2E 워크플로우 |
+| startup_validation | 5 | 설정 검증 |
 
 ---
 
@@ -321,28 +347,43 @@ flowchart LR
 
 ---
 
-## 레이어별 설계 원칙
+## 설계 원칙
+
+### App Factory 패턴
+
+서버 초기화는 `create_app()` 팩토리를 통해 이루어집니다. 테스트에서 독립적인 인스턴스를 생성할 수 있고, `import` 시점에 무거운 초기화가 발생하지 않습니다.
+
+```python
+from psim_mcp.server import create_app
+from psim_mcp.config import AppConfig
+
+# 커스텀 설정으로 앱 생성
+config = AppConfig(psim_mode="mock")
+app = create_app(config)
+```
+
+### 레이어 구조
 
 ```mermaid
 flowchart TB
     subgraph TOOL["MCP Tool Layer"]
         direction LR
-        T1["Tool 이름/스키마 정의"]
-        T2["비즈니스 로직 금지"]
-        T3["JSON 응답 반환"]
+        T1["@tool_handler 데코레이터"]
+        T2["service 호출만 위임"]
+        T3["encode_response 자동 적용"]
     end
 
     subgraph SVC["Service Layer"]
         direction LR
-        S1["입력값 유효성 검증"]
-        S2["경로 보안 검증"]
-        S3["에러 메시지 표준화"]
+        S1["입력 검증 + 경로 보안"]
+        S2["ResponseBuilder 표준 응답"]
+        S3["_execute_with_audit 감사 로깅"]
     end
 
     subgraph ADP["Adapter Layer"]
         direction LR
         A1["MockAdapter<br/>(더미 데이터)"]
-        A2["RealAdapter<br/>(subprocess → PSIM)"]
+        A2["RealAdapter<br/>(subprocess → Bridge)"]
     end
 
     TOOL --> SVC --> ADP
@@ -352,11 +393,11 @@ flowchart TB
     style ADP fill:#fff3e0
 ```
 
-| 레이어 | 책임 | 원칙 |
-|--------|------|------|
-| **Tool Layer** | MCP 프로토콜 인터페이스 | 비즈니스 로직을 넣지 않음, Service 호출만 위임 |
-| **Service Layer** | 검증, 가공, 에러 표준화 | PSIM에 직접 의존 금지, 순수 Python으로 구현 |
-| **Adapter Layer** | PSIM 실행 환경 추상화 | DI로 교체 가능, mock/real 분리 |
+| 레이어 | 책임 | 핵심 구현 |
+|--------|------|----------|
+| **Tool Layer** | MCP 프로토콜 인터페이스 | `@tool_handler` 데코레이터로 예외 처리/직렬화/sanitize 자동화 |
+| **Service Layer** | 검증, 오케스트레이션, 감사 | `ResponseBuilder`로 응답 표준화, `_execute_with_audit`로 감사 로깅 |
+| **Adapter Layer** | PSIM 실행 환경 추상화 | `is_project_open` 프로퍼티, DI로 mock/real 교체 |
 
 ---
 
@@ -413,11 +454,27 @@ gantt
 
 ## 보안
 
+### 입력 보안
 - **경로 보안**: `Path.resolve()` + `is_relative_to()` 로 path traversal 방지
-- **명령 주입 방지**: subprocess에 `shell=False`, JSON 입력은 stdin으로 전달
-- **입력 검증**: Pydantic 모델 + 정규식 기반 식별자 검증
-- **리소스 제한**: 시뮬레이션 타임아웃(300s), 스윕 최대 100단계, 응답 크기 50KB
-- **비밀 관리**: `.env` 파일 gitignore 처리, `.env.example`만 커밋
+- **입력 검증**: Pydantic Field 제약 + 정규식 식별자 검증 + 시뮬레이션 옵션 범위 검증
+- **문자열 길이 제한**: 파라미터 값 1024자, 경로 4096자, 식별자 64자
+
+### 출력 보안
+- **LLM 컨텍스트 sanitization**: 제어 문자, prompt injection 패턴 제거 (`sanitize_for_llm_context`)
+- **응답 크기 제한**: 50KB 초과 시 자동 truncation (`truncate_response`)
+- **에러 메시지 보호**: 전체 시스템 경로, 스택 트레이스, 원시 예외 메시지를 사용자에게 노출하지 않음
+
+### subprocess 보안
+- **명령 주입 방지**: `shell=False`, JSON 입력은 stdin으로 전달
+- **환경 격리**: `_get_sanitized_env()`로 최소 환경변수만 subprocess에 전달
+
+### 감사 로깅
+- **SecurityAuditLogger**: 보안 이벤트(path_blocked, invalid_input, subprocess_event) 전용 로거
+- **입력 해싱**: 감사 로그에 원본 대신 SHA-256 해시 기록 (`hash_input`)
+- **4개 로그 파일 분리**: `server.log`, `tools.log`, `psim.log`, `security.log`
+
+### 리소스 제한
+- 시뮬레이션 타임아웃(300s), 스윕 최대 100단계, total_time 최대 3600s
 
 자세한 보안 설계는 [`docs/security.md`](./docs/security.md)와 [`docs/security-mcp.md`](./docs/security-mcp.md)를 참조하세요.
 
@@ -437,17 +494,53 @@ gantt
 
 ---
 
+## 개발자 가이드
+
+### App Factory를 활용한 테스트
+
+```python
+from psim_mcp.server import create_app, create_service
+from psim_mcp.config import AppConfig
+
+# 독립 인스턴스로 테스트 — 전역 상태 없음
+config = AppConfig(psim_mode="mock", simulation_timeout=10)
+service = create_service(config)
+
+result = await service.get_status()
+assert result["success"] is True
+```
+
+### 새 Tool 추가하기
+
+`@tool_handler` 데코레이터로 보일러플레이트 없이 tool을 추가할 수 있습니다:
+
+```python
+# src/psim_mcp/tools/my_tool.py
+from psim_mcp.tools import tool_handler
+
+def register_tools(mcp, service=None):
+    @mcp.tool(description="새 도구 설명")
+    @tool_handler("my_new_tool")
+    async def my_new_tool(param: str) -> str:
+        svc = service or _get_service()
+        return await svc.some_method(param)
+        # 예외 처리, JSON 직렬화, sanitize, truncate는 데코레이터가 처리
+```
+
+---
+
 ## 기술 스택
 
 | 항목 | 기술 |
 |------|------|
 | 언어 | Python 3.12+ |
 | MCP 프레임워크 | FastMCP (`mcp>=1.0`) |
-| 데이터 검증 | Pydantic v2 |
+| 데이터 검증 | Pydantic v2 + Field 제약 |
 | 설정 관리 | pydantic-settings + python-dotenv |
-| 테스트 | pytest + pytest-asyncio |
+| 테스트 | pytest + pytest-asyncio (221개) |
 | 린터/포매터 | ruff |
 | 패키지 관리 | uv |
+| 빌드 시스템 | hatchling |
 
 ---
 
