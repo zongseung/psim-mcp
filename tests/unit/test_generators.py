@@ -1,7 +1,16 @@
 """Tests for topology generators."""
 from psim_mcp.generators import get_generator, list_generators
-from psim_mcp.generators.buck import BuckGenerator
 import pytest
+from psim_mcp.validators import validate_circuit
+
+
+def _nets_to_connections(nets: list[dict]) -> list[dict]:
+    connections = []
+    for net in nets:
+        pins = net.get("pins", [])
+        for i in range(len(pins) - 1):
+            connections.append({"from": pins[i], "to": pins[i + 1]})
+    return connections
 
 
 def test_list_generators():
@@ -62,3 +71,26 @@ def test_boost_generator_generate():
     })
     assert result["topology"] == "boost"
     assert len(result["components"]) > 0
+
+
+@pytest.mark.parametrize(
+    ("topology", "requirements"),
+    [
+        ("buck", {"vin": 48.0, "vout_target": 12.0}),
+        ("boost", {"vin": 12.0, "vout_target": 48.0}),
+        ("buck_boost", {"vin": 24.0, "vout_target": 12.0}),
+    ],
+)
+def test_generated_circuits_validate(topology: str, requirements: dict):
+    gen = get_generator(topology)
+    result = gen.generate(requirements)
+    validation = validate_circuit(
+        {
+            "components": result["components"],
+            "connections": _nets_to_connections(result["nets"]),
+            "nets": result["nets"],
+        }
+    )
+    assert validation.is_valid is True, [
+        (issue.code, issue.message) for issue in validation.errors
+    ]

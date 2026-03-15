@@ -15,11 +15,11 @@ class BoostGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vin", "vout_target", "iout"]
+        return ["vin", "vout_target"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["fsw", "ripple_ratio", "voltage_ripple_ratio"]
+        return ["iout", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
 
     # ------------------------------------------------------------------
     # Design
@@ -32,7 +32,7 @@ class BoostGenerator(TopologyGenerator):
 
         vin: float = float(requirements["vin"])
         vout: float = float(requirements["vout_target"])
-        iout: float = float(requirements["iout"])
+        iout: float = float(requirements.get("iout", requirements.get("iout_target", 1.0)))
         fsw: float = float(requirements.get("fsw", 50_000))
         ripple_ratio: float = float(requirements.get("ripple_ratio", 0.3))
         vripple_ratio: float = float(requirements.get("voltage_ripple_ratio", 0.01))
@@ -61,10 +61,10 @@ class BoostGenerator(TopologyGenerator):
             comp["position"] = positions.get(comp["id"], {"x": 0, "y": 0})
 
         nets = [
-            {"id": "net_vin_l", "connections": ["V1.positive", "L1.input"]},
-            {"id": "net_l_sw_d", "connections": ["L1.output", "SW1.drain", "D1.anode"]},
-            {"id": "net_d_out", "connections": ["D1.cathode", "C1.positive", "R1.positive"]},
-            {"id": "net_gnd", "connections": ["V1.negative", "SW1.source", "C1.negative", "R1.negative"]},
+            {"name": "net_vin_l", "pins": ["V1.positive", "L1.pin1"]},
+            {"name": "net_l_sw_d", "pins": ["L1.pin2", "SW1.drain", "D1.anode"]},
+            {"name": "net_d_out", "pins": ["D1.cathode", "C1.positive", "R1.pin1"]},
+            {"name": "net_gnd", "pins": ["V1.negative", "SW1.source", "C1.negative", "R1.pin2"]},
         ]
 
         return {
