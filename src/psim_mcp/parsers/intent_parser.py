@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import re
 
-from psim_mcp.data.topology_metadata import get_design_ready_fields, get_required_fields, get_slot_questions
+from psim_mcp.data.topology_metadata import (
+    get_design_ready_fields,
+    get_priority_overrides,
+    get_required_fields,
+    get_slot_questions,
+    is_isolated,
+    get_single_voltage_role,
+    get_isolated_topologies,
+    get_non_isolated_topologies,
+)
 from psim_mcp.parsers.keyword_map import (
     SLOT_QUESTIONS,
     TOPOLOGY_KEYWORDS,
@@ -36,10 +45,11 @@ for _parser_name, _aliases in FIELD_ALIASES.items():
         _CANONICAL_TO_PARSER[_alias] = _parser_name
 
 
-def _match_topology(text: str) -> tuple[str | None, list[str]]:
+def _match_topology(text: str) -> tuple[str | None, list[str], str | None]:
     """Match topology keywords against *text* (case-insensitive).
 
-    Returns (best_match, all_candidates).  Longest keyword match wins.
+    Returns (best_match, all_candidates, matched_keyword).
+    Longest keyword match wins.
     """
     text_lower = text.lower()
     matches: list[tuple[str, str]] = []  # (topology_name, matched_keyword)
@@ -50,7 +60,7 @@ def _match_topology(text: str) -> tuple[str | None, list[str]]:
                 matches.append((topo, kw))
 
     if not matches:
-        return None, []
+        return None, [], None
 
     # Sort by keyword length descending (longest match first)
     matches.sort(key=lambda x: len(x[1]), reverse=True)
@@ -64,7 +74,8 @@ def _match_topology(text: str) -> tuple[str | None, list[str]]:
             candidates.append(topo)
 
     best = candidates[0]
-    return best, candidates
+    matched_keyword = matches[0][1]  # keyword that produced the best match
+    return best, candidates, matched_keyword
 
 
 def _match_use_case(text: str) -> tuple[str | None, list[str]]:
@@ -132,6 +143,7 @@ def _find_voltage_contexts(text: str) -> list[tuple[float, str | None]]:
 def _map_values_to_specs(
     values: dict[str, list[float]],
     text: str = "",
+    topology: str | None = None,
 ) -> tuple[dict[str, float], list[float], str]:
     """Map extracted values to circuit spec fields with context awareness.
 
@@ -193,6 +205,33 @@ def _map_values_to_specs(
             # All voltages were assigned via context -- confidence stays high
             pass
 
+        # Single-voltage topology-aware assignment:
+        # When exactly 1 voltage, no context clues, and topology is known,
+        # use domain knowledge to decide vin vs vout.
+        if (
+            len(voltages) == 1
+            and not vin_assigned
+            and not vout_assigned
+            and not no_context  # all handled via voltage_contexts with role=None
+        ):
+            # This case is already handled above in no_context branch.
+            # But if voltage_contexts found 1 voltage with role=None,
+            # it lands in no_context and gets assigned to vin by default.
+            pass
+
+        # Check: if we ended up with only vin (no vout) from a single voltage
+        # and topology is step-down isolated, reassign to vout.
+        if (
+            topology
+            and is_isolated(topology)
+            and get_single_voltage_role(topology) == "vout_target"
+            and "vin" in specs
+            and "vout_target" not in specs
+            and len(voltages) == 1
+        ):
+            specs["vout_target"] = specs.pop("vin")
+            mapping_confidence = "medium"
+
     elif voltages:
         # No text provided -- pure size-based fallback (backward compat)
         if len(voltages) >= 2:
@@ -203,7 +242,12 @@ def _map_values_to_specs(
                 unassigned_voltages = v_sorted[2:]
                 mapping_confidence = "medium"
         elif len(voltages) == 1:
-            specs["vin"] = voltages[0]
+            # Single voltage, no text: use topology hint if available
+            if topology and is_isolated(topology) and get_single_voltage_role(topology) == "vout_target":
+                specs["vout_target"] = voltages[0]
+                mapping_confidence = "medium"
+            else:
+                specs["vin"] = voltages[0]
 
     # --- Non-voltage mappings (unchanged) ---
     currents = values.get("current", [])
@@ -357,20 +401,81 @@ def parse_circuit_intent(description: str) -> dict:
     # 1. Extract numeric values with units
     values = extract_values(description)
 
-    # 2. Match topology keywords
-    topology, candidates = _match_topology(description)
+    text_lower = description.lower()
 
-    # 3. If no topology match, try use-case matching
-    use_case = None
+    # 2. Check priority overrides FIRST (e.g. "어댑터", "노트북", "충전기")
+    topology: str | None = None
+    candidates: list[str] = []
+    use_case: str | None = None
+
+    for kw, topo_list in get_priority_overrides().items():
+        if kw in text_lower:
+            candidates = list(topo_list)
+            topology = topo_list[0]
+            use_case = kw
+            break
+
+    # 3. If no priority override, do keyword matching
     if not topology:
-        use_case, use_case_candidates = _match_use_case(description)
-        if use_case_candidates:
-            candidates = use_case_candidates
-            topology = use_case_candidates[0]
+        topology, candidates, _matched_kw = _match_topology(description)
 
-    # 4. Map extracted values to specs (context-aware)
+    # 4. Apply isolated/non-isolated context filter
+    # Check non-isolated FIRST (since "비절연" contains "절연" as substring)
+    wants_non_isolated = any(kw in text_lower for kw in ("비절연", "non-isolated", "비절연형"))
+    wants_isolated = (
+        not wants_non_isolated
+        and any(kw in text_lower for kw in ("절연", "isolated", "절연형"))
+    )
+
+    if wants_isolated and topology and not is_isolated(topology):
+        # User wants isolated but matched non-isolated topology — find isolated candidate
+        for c in candidates:
+            if is_isolated(c):
+                topology = c
+                break
+        else:
+            # No isolated candidate found — let use-case handle it
+            topology = None
+            candidates = list(get_isolated_topologies())[:5]
+
+    if wants_non_isolated and topology and is_isolated(topology):
+        for c in candidates:
+            if not is_isolated(c):
+                topology = c
+                break
+        else:
+            topology = None
+            candidates = list(get_non_isolated_topologies())[:5]
+
+    # 5. If still no topology match, try use-case matching
+    if not topology:
+        use_case_found, use_case_candidates = _match_use_case(description)
+        if use_case_candidates:
+            if not candidates:
+                candidates = use_case_candidates
+            # Apply isolated/non-isolated filter to use-case candidates too
+            if wants_isolated:
+                filtered = [c for c in use_case_candidates if is_isolated(c)]
+                if filtered:
+                    topology = filtered[0]
+                    candidates = filtered + [c for c in use_case_candidates if c not in filtered]
+                else:
+                    topology = use_case_candidates[0]
+            elif wants_non_isolated:
+                filtered = [c for c in use_case_candidates if not is_isolated(c)]
+                if filtered:
+                    topology = filtered[0]
+                    candidates = filtered + [c for c in use_case_candidates if c not in filtered]
+                else:
+                    topology = use_case_candidates[0]
+            else:
+                topology = use_case_candidates[0]
+            if use_case is None:
+                use_case = use_case_found
+
+    # 6. Map extracted values to specs (context-aware, topology-aware)
     specs, unassigned_voltages, mapping_confidence = _map_values_to_specs(
-        values, description,
+        values, description, topology,
     )
     specs = _apply_topology_specific_postprocess(topology, use_case, specs, values, description)
 

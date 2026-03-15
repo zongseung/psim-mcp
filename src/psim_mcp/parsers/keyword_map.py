@@ -1,4 +1,11 @@
-"""Topology keyword mapping and slot questions for intent parsing."""
+"""Topology keyword mapping and slot questions for intent parsing.
+
+These maps serve as a fallback layer for topology identification.
+The primary circuit design path is Claude (LLM) designing circuits
+directly via get_component_library() + preview_circuit().
+These keyword maps are used by design_circuit() as a convenience
+shortcut for common topologies.
+"""
 
 from __future__ import annotations
 
