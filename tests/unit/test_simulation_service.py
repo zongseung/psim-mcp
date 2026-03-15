@@ -115,3 +115,43 @@ class TestGetStatus:
 
         assert result["success"] is True
         assert result["data"]["mode"] == "mock"
+
+
+class TestCreateCircuit:
+    async def test_enriches_components_with_psim_element_type(
+        self, service: SimulationService, tmp_path: Path
+    ):
+        save_path = tmp_path / "generated.psimsch"
+        circuit_spec = {
+            "components": [
+                {
+                    "id": "V1",
+                    "type": "DC_Source",
+                    "parameters": {"voltage": 48.0},
+                    "position": {"x": 0, "y": 0},
+                },
+                {
+                    "id": "R1",
+                    "type": "Resistor",
+                    "parameters": {"resistance": 10.0},
+                    "position": {"x": 120, "y": 0},
+                },
+            ],
+            "nets": [
+                {"name": "vin", "pins": ["V1.positive", "R1.pin1"]},
+                {"name": "gnd", "pins": ["V1.negative", "R1.pin2"]},
+            ],
+        }
+
+        result = await service.create_circuit(
+            circuit_type="custom",
+            components=[],
+            connections=[],
+            save_path=str(save_path),
+            circuit_spec=circuit_spec,
+        )
+
+        assert result["success"] is True
+        assert result["data"]["component_count"] == 2
+        assert result["data"]["components"][0]["psim_element_type"] == "DC_Source"
+        assert result["data"]["components"][1]["psim_element_type"] == "Resistor"

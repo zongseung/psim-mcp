@@ -17,6 +17,7 @@ stdout으로 JSON 결과를 반환한다.
 """
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -52,6 +53,42 @@ def _ensure_psim():
 
 
 # ---------------------------------------------------------------------------
+# Function discovery candidates — ordered by likelihood.
+# The actual function names must be confirmed via "Save as Python Code"
+# analysis on Windows. See docs/ver1.1.1/06-windows-smoke-test.md.
+# ---------------------------------------------------------------------------
+
+_OPEN_FUNCTION_CANDIDATES = ("open_schematic", "load", "open", "load_schematic")
+_SET_PARAM_CANDIDATES = ("set_param", "set_parameter", "set_element_param")
+_RUN_SIM_CANDIDATES = ("run", "simulate", "run_simulation", "run_sim")
+_EXPORT_CANDIDATES = ("export", "export_results", "get_results", "get_simulation_data")
+_INFO_CANDIDATES = ("get_all_elements", "get_elements", "get_components", "get_schematic_info")
+# Wire creation function candidates — ordered by likelihood.
+# The actual function name must be confirmed via "Save as Python Code"
+# analysis on Windows. See docs/ver1.1.1/06-windows-smoke-test.md.
+_WIRE_FUNCTION_CANDIDATES = ("PsimCreateWire", "PsimConnect", "PsimCreateNewWire")
+
+
+def _get_override_name(env_name):
+    """Return a stripped override value from the environment, if present."""
+    value = os.environ.get(env_name, "").strip()
+    return value or None
+
+
+def _resolve_wire_function(psim_instance):
+    """Resolve the wire creation function with explicit override support."""
+    override = _get_override_name("PSIM_WIRE_FUNCTION")
+    if override:
+        if hasattr(psim_instance, override):
+            return getattr(psim_instance, override), override, None
+        return None, override, "override_not_found"
+
+    for fn_name in _WIRE_FUNCTION_CANDIDATES:
+        if hasattr(psim_instance, fn_name):
+            return getattr(psim_instance, fn_name), fn_name, None
+    return None, None, "no_candidate_found"
+
+# ---------------------------------------------------------------------------
 # Action Handlers
 # ---------------------------------------------------------------------------
 # 각 핸들러는 params dict를 받고 결과 dict를 반환한다.
@@ -75,7 +112,7 @@ def handle_open_project(params):
     try:
         # 시도 1: psim.load / psim.open_schematic / psim.open 등
         open_fn = None
-        for fn_name in ("open_schematic", "load", "open", "load_schematic"):
+        for fn_name in _OPEN_FUNCTION_CANDIDATES:
             if hasattr(psim, fn_name):
                 open_fn = getattr(psim, fn_name)
                 break
@@ -109,7 +146,7 @@ def handle_set_parameter(params):
     try:
         # TODO: PSIM API 확인 후 실제 호출로 교체
         set_fn = None
-        for fn_name in ("set_param", "set_parameter", "set_element_param"):
+        for fn_name in _SET_PARAM_CANDIDATES:
             if hasattr(psim, fn_name):
                 set_fn = getattr(psim, fn_name)
                 break
@@ -143,7 +180,7 @@ def handle_run_simulation(params):
     try:
         # TODO: PSIM API 확인 후 실제 호출로 교체
         run_fn = None
-        for fn_name in ("run", "simulate", "run_simulation", "run_sim"):
+        for fn_name in _RUN_SIM_CANDIDATES:
             if hasattr(psim, fn_name):
                 run_fn = getattr(psim, fn_name)
                 break
@@ -184,7 +221,7 @@ def handle_export_results(params):
         #   data = psim.get_simulation_data()
         #   또는 .smv 파일을 읽어 파싱
         export_fn = None
-        for fn_name in ("export", "export_results", "get_results", "get_simulation_data"):
+        for fn_name in _EXPORT_CANDIDATES:
             if hasattr(psim, fn_name):
                 export_fn = getattr(psim, fn_name)
                 break
@@ -261,8 +298,9 @@ def handle_create_circuit(params):
             position = comp.get("position", {"x": 0, "y": 0})
 
             try:
+                element_type = comp.get("psim_element_type") or comp_type
                 elem = p.PsimCreateNewElement(
-                    sch, comp_type,
+                    sch, element_type,
                     position.get("x", 0),
                     position.get("y", 0),
                 )
@@ -274,12 +312,14 @@ def handle_create_circuit(params):
                     failed_components.append({
                         "id": comp_id,
                         "type": comp_type,
+                        "psim_element_type": element_type,
                         "reason": "PsimCreateNewElement returned None",
                     })
             except Exception as e:
                 failed_components.append({
                     "id": comp_id,
                     "type": comp_type,
+                    "psim_element_type": comp.get("psim_element_type") or comp_type,
                     "reason": str(e),
                 })
 
@@ -290,12 +330,7 @@ def handle_create_circuit(params):
             from_pin = conn.get("from", "")
             to_pin = conn.get("to", "")
             try:
-                # psimapipy 연결 함수 탐색
-                wire_fn = None
-                for fn_name in ("PsimCreateWire", "PsimConnect", "PsimCreateNewWire"):
-                    if hasattr(p, fn_name):
-                        wire_fn = getattr(p, fn_name)
-                        break
+                wire_fn, wire_fn_name, wire_error = _resolve_wire_function(p)
 
                 if wire_fn is not None:
                     # from/to에서 component_id와 pin 분리
@@ -315,11 +350,18 @@ def handle_create_circuit(params):
                         })
                 else:
                     # wire 함수가 없으면 전체 건너뜀 (한 번만 기록)
-                    if not failed_connections or failed_connections[-1].get("reason") != "no wire function found":
+                    if not failed_connections or failed_connections[-1].get("reason") not in (
+                        "no wire function found in psimapipy",
+                        "configured wire function not found in psimapipy",
+                    ):
+                        reason = "no wire function found in psimapipy"
+                        if wire_error == "override_not_found":
+                            reason = "configured wire function not found in psimapipy"
                         failed_connections.append({
                             "from": from_pin,
                             "to": to_pin,
-                            "reason": "no wire function found in psimapipy",
+                            "reason": reason,
+                            "wire_function": wire_fn_name,
                         })
             except Exception as e:
                 failed_connections.append({
@@ -339,6 +381,9 @@ def handle_create_circuit(params):
             "total_connections_requested": len(connections),
             "status": "created",
         }
+        _, resolved_wire_function, _ = _resolve_wire_function(p)
+        if resolved_wire_function:
+            result["wire_function"] = resolved_wire_function
 
         if failed_components:
             result["failed_components"] = failed_components
@@ -365,7 +410,7 @@ def handle_get_project_info(params):
     try:
         # TODO: PSIM API 확인 후 실제 호출로 교체
         info_fn = None
-        for fn_name in ("get_all_elements", "get_elements", "get_components", "get_schematic_info"):
+        for fn_name in _INFO_CANDIDATES:
             if hasattr(psim, fn_name):
                 info_fn = getattr(psim, fn_name)
                 break

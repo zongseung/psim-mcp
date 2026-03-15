@@ -8,6 +8,7 @@ from typing import Any
 
 from psim_mcp.adapters.base import BasePsimAdapter
 from psim_mcp.config import AppConfig
+from psim_mcp.data.component_library import resolve_psim_element_type
 from psim_mcp.services.response import ResponseBuilder
 from psim_mcp.utils.logging import SecurityAuditLogger, hash_input
 from psim_mcp.utils.sanitize import sanitize_for_llm_context, sanitize_path_for_display
@@ -33,6 +34,17 @@ def _nets_to_connections(nets: list[dict]) -> list[dict]:
         for i in range(len(pins) - 1):
             connections.append({"from": pins[i], "to": pins[i + 1]})
     return connections
+
+
+def _enrich_components_for_bridge(components: list[dict]) -> list[dict]:
+    """Attach bridge-facing metadata expected by the real adapter."""
+    enriched: list[dict] = []
+    for component in components:
+        item = dict(component)
+        item_type = str(item.get("type", ""))
+        item["psim_element_type"] = resolve_psim_element_type(item_type)
+        enriched.append(item)
+    return enriched
 
 
 class SimulationService:
@@ -348,10 +360,12 @@ class SimulationService:
                     message=f"회로 검증 실패: {error_messages}",
                 )
 
+            bridge_components = _enrich_components_for_bridge(components)
+
             try:
                 data = await self._adapter.create_circuit(
                     circuit_type=circuit_type,
-                    components=components,
+                    components=bridge_components,
                     connections=connections or [],
                     save_path=save_path,
                     simulation_settings=simulation_settings,

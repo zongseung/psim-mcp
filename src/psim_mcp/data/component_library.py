@@ -34,6 +34,10 @@ class ParamDef:
 #                           pins, psim_element_type}
 # symbol is used for ASCII rendering
 
+# NOTE: ``psim_element_type`` can override the bridge-side PSIM element name.
+# When it is left blank in the source data, we normalize it to the canonical
+# component type below so downstream code never sees an empty string.
+# Windows smoke tests can later replace individual entries with real PSIM names.
 COMPONENTS: dict[str, dict] = {
     # === Switches ===
     "MOSFET": {"category": "switch", "korean": "MOSFET", "symbol": "MOS",
@@ -216,6 +220,11 @@ COMPONENTS: dict[str, dict] = {
                  "psim_element_type": ""},
 }
 
+# Backfill empty element mappings with the canonical component type so callers
+# always have an explicit bridge-facing element name.
+for _type_name, _component in COMPONENTS.items():
+    _component["psim_element_type"] = _component.get("psim_element_type") or _type_name
+
 # ---------------------------------------------------------------------------
 # Category labels
 # ---------------------------------------------------------------------------
@@ -279,3 +288,43 @@ def get_default_params(kind: str) -> dict:
     if comp is None:
         return {}
     return dict(comp.get("default_parameters", {}))
+
+
+def resolve_psim_element_type(kind: str) -> str:
+    """Return the explicit PSIM element type for *kind*.
+
+    Unknown component kinds fall back to the provided *kind* so custom
+    components continue to flow through the bridge unchanged.
+    """
+    comp = get_component(kind)
+    if comp is None:
+        return kind
+    return str(comp.get("psim_element_type") or kind)
+
+
+# ---------------------------------------------------------------------------
+# Pin direction registry (centralized)
+# ---------------------------------------------------------------------------
+# Used by wiring.py, svg_renderer to determine pin placement.
+
+LEFT_PINS: frozenset[str] = frozenset({
+    "positive", "drain", "input", "anode", "pin1", "collector",
+    "primary_in", "phase_a", "terminal1", "line_in", "L1_pin1",
+})
+
+RIGHT_PINS: frozenset[str] = frozenset({
+    "negative", "source", "output", "cathode", "pin2", "emitter",
+    "primary_out", "secondary_in", "secondary_out", "phase_b", "phase_c",
+    "terminal2", "line_out", "neutral_in", "neutral_out", "L1_pin2",
+    "L2_pin1", "L2_pin2", "ground", "gate", "control", "thermal_in",
+    "secondary_top", "secondary_center", "secondary_bottom",
+})
+
+
+def get_pin_side(pin_name: str) -> str:
+    """Return 'left', 'right', or 'center' for a pin name."""
+    if pin_name in LEFT_PINS:
+        return "left"
+    if pin_name in RIGHT_PINS:
+        return "right"
+    return "center"
