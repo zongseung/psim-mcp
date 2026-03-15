@@ -216,6 +216,38 @@ class MockPsimAdapter(BasePsimAdapter):
             "parameter_count": sum(len(c["parameters"]) for c in components),
         }
 
+    async def create_circuit(
+        self,
+        circuit_type: str,
+        components: list[dict],
+        connections: list[dict],
+        save_path: str,
+        simulation_settings: dict | None = None,
+    ) -> dict:
+        """Mock circuit creation — stores the circuit as the current project."""
+        import copy
+
+        self._current_project = {
+            "name": _stem_from_path(save_path),
+            "path": save_path,
+            "components": copy.deepcopy(components),
+        }
+        self._last_simulation = None
+
+        return {
+            "file_path": save_path,
+            "circuit_type": circuit_type,
+            "component_count": len(components),
+            "connection_count": len(connections),
+            "components": components,
+            "connections": connections,
+            "simulation_settings": simulation_settings or {
+                "time_step": 1e-5,
+                "total_time": 0.1,
+            },
+            "status": "created",
+        }
+
 
 # ------------------------------------------------------------------
 # Helpers

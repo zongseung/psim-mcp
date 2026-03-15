@@ -196,3 +196,25 @@ class RealPsimAdapter(BasePsimAdapter):
     async def get_project_info(self) -> dict:
         """Query project info via the bridge."""
         return await self._call_bridge("get_project_info")
+
+    async def create_circuit(
+        self,
+        circuit_type: str,
+        components: list[dict],
+        connections: list[dict],
+        save_path: str,
+        simulation_settings: dict | None = None,
+    ) -> dict:
+        """Create a circuit schematic via the bridge (uses psimapipy)."""
+        result = await self._call_bridge(
+            "create_circuit",
+            {
+                "circuit_type": circuit_type,
+                "components": components,
+                "connections": connections,
+                "save_path": save_path,
+                "simulation_settings": simulation_settings,
+            },
+        )
+        self._project_open = True
+        return result

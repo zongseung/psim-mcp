@@ -89,3 +89,25 @@ class BasePsimAdapter(ABC):
         Raises:
             RuntimeError: If no project is open.
         """
+
+    @abstractmethod
+    async def create_circuit(
+        self,
+        circuit_type: str,
+        components: list[dict],
+        connections: list[dict],
+        save_path: str,
+        simulation_settings: dict | None = None,
+    ) -> dict:
+        """Create a new PSIM circuit schematic programmatically.
+
+        Args:
+            circuit_type: Type of circuit (e.g. ``"buck"``, ``"boost"``, ``"custom"``).
+            components: List of component dicts with id, type, parameters, and position.
+            connections: List of connection dicts specifying wiring between components.
+            save_path: Filesystem path where the ``.psimsch`` file will be saved.
+            simulation_settings: Optional dict with time_step, total_time, etc.
+
+        Returns:
+            Dict with created file path, component count, and connection count.
+        """

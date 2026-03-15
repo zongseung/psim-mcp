@@ -47,12 +47,13 @@ def create_service(config: AppConfig) -> SimulationService:
 
 def register_all_tools(mcp: FastMCP, service: SimulationService) -> None:
     """Register every tool module on *mcp*."""
-    from psim_mcp.tools import parameter, project, results, simulation
+    from psim_mcp.tools import circuit, parameter, project, results, simulation
 
     project.register_tools(mcp, service)
     parameter.register_tools(mcp, service)
     simulation.register_tools(mcp, service)
     results.register_tools(mcp, service)
+    circuit.register_tools(mcp, service)
 
 
 def create_app(config: AppConfig | None = None) -> FastMCP:

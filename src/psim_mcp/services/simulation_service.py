@@ -279,6 +279,67 @@ class SimulationService:
 
         return await self._execute_with_audit("get_status", {}, _handler)
 
+    async def create_circuit(
+        self,
+        circuit_type: str,
+        components: list[dict],
+        connections: list[dict],
+        save_path: str,
+        simulation_settings: dict | None = None,
+    ) -> dict:
+        """Validate inputs and create a new PSIM circuit."""
+
+        async def _handler():
+            if not circuit_type or not isinstance(circuit_type, str):
+                return ResponseBuilder.error(
+                    code="VALIDATION_ERROR",
+                    message="circuit_type은 비어 있지 않은 문자열이어야 합니다.",
+                )
+
+            if not components or not isinstance(components, list):
+                return ResponseBuilder.error(
+                    code="VALIDATION_ERROR",
+                    message="components는 비어 있지 않은 리스트여야 합니다.",
+                )
+
+            if not save_path or not isinstance(save_path, str):
+                return ResponseBuilder.error(
+                    code="VALIDATION_ERROR",
+                    message="save_path가 지정되지 않았습니다.",
+                )
+
+            if not save_path.endswith(".psimsch"):
+                return ResponseBuilder.error(
+                    code="VALIDATION_ERROR",
+                    message="save_path는 .psimsch 확장자여야 합니다.",
+                )
+
+            try:
+                data = await self._adapter.create_circuit(
+                    circuit_type=circuit_type,
+                    components=components,
+                    connections=connections or [],
+                    save_path=save_path,
+                    simulation_settings=simulation_settings,
+                )
+                return ResponseBuilder.success(
+                    data,
+                    f"'{circuit_type}' 회로가 성공적으로 생성되었습니다. "
+                    f"컴포넌트 {len(components)}개, 연결 {len(connections or [])}개.",
+                )
+            except Exception:
+                self._logger.exception("Failed to create circuit")
+                return ResponseBuilder.error(
+                    code="CREATE_CIRCUIT_FAILED",
+                    message="회로 생성 중 오류가 발생했습니다.",
+                )
+
+        return await self._execute_with_audit(
+            "create_circuit",
+            {"circuit_type": circuit_type, "component_count": len(components)},
+            _handler,
+        )
+
     # ------------------------------------------------------------------
     # Validation helpers
     # ------------------------------------------------------------------

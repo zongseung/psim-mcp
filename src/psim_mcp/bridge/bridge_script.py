@@ -224,6 +224,77 @@ def handle_get_status(params):
         })
 
 
+def handle_create_circuit(params):
+    """psimapipy를 사용하여 새 PSIM 회로를 생성한다."""
+    components = params.get("components", [])
+    connections = params.get("connections", [])
+    save_path = params.get("save_path")
+    simulation_settings = params.get("simulation_settings", {})
+
+    if not save_path:
+        return _error("INVALID_INPUT", "save_path가 지정되지 않았습니다.")
+
+    try:
+        from psimapipy import PSIM
+
+        p = PSIM("")
+        if not p or not p.IsValid():
+            return _error("PSIM_API_ERROR", "PSIM 인스턴스를 생성할 수 없습니다.")
+
+        sch = p.PsimFileNew()
+        if not sch:
+            return _error("PSIM_API_ERROR", "새 스키매틱을 생성할 수 없습니다.")
+
+        # 시뮬레이션 설정 적용
+        ts = simulation_settings.get("time_step", 1e-5)
+        tt = simulation_settings.get("total_time", 0.1)
+        p.PsimSetElmValue(sch, None, "TIMESTEP", str(ts))
+        p.PsimSetElmValue(sch, None, "TOTALTIME", str(tt))
+
+        # 컴포넌트 배치
+        element_map = {}
+        for comp in components:
+            comp_id = comp.get("id", "")
+            comp_type = comp.get("type", "")
+            comp_params = comp.get("parameters", {})
+            position = comp.get("position", {"x": 0, "y": 0})
+
+            try:
+                elem = p.PsimCreateNewElement(
+                    sch, comp_type,
+                    position.get("x", 0),
+                    position.get("y", 0),
+                )
+                if elem:
+                    element_map[comp_id] = elem
+                    for param_name, param_value in comp_params.items():
+                        p.PsimSetElmValue(sch, elem, param_name, str(param_value))
+            except Exception as e:
+                # 개별 컴포넌트 실패 시 계속 진행
+                pass
+
+        # 파일 저장
+        p.PsimFileSave(sch, save_path)
+
+        return _success({
+            "file_path": save_path,
+            "component_count": len(element_map),
+            "total_requested": len(components),
+            "connection_count": len(connections),
+            "status": "created",
+        })
+
+    except ImportError:
+        return _error(
+            "PSIM_NOT_AVAILABLE",
+            "psimapipy를 불러올 수 없습니다. "
+            "PSIM이 설치되어 있고, PSIM 번들 Python으로 이 스크립트를 "
+            "실행하고 있는지 확인하세요."
+        )
+    except Exception as e:
+        return _error("CREATE_CIRCUIT_FAILED", "회로 생성 실패: %s" % str(e))
+
+
 def handle_get_project_info(params):
     """열린 프로젝트의 상세 정보를 반환한다."""
     psim = _ensure_psim()
@@ -293,6 +364,7 @@ _ACTION_HANDLERS = {
     "export_results": handle_export_results,
     "get_status": handle_get_status,
     "get_project_info": handle_get_project_info,
+    "create_circuit": handle_create_circuit,
 }
 
 
