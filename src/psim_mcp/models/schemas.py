@@ -15,23 +15,23 @@ from pydantic import BaseModel, Field, model_validator
 class OpenProjectRequest(BaseModel):
     """Open a PSIM project file (.psimsch)."""
 
-    path: str = Field(..., min_length=1, description="Absolute path to the PSIM project file.")
+    path: str = Field(..., min_length=1, max_length=4096, description="Absolute path to the PSIM project file.")
 
 
 class SetParameterRequest(BaseModel):
     """Set a single component parameter."""
 
-    component_id: str = Field(..., min_length=1, description="Target component identifier.")
-    parameter_name: str = Field(..., min_length=1, description="Parameter name to set.")
+    component_id: str = Field(..., min_length=1, max_length=64, description="Target component identifier.")
+    parameter_name: str = Field(..., min_length=1, max_length=64, description="Parameter name to set.")
     value: int | float | str = Field(..., description="New parameter value.")
 
 
 class RunSimulationRequest(BaseModel):
     """Run a transient simulation."""
 
-    time_step: float | None = Field(None, description="Simulation time step (seconds).")
-    total_time: float | None = Field(None, description="Total simulation duration (seconds).")
-    timeout: int | None = Field(None, description="Max wait time in seconds (overrides config).")
+    time_step: float | None = Field(default=None, gt=0, le=3600, description="Simulation time step (seconds).")
+    total_time: float | None = Field(default=None, gt=0, le=3600, description="Total simulation duration (seconds).")
+    timeout: int | None = Field(default=None, gt=0, le=3600, description="Max wait time in seconds (overrides config).")
 
 
 class ExportResultsRequest(BaseModel):
@@ -39,14 +39,14 @@ class ExportResultsRequest(BaseModel):
 
     output_dir: str | None = Field(None, description="Directory for exported files.")
     format: Literal["json", "csv"] = Field("json", description="Output format.")
-    signals: list[str] | None = Field(None, description="Signal names to export; None = all.")
+    signals: list[str] | None = Field(None, max_length=100, description="Signal names to export; None = all.")
 
 
 class SweepParameterRequest(BaseModel):
     """Run a parameter sweep across a range of values."""
 
-    component_id: str = Field(..., min_length=1, description="Target component identifier.")
-    parameter_name: str = Field(..., min_length=1, description="Parameter to sweep.")
+    component_id: str = Field(..., min_length=1, max_length=64, description="Target component identifier.")
+    parameter_name: str = Field(..., min_length=1, max_length=64, description="Parameter to sweep.")
     start: float = Field(..., description="Sweep range start value.")
     end: float = Field(..., description="Sweep range end value.")
     step: float = Field(..., gt=0, description="Sweep step size (must be > 0).")

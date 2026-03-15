@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -96,7 +97,89 @@ def setup_logging(log_dir: Path, log_level: str = "INFO") -> logging.Logger:
     bridge_logger = logging.getLogger("psim_mcp.bridge")
     bridge_logger.addHandler(psim_handler)
 
+    # --- security.log (security audit events) ----------------------------
+    security_logger = logging.getLogger("psim_mcp.security")
+    security_handler = logging.FileHandler(log_dir / "security.log", encoding="utf-8")
+    security_handler.setLevel(logging.DEBUG)
+    security_handler.setFormatter(
+        logging.Formatter(_STANDARD_FORMAT, datefmt=_STANDARD_DATEFMT),
+    )
+    security_logger.addHandler(security_handler)
+
     return root_logger
+
+
+# ---------------------------------------------------------------------------
+# Security audit utilities
+# ---------------------------------------------------------------------------
+
+
+def hash_input(value: str) -> str:
+    """Hash sensitive input for audit logging."""
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
+class SecurityAuditLogger:
+    """Logger for security-relevant events."""
+
+    def __init__(self, logger_name: str = "psim_mcp.security"):
+        self._logger = logging.getLogger(logger_name)
+
+    def log_tool_call(
+        self,
+        tool_name: str,
+        input_summary: dict,
+        duration_ms: float,
+        success: bool,
+    ):
+        """Log a tool call with timing and hashed inputs."""
+        self._logger.info(
+            "tool_call | tool=%s | duration_ms=%.1f | success=%s | input_hash=%s",
+            tool_name,
+            duration_ms,
+            success,
+            hash_input(str(input_summary)),
+        )
+
+    def log_path_blocked(self, path: str, reason: str):
+        """Log a blocked path access attempt."""
+        self._logger.warning(
+            "path_blocked | path_hash=%s | reason=%s",
+            hash_input(path),
+            reason,
+        )
+
+    def log_invalid_input(self, tool_name: str, field: str, reason: str):
+        """Log an invalid input attempt."""
+        self._logger.warning(
+            "invalid_input | tool=%s | field=%s | reason=%s",
+            tool_name,
+            field,
+            reason,
+        )
+
+    def log_subprocess_event(
+        self,
+        action: str,
+        duration_ms: float,
+        success: bool,
+        error: str | None = None,
+    ):
+        """Log subprocess execution events."""
+        msg = "subprocess | action=%s | duration_ms=%.1f | success=%s"
+        args: list[object] = [action, duration_ms, success]
+        if error:
+            msg += " | error=%s"
+            args.append(error)
+        self._logger.info(msg, *args)
+
+    def log_rate_limit(self, tool_name: str, reason: str):
+        """Log rate limiting events."""
+        self._logger.warning(
+            "rate_limit | tool=%s | reason=%s",
+            tool_name,
+            reason,
+        )
 
 
 def get_logger(name: str) -> logging.Logger:

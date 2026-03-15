@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import logging
-
-logger = logging.getLogger("psim_mcp.tools.project")
+from psim_mcp.tools import tool_handler
 
 
 def _get_service():
@@ -30,33 +27,17 @@ def register_tools(mcp, service=None):
     @mcp.tool(
         description="PSIM 프로젝트 파일(.psimsch)을 열고 프로젝트 정보를 반환합니다.",
     )
+    @tool_handler("open_project")
     async def open_project(path: str) -> str:
         """Open a PSIM project file and return project metadata."""
         svc = service or _get_service()
-        try:
-            result = await svc.open_project(path)
-            logger.info("Opened project: %s", path)
-            return json.dumps(result, ensure_ascii=False)
-        except Exception as exc:
-            logger.error("Failed to open project '%s': %s", path, exc)
-            return json.dumps(
-                {"success": False, "error": str(exc)},
-                ensure_ascii=False,
-            )
+        return await svc.open_project(path)
 
     @mcp.tool(
         description="열린 프로젝트의 상세 구조 정보를 반환합니다.",
     )
+    @tool_handler("get_project_info")
     async def get_project_info() -> str:
         """Return detailed structural information about the open project."""
         svc = service or _get_service()
-        try:
-            result = await svc.adapter.get_project_info()
-            logger.info("Retrieved project info")
-            return json.dumps(result, ensure_ascii=False)
-        except Exception as exc:
-            logger.error("Failed to get project info: %s", exc)
-            return json.dumps(
-                {"success": False, "error": str(exc)},
-                ensure_ascii=False,
-            )
+        return await svc.get_project_info()

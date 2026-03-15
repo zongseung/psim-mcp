@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -65,9 +66,13 @@ class MockPsimAdapter(BasePsimAdapter):
     # BasePsimAdapter interface
     # ------------------------------------------------------------------
 
+    @property
+    def is_project_open(self) -> bool:
+        return self._current_project is not None
+
     async def open_project(self, path: str) -> dict:
         """Store a dummy project with pre-defined components."""
-        components = [dict(c) for c in _DEFAULT_COMPONENTS]  # shallow copy
+        components = copy.deepcopy(_DEFAULT_COMPONENTS)
         param_count = sum(len(c["parameters"]) for c in components)
 
         self._current_project = {

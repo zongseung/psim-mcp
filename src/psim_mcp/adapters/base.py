@@ -77,6 +77,11 @@ class BasePsimAdapter(ABC):
     async def get_status(self) -> dict:
         """Return the current adapter / PSIM status."""
 
+    @property
+    @abstractmethod
+    def is_project_open(self) -> bool:
+        """Return True if a project is currently loaded."""
+
     @abstractmethod
     async def get_project_info(self) -> dict:
         """Return detailed information about the currently open project.

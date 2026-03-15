@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import logging
 import math
 
-logger = logging.getLogger("psim_mcp.tools.parameter")
+from psim_mcp.tools import tool_handler
 
 
 def _get_service():
@@ -29,6 +27,7 @@ def register_tools(mcp, service=None):
     @mcp.tool(
         description="열린 프로젝트의 컴포넌트 파라미터를 변경합니다.",
     )
+    @tool_handler("set_parameter")
     async def set_parameter(
         component_id: str,
         parameter_name: str,
@@ -36,30 +35,12 @@ def register_tools(mcp, service=None):
     ) -> str:
         """Set a single component parameter and return the change summary."""
         svc = service or _get_service()
-        try:
-            result = await svc.set_parameter(component_id, parameter_name, value)
-            logger.info(
-                "Set %s.%s = %s",
-                component_id,
-                parameter_name,
-                value,
-            )
-            return json.dumps(result, ensure_ascii=False)
-        except Exception as exc:
-            logger.error(
-                "Failed to set parameter %s.%s: %s",
-                component_id,
-                parameter_name,
-                exc,
-            )
-            return json.dumps(
-                {"success": False, "error": str(exc)},
-                ensure_ascii=False,
-            )
+        return await svc.set_parameter(component_id, parameter_name, value)
 
     @mcp.tool(
         description="파라미터를 범위 내에서 변경하며 반복 시뮬레이션을 실행합니다.",
     )
+    @tool_handler("sweep_parameter")
     async def sweep_parameter(
         component_id: str,
         parameter_name: str,
@@ -72,77 +53,59 @@ def register_tools(mcp, service=None):
         svc = service or _get_service()
         cfg = _get_config()
 
-        try:
-            # --- Validate step size and count --------------------------------
-            if step <= 0:
-                return json.dumps(
-                    {"success": False, "error": "step must be > 0"},
-                    ensure_ascii=False,
-                )
+        # --- Validate step size and count --------------------------------
+        if step <= 0:
+            return {
+                "success": False,
+                "error": {"code": "INVALID_INPUT", "message": "step은 0보다 커야 합니다.", "suggestion": None},
+            }
 
-            num_steps = math.ceil((end - start) / step) + 1
-            if num_steps > cfg.max_sweep_steps:
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": (
-                            f"Sweep would require {num_steps} steps, "
-                            f"but max_sweep_steps is {cfg.max_sweep_steps}."
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
+        num_steps = math.ceil((end - start) / step) + 1
+        if num_steps > cfg.max_sweep_steps:
+            return {
+                "success": False,
+                "error": {
+                    "code": "SWEEP_LIMIT_EXCEEDED",
+                    "message": f"스윕에 {num_steps}단계가 필요하지만 최대 허용 단계는 {cfg.max_sweep_steps}입니다.",
+                    "suggestion": None,
+                },
+            }
 
-            # --- Sweep loop --------------------------------------------------
-            sweep_results: list[dict] = []
-            current = start
-            while current <= end + 1e-12:  # small epsilon for float rounding
-                # Set parameter
-                await svc.set_parameter(component_id, parameter_name, current)
+        # --- Sweep loop --------------------------------------------------
+        sweep_results: list[dict] = []
+        current = start
+        while current <= end + 1e-12:  # small epsilon for float rounding
+            # Set parameter
+            await svc.set_parameter(component_id, parameter_name, current)
 
-                # Run simulation
-                sim_result = await svc.run_simulation()
+            # Run simulation
+            sim_result = await svc.run_simulation()
 
-                step_data: dict = {
-                    "value": round(current, 10),
-                    "simulation": sim_result,
+            step_data: dict = {
+                "value": round(current, 10),
+                "simulation": sim_result,
+            }
+
+            # Collect specific metrics if requested
+            if metrics and isinstance(sim_result, dict):
+                # Service returns {success, data: {summary: {...}}}
+                data = sim_result.get("data", {}) or {}
+                summary = data.get("summary", {}) or {}
+                step_data["metrics"] = {
+                    m: summary.get(m) for m in metrics
                 }
 
-                # Collect specific metrics if requested
-                if metrics and isinstance(sim_result, dict):
-                    summary = sim_result.get("summary", {})
-                    step_data["metrics"] = {
-                        m: summary.get(m) for m in metrics
-                    }
+            sweep_results.append(step_data)
+            current += step
 
-                sweep_results.append(step_data)
-                current += step
-
-            logger.info(
-                "Sweep %s.%s [%s -> %s, step=%s]: %d steps completed",
-                component_id,
-                parameter_name,
-                start,
-                end,
-                step,
-                len(sweep_results),
-            )
-
-            return json.dumps(
-                {
-                    "success": True,
-                    "component_id": component_id,
-                    "parameter_name": parameter_name,
-                    "range": {"start": start, "end": end, "step": step},
-                    "total_steps": len(sweep_results),
-                    "results": sweep_results,
-                },
-                ensure_ascii=False,
-            )
-
-        except Exception as exc:
-            logger.error("Sweep failed for %s.%s: %s", component_id, parameter_name, exc)
-            return json.dumps(
-                {"success": False, "error": str(exc)},
-                ensure_ascii=False,
-            )
+        return {
+            "success": True,
+            "data": {
+                "component_id": component_id,
+                "parameter_name": parameter_name,
+                "range": {"start": start, "end": end, "step": step},
+                "total_steps": len(sweep_results),
+                "results": sweep_results,
+            },
+            "message": f"파라미터 스윕 완료: {len(sweep_results)}단계 실행.",
+        }

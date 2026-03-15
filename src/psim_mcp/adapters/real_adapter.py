@@ -5,10 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from psim_mcp.adapters.base import BasePsimAdapter
 from psim_mcp.config import AppConfig
+
+# Bridge script lives inside this package
+_BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent / "bridge" / "bridge_script.py")
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +28,51 @@ class RealPsimAdapter(BasePsimAdapter):
     def __init__(self, config: AppConfig) -> None:
         self._config = config
         self._python_exe = str(config.psim_python_exe) if config.psim_python_exe else "python"
-        self._bridge_script = str(config.psim_path / "bridge_script.py") if config.psim_path else "bridge_script.py"
+        self._bridge_script = _BRIDGE_SCRIPT
         self._timeout = config.simulation_timeout
+        self._psim_path = config.psim_path
+        self._project_open = False
+
+        # Startup validation: bridge script must exist
+        if not Path(self._bridge_script).is_file():
+            raise FileNotFoundError(
+                f"Bridge script not found: {self._bridge_script}. "
+                "The psim-mcp package may be corrupted or improperly installed."
+            )
+
+    @property
+    def is_project_open(self) -> bool:
+        return self._project_open
+
+    # ------------------------------------------------------------------
+    # Environment sanitisation
+    # ------------------------------------------------------------------
+
+    def _get_sanitized_env(self) -> dict[str, str]:
+        """Create a minimal, sanitized environment for the PSIM subprocess.
+
+        Only passes the minimum required environment variables to prevent
+        information leakage and reduce attack surface.
+        """
+        env: dict[str, str] = {}
+        # Only pass essential variables
+        essential_vars = [
+            "PATH",           # Required for subprocess execution
+            "SystemRoot",     # Required on Windows
+            "TEMP", "TMP",    # Temp directories
+            "HOME", "USERPROFILE",  # Home directory
+            "PSIM_PATH",      # PSIM installation
+        ]
+        for var in essential_vars:
+            val = os.environ.get(var)
+            if val is not None:
+                env[var] = val
+
+        # Add PSIM-specific paths if configured
+        if self._psim_path:
+            env["PSIM_PATH"] = str(self._psim_path)
+
+        return env
 
     # ------------------------------------------------------------------
     # Internal bridge call
@@ -56,6 +104,7 @@ class RealPsimAdapter(BasePsimAdapter):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._get_sanitized_env(),
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(input=payload.encode()),
@@ -73,11 +122,15 @@ class RealPsimAdapter(BasePsimAdapter):
                 "Ensure psim_python_exe is set correctly in the configuration."
             ) from exc
 
+        # Always log stderr (but never return it to the user)
+        stderr_text = stderr.decode(errors="replace").strip()
+        if stderr_text:
+            logger.debug("Bridge stderr output: %s", stderr_text)
+
         if proc.returncode != 0:
-            stderr_text = stderr.decode(errors="replace").strip()
             logger.error("Bridge returned non-zero exit code %d: %s", proc.returncode, stderr_text)
             raise RuntimeError(
-                f"PSIM bridge exited with code {proc.returncode}: {stderr_text}"
+                f"PSIM bridge exited with code {proc.returncode}"
             )
 
         try:
@@ -96,7 +149,9 @@ class RealPsimAdapter(BasePsimAdapter):
 
     async def open_project(self, path: str) -> dict:
         """Open a PSIM project via the bridge."""
-        return await self._call_bridge("open_project", {"path": path})
+        result = await self._call_bridge("open_project", {"path": path})
+        self._project_open = True
+        return result
 
     async def set_parameter(
         self,
