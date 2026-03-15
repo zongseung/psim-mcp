@@ -1,70 +1,89 @@
 """Wire plan generation for PSIM bridge.
 
-Converts net-based circuit representation to concrete wire segments
-that the PSIM bridge can execute. This module handles:
-- Net -> wire segment conversion
-- Manhattan routing coordinate calculation
-- Pin position resolution
-
-Note: Actual PSIM API calls are in bridge_script.py.
-      This module only prepares the wire plan.
+Converts net-based circuit representation to concrete wire segments.
 """
-
 from __future__ import annotations
+
+# Pin position offsets relative to component position.
+# For horizontal layout: left pins at (0, 15), right pins at (80, 15)
+_TOTAL_W = 80
+_MID_Y = 15
+
+# Which pin names are on the left vs right of a horizontal component
+_LEFT_PINS = {"positive", "drain", "input", "anode", "pin1", "collector",
+              "primary_in", "phase_a", "terminal1", "line_in", "L1_pin1"}
+_RIGHT_PINS = {"negative", "source", "output", "cathode", "pin2", "emitter",
+               "primary_out", "secondary_in", "secondary_out", "phase_b", "phase_c",
+               "terminal2", "line_out", "neutral_in", "neutral_out", "L1_pin2", "L2_pin1", "L2_pin2",
+               "ground", "gate", "control", "thermal_in", "secondary_top", "secondary_center", "secondary_bottom"}
 
 
 def nets_to_wire_plan(nets: list[dict], component_positions: dict) -> list[dict]:
     """Convert net definitions to executable wire segments.
 
     Args:
-        nets: List of net dicts with 'name' and 'pins' keys.
-        component_positions: Dict mapping component_id to position dict.
+        nets: List of {"name": str, "pins": [str]} dicts.
+        component_positions: {"V1": {"x": 100, "y": 200}, ...}
 
     Returns:
-        List of wire segment dicts:
-        [{"net": "VIN", "from": "V1.positive", "to": "SW1.drain",
-          "coords": {"x1": ..., "y1": ..., "x2": ..., "y2": ...}}]
-
-    Note:
-        Actual coordinate calculation depends on PSIM element placement,
-        which can only be verified on Windows. This function provides
-        the structural conversion; coordinates may need adjustment.
+        List of wire segment dicts with coordinates.
     """
     wire_plan = []
     for net in nets:
         pins = net.get("pins", [])
         name = net.get("name", "unnamed")
-        # Chain connection: pin[0]->pin[1], pin[1]->pin[2], ...
+        # Chain: connect pin[0]→pin[1], pin[1]→pin[2], ...
         for i in range(len(pins) - 1):
+            from_pin = pins[i]
+            to_pin = pins[i + 1]
+            from_pos = resolve_pin_position(from_pin, component_positions)
+            to_pos = resolve_pin_position(to_pin, component_positions)
             wire_plan.append({
                 "net": name,
-                "from": pins[i],
-                "to": pins[i + 1],
-                "coords": None,  # To be calculated with actual PSIM positions
+                "from": from_pin,
+                "to": to_pin,
+                "from_pos": from_pos,
+                "to_pos": to_pos,
             })
     return wire_plan
 
 
-def resolve_pin_position(component_id: str, pin_name: str,
-                          component_positions: dict) -> tuple[int, int] | None:
-    """Resolve the absolute position of a component pin.
+def resolve_pin_position(pin_ref: str, component_positions: dict) -> tuple[int, int] | None:
+    """Resolve 'V1.positive' to absolute (x, y) coordinates.
 
     Args:
-        component_id: ID of the component (e.g., "V1").
-        pin_name: Name of the pin (e.g., "positive").
-        component_positions: Dict mapping component_id to {"x": int, "y": int}.
-
-    Returns:
-        (x, y) tuple or None if component not found.
-
-    Note:
-        Pin offsets relative to component position depend on PSIM's
-        internal element geometry. These offsets must be determined
-        from "Save as Python Code" analysis on Windows.
+        pin_ref: "ComponentID.pin_name" format.
+        component_positions: {"V1": {"x": 100, "y": 200}, ...}
     """
-    pos = component_positions.get(component_id)
+    parts = pin_ref.split(".", 1)
+    if len(parts) != 2:
+        return None
+    comp_id, pin_name = parts
+    pos = component_positions.get(comp_id)
     if pos is None:
         return None
-    # Placeholder: return component center position
-    # Real offsets need PSIM geometry data from Windows testing
-    return (pos.get("x", 0), pos.get("y", 0))
+
+    cx = pos.get("x", 0)
+    cy = pos.get("y", 0)
+
+    if pin_name in _LEFT_PINS:
+        return (cx, cy + _MID_Y)
+    elif pin_name in _RIGHT_PINS:
+        return (cx + _TOTAL_W, cy + _MID_Y)
+    else:
+        # Unknown pin — place at component center
+        return (cx + _TOTAL_W // 2, cy + _MID_Y)
+
+
+def nets_to_connections(nets: list[dict]) -> list[dict]:
+    """Convert nets to legacy point-to-point connections format.
+
+    This is used for backward compatibility with adapters that
+    still expect {"from": ..., "to": ...} connections.
+    """
+    connections = []
+    for net in nets:
+        pins = net.get("pins", [])
+        for i in range(len(pins) - 1):
+            connections.append({"from": pins[i], "to": pins[i + 1]})
+    return connections

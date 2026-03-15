@@ -199,6 +199,7 @@ def register_tools(mcp, service=None):
         """
         store = get_preview_store()
         resolved_nets: list[dict] = []
+        circuit_spec: dict | None = None
 
         # Try generator first
         _generator_resolved = False
@@ -213,6 +214,13 @@ def register_tools(mcp, service=None):
             if not missing:
                 try:
                     gen_result = generator.generate(req)
+                    # Build spec dict for downstream
+                    circuit_spec = {
+                        "topology": circuit_type,
+                        "components": gen_result["components"],
+                        "nets": gen_result.get("nets", []),
+                        "simulation": gen_result.get("simulation", {}),
+                    }
                     resolved_components = gen_result["components"]
                     resolved_connections = []  # generator uses nets
                     resolved_nets = gen_result.get("nets", [])
@@ -314,6 +322,7 @@ def register_tools(mcp, service=None):
             "circuit_type": circuit_type,
             "components": resolved_components,
             "connections": resolved_connections,
+            "nets": resolved_nets,
             "simulation_settings": simulation_settings,
             "svg_path": svg_path,
         })
@@ -384,9 +393,15 @@ def register_tools(mcp, service=None):
             }
 
         components = copy.deepcopy(preview["components"])
-        connections = preview["connections"]
+        connections = preview.get("connections", [])
+        nets = preview.get("nets", [])
         circuit_type = preview["circuit_type"]
         simulation_settings = preview["simulation_settings"]
+
+        # If nets are available, convert them to connections for the adapter
+        if nets:
+            from psim_mcp.bridge.wiring import nets_to_connections
+            connections = nets_to_connections(nets)
 
         # Apply modifications if provided
         if modifications:
@@ -424,6 +439,7 @@ def register_tools(mcp, service=None):
     ) -> str:
         """Create a new PSIM circuit schematic directly (without preview)."""
         svc = service or _get_service()
+        circuit_spec: dict | None = None
 
         # Try generator first
         _generator_resolved = False
@@ -438,6 +454,13 @@ def register_tools(mcp, service=None):
             if not missing:
                 try:
                     gen_result = generator.generate(req)
+                    # Build spec dict for downstream
+                    circuit_spec = {
+                        "topology": circuit_type,
+                        "components": gen_result["components"],
+                        "nets": gen_result.get("nets", []),
+                        "simulation": gen_result.get("simulation", {}),
+                    }
                     components = gen_result["components"]
                     connections = []  # generator uses nets
                     _generator_resolved = True
@@ -462,6 +485,7 @@ def register_tools(mcp, service=None):
             connections=connections,
             save_path=save_path,
             simulation_settings=simulation_settings,
+            circuit_spec=circuit_spec if circuit_spec else None,
         )
 
     @mcp.tool(

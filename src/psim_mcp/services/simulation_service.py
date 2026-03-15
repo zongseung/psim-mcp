@@ -25,6 +25,16 @@ from psim_mcp.services.validators import (
 )
 
 
+def _nets_to_connections(nets: list[dict]) -> list[dict]:
+    """Convert net-based representation to point-to-point connections."""
+    connections = []
+    for net in nets:
+        pins = net.get("pins", [])
+        for i in range(len(pins) - 1):
+            connections.append({"from": pins[i], "to": pins[i + 1]})
+    return connections
+
+
 class SimulationService:
     """High-level service that mediates between the tool layer and adapters.
 
@@ -287,15 +297,25 @@ class SimulationService:
         connections: list[dict],
         save_path: str,
         simulation_settings: dict | None = None,
+        circuit_spec: dict | None = None,
     ) -> dict:
         """Validate inputs and create a new PSIM circuit."""
 
         async def _handler():
+            nonlocal components, connections
+
             if not circuit_type or not isinstance(circuit_type, str):
                 return ResponseBuilder.error(
                     code="VALIDATION_ERROR",
                     message="circuit_type은 비어 있지 않은 문자열이어야 합니다.",
                 )
+
+            # When circuit_spec is provided, extract components and nets from it
+            if circuit_spec is not None:
+                components = circuit_spec.get("components", components)
+                nets = circuit_spec.get("nets", [])
+                if nets:
+                    connections = _nets_to_connections(nets)
 
             if not components or not isinstance(components, list):
                 return ResponseBuilder.error(
@@ -316,7 +336,10 @@ class SimulationService:
                 )
 
             # Validate circuit spec (blocking — reject invalid circuits)
-            validation_input = {"components": components, "nets": []}
+            validation_input = {
+                "components": components,
+                "nets": circuit_spec.get("nets", []) if circuit_spec else [],
+            }
             validation = validate_circuit_spec(validation_input)
             if not validation.is_valid:
                 error_messages = "; ".join(e.message for e in validation.errors)

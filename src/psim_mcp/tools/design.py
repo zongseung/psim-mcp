@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
+import platform
+import subprocess
+import tempfile
 
 from psim_mcp.data.circuit_templates import TEMPLATES
+from psim_mcp.generators import get_generator
 from psim_mcp.parsers import parse_circuit_intent
+from psim_mcp.services.preview_store import get_preview_store
 from psim_mcp.tools import tool_handler
+from psim_mcp.tools.circuit import _TEMPLATES, _apply_specs, _SPEC_MAP
+from psim_mcp.utils.ascii_renderer import render_circuit_ascii
+from psim_mcp.utils.svg_renderer import render_circuit_svg
 
 
 def register_tools(mcp, service=None):
@@ -36,49 +46,93 @@ def register_tools(mcp, service=None):
         confidence = intent["confidence"]
         use_case = intent["use_case"]
 
-        # Case 1: High confidence — topology found, all specs present
-        if topology and confidence == "high":
-            # Try to generate a preview automatically
+        # Case 1: High/medium confidence — auto-generate preview
+        if topology and confidence in ("high", "medium"):
+            # Try generator first
+            generator = None
             try:
-                from psim_mcp.generators import get_generator
-
-                gen = get_generator(topology)
-                gen_result = gen.generate(specs)
-                return {
-                    "success": True,
-                    "data": {
-                        "action": "auto_preview",
-                        "topology": topology,
-                        "specs": specs,
-                        "design": gen_result.get("metadata", {}).get("design", {}),
-                        "component_count": len(gen_result.get("components", [])),
-                        "description": gen_result.get("metadata", {}).get("description", ""),
-                    },
-                    "message": (
-                        f"'{topology}' 회로가 자동 설계되었습니다.\n"
-                        f"스펙: {json.dumps(specs, ensure_ascii=False)}\n"
-                        f"preview_circuit(circuit_type='{topology}', specs={json.dumps(specs, ensure_ascii=False)})로 "
-                        f"미리보기를 확인하세요."
-                    ),
-                }
-            except (KeyError, ValueError):
-                # No generator available; fall back to template suggestion
+                generator = get_generator(topology)
+            except (KeyError, Exception):
                 pass
 
-            # Fall back to template
-            if topology in TEMPLATES:
+            resolved_components = None
+            resolved_connections = []
+            resolved_nets = []
+
+            if generator and not generator.missing_fields(specs):
+                try:
+                    gen_result = generator.generate(specs)
+                    resolved_components = gen_result["components"]
+                    resolved_nets = gen_result.get("nets", [])
+                except Exception:
+                    pass
+
+            # Fallback to template
+            if resolved_components is None:
+                template = _TEMPLATES.get(topology)
+                if template:
+                    resolved_components = copy.deepcopy(template["components"])
+                    resolved_connections = copy.deepcopy(template["connections"])
+                    if specs:
+                        _apply_specs(resolved_components, specs)
+
+            if resolved_components:
+                # Render ASCII
+                ascii_diagram = render_circuit_ascii(
+                    topology, resolved_components, resolved_connections
+                )
+
+                # Render SVG
+                svg_content = render_circuit_svg(
+                    topology, resolved_components, resolved_connections
+                )
+                svg_dir = tempfile.gettempdir()
+                svg_path = os.path.join(svg_dir, f"psim_preview_{topology}.svg")
+                with open(svg_path, "w", encoding="utf-8") as f:
+                    f.write(svg_content)
+
+                # Auto-open SVG
+                try:
+                    system = platform.system()
+                    if system == "Darwin":
+                        subprocess.Popen(
+                            ["open", svg_path],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    elif system == "Windows":
+                        os.startfile(svg_path)
+                except Exception:
+                    pass
+
+                # Save to preview store
+                store = get_preview_store()
+                token = store.save({
+                    "circuit_type": topology,
+                    "components": resolved_components,
+                    "connections": resolved_connections,
+                    "nets": resolved_nets,
+                    "simulation_settings": None,
+                    "svg_path": svg_path,
+                })
+
                 return {
                     "success": True,
                     "data": {
-                        "action": "suggest_template",
-                        "topology": topology,
-                        "specs": specs,
-                        "template_available": True,
+                        "ascii_diagram": ascii_diagram,
+                        "svg_path": svg_path,
+                        "circuit_type": topology,
+                        "preview_token": token,
+                        "component_count": len(resolved_components),
+                        "specs_applied": specs,
+                        "intent": intent,
                     },
                     "message": (
-                        f"'{topology}' 템플릿을 사용할 수 있습니다.\n"
-                        f"preview_circuit(circuit_type='{topology}', specs={json.dumps(specs, ensure_ascii=False)})로 "
-                        f"미리보기를 확인하세요."
+                        f"'{topology}' 회로가 자동 설계되었습니다 (token: {token}):\n\n"
+                        f"```\n{ascii_diagram}\n```\n\n"
+                        f"SVG: {svg_path}\n"
+                        f"확정: confirm_circuit(preview_token='{token}', save_path='...')\n"
+                        f"수정: preview_circuit 또는 design_circuit을 다시 호출하세요."
                     ),
                 }
 
