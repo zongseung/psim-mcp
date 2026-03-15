@@ -253,6 +253,7 @@ def handle_create_circuit(params):
 
         # 컴포넌트 배치
         element_map = {}
+        failed_components = []
         for comp in components:
             comp_id = comp.get("id", "")
             comp_type = comp.get("type", "")
@@ -269,20 +270,82 @@ def handle_create_circuit(params):
                     element_map[comp_id] = elem
                     for param_name, param_value in comp_params.items():
                         p.PsimSetElmValue(sch, elem, param_name, str(param_value))
+                else:
+                    failed_components.append({
+                        "id": comp_id,
+                        "type": comp_type,
+                        "reason": "PsimCreateNewElement returned None",
+                    })
             except Exception as e:
-                # 개별 컴포넌트 실패 시 계속 진행
-                pass
+                failed_components.append({
+                    "id": comp_id,
+                    "type": comp_type,
+                    "reason": str(e),
+                })
+
+        # 연결선 생성
+        connected = 0
+        failed_connections = []
+        for conn in connections:
+            from_pin = conn.get("from", "")
+            to_pin = conn.get("to", "")
+            try:
+                # psimapipy 연결 함수 탐색
+                wire_fn = None
+                for fn_name in ("PsimCreateWire", "PsimConnect", "PsimCreateNewWire"):
+                    if hasattr(p, fn_name):
+                        wire_fn = getattr(p, fn_name)
+                        break
+
+                if wire_fn is not None:
+                    # from/to에서 component_id와 pin 분리
+                    from_parts = from_pin.split(".")
+                    to_parts = to_pin.split(".")
+                    from_elem = element_map.get(from_parts[0])
+                    to_elem = element_map.get(to_parts[0])
+
+                    if from_elem and to_elem:
+                        wire_fn(sch, from_elem, to_elem)
+                        connected += 1
+                    else:
+                        failed_connections.append({
+                            "from": from_pin,
+                            "to": to_pin,
+                            "reason": "element not found in element_map",
+                        })
+                else:
+                    # wire 함수가 없으면 전체 건너뜀 (한 번만 기록)
+                    if not failed_connections or failed_connections[-1].get("reason") != "no wire function found":
+                        failed_connections.append({
+                            "from": from_pin,
+                            "to": to_pin,
+                            "reason": "no wire function found in psimapipy",
+                        })
+            except Exception as e:
+                failed_connections.append({
+                    "from": from_pin,
+                    "to": to_pin,
+                    "reason": str(e),
+                })
 
         # 파일 저장
         p.PsimFileSave(sch, save_path)
 
-        return _success({
+        result = {
             "file_path": save_path,
             "component_count": len(element_map),
             "total_requested": len(components),
-            "connection_count": len(connections),
+            "connection_count": connected,
+            "total_connections_requested": len(connections),
             "status": "created",
-        })
+        }
+
+        if failed_components:
+            result["failed_components"] = failed_components
+        if failed_connections:
+            result["failed_connections"] = failed_connections
+
+        return _success(result)
 
     except ImportError:
         return _error(
