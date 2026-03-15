@@ -4,18 +4,12 @@ Converts net-based circuit representation to concrete wire segments.
 """
 from __future__ import annotations
 
+from psim_mcp.data.component_library import LEFT_PINS as _LEFT_PINS, RIGHT_PINS as _RIGHT_PINS
+
 # Pin position offsets relative to component position.
 # For horizontal layout: left pins at (0, 15), right pins at (80, 15)
 _TOTAL_W = 80
 _MID_Y = 15
-
-# Which pin names are on the left vs right of a horizontal component
-_LEFT_PINS = {"positive", "drain", "input", "anode", "pin1", "collector",
-              "primary_in", "phase_a", "terminal1", "line_in", "L1_pin1"}
-_RIGHT_PINS = {"negative", "source", "output", "cathode", "pin2", "emitter",
-               "primary_out", "secondary_in", "secondary_out", "phase_b", "phase_c",
-               "terminal2", "line_out", "neutral_in", "neutral_out", "L1_pin2", "L2_pin1", "L2_pin2",
-               "ground", "gate", "control", "thermal_in", "secondary_top", "secondary_center", "secondary_bottom"}
 
 
 def nets_to_wire_plan(nets: list[dict], component_positions: dict) -> list[dict]:

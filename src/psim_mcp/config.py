@@ -37,6 +37,9 @@ class AppConfig(BaseSettings):
     simulation_timeout: int = 300
     max_sweep_steps: int = 100
 
+    # --- Preview ---
+    preview_ttl: int = 3600  # seconds
+
     # --- Security ---
     allowed_project_dirs: list[str] = []
 

@@ -362,12 +362,12 @@ _t("full_bridge", "Single-phase Full-Bridge (H-Bridge) inverter / 단상 풀 브
    "dc_ac",
    [
        {"id": "V1", "type": "DC_Source", "parameters": {"voltage": 400.0}, "position": {"x": 40, "y": 150}},
-       {"id": "SW1", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 220, "y": 50}},
-       {"id": "SW2", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 220, "y": 250}},
-       {"id": "SW3", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 540, "y": 50}},
-       {"id": "SW4", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 540, "y": 250}},
-       {"id": "L1", "type": "Inductor", "parameters": {"inductance": 1e-3}, "position": {"x": 380, "y": 100}},
-       {"id": "R1", "type": "Resistor", "parameters": {"resistance": 10.0}, "position": {"x": 380, "y": 200}},
+       {"id": "SW1", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 200, "y": 50}},
+       {"id": "SW2", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 200, "y": 250}},
+       {"id": "L1", "type": "Inductor", "parameters": {"inductance": 1e-3}, "position": {"x": 380, "y": 150}},
+       {"id": "R1", "type": "Resistor", "parameters": {"resistance": 10.0}, "position": {"x": 540, "y": 150}},
+       {"id": "SW3", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 700, "y": 50}},
+       {"id": "SW4", "type": "MOSFET", "parameters": {"switching_frequency": 20000}, "position": {"x": 700, "y": 250}},
    ],
    [
        {"from": "V1.positive", "to": "SW1.drain"},
@@ -376,9 +376,9 @@ _t("full_bridge", "Single-phase Full-Bridge (H-Bridge) inverter / 단상 풀 브
        {"from": "SW3.source", "to": "SW4.drain"},
        {"from": "SW2.source", "to": "V1.negative"},
        {"from": "SW4.source", "to": "V1.negative"},
-       {"from": "SW1.source", "to": "L1.input"},
-       {"from": "L1.output", "to": "R1.input"},
-       {"from": "R1.output", "to": "SW3.source"},
+       {"from": "SW1.source", "to": "L1.pin1"},
+       {"from": "L1.pin2", "to": "R1.pin1"},
+       {"from": "R1.pin2", "to": "SW3.source"},
    ])
 
 _t("three_phase_inverter", "Three-phase 2-level inverter / 3상 2-레벨 인버터",

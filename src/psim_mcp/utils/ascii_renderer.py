@@ -136,9 +136,15 @@ def render_full_bridge_ascii(components: list[dict]) -> str:
                     └────────────GND─────┴─────────────┘"""
 
 
-def render_generic_ascii(components: list[dict], connections: list[dict]) -> str:
-    """Render a generic component list as a simple text table."""
-    lines = ["┌─ Components ──────────────────────────────────┐"]
+def render_generic_ascii(components: list[dict], connections: list[dict], circuit_type: str = "") -> str:
+    """Render a generic component list as a text table.
+
+    This is the fallback renderer used when no topology-specific
+    ASCII diagram is available (i.e. circuit_type is not in
+    _CIRCUIT_RENDERERS). It lists all components in a simple table.
+    """
+    header = f"┌─ {circuit_type.upper() + ' ' if circuit_type else ''}Circuit ─────────────────────────┐"
+    lines = [header]
     for comp in components:
         label = _comp_label(comp)
         ctype = comp.get("type", "Unknown")
@@ -173,4 +179,4 @@ def render_circuit_ascii(
     renderer = _CIRCUIT_RENDERERS.get(circuit_type.lower())
     if renderer:
         return renderer(components)
-    return render_generic_ascii(components, connections)
+    return render_generic_ascii(components, connections, circuit_type)
