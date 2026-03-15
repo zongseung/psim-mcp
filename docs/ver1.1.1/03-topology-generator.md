@@ -167,10 +167,12 @@ register(BuckBoostGenerator())
 
 ## 9. 완료 기준
 
-- [ ] TopologyGenerator ABC 정의
-- [ ] buck, boost, buck_boost generator 구현
-- [ ] 설계 공식 기반 부품 값 자동 계산 동작
-- [ ] auto_layout 기본 규칙 동작
-- [ ] generator registry 동작
-- [ ] 기존 템플릿 fallback 유지
-- [ ] 기존 테스트 통과
+- [x] TopologyGenerator ABC 정의 (`generators/base.py`)
+- [x] buck, boost, buck_boost generator 구현 (설계 공식 포함)
+- [x] 설계 공식 기반 부품 값 자동 계산 동작 (L, C, R, duty cycle)
+- [x] auto_layout 기본 규칙 동작 (`generators/layout.py`, 160px/140px 간격)
+- [x] generator registry 동작 (`register()`, `get_generator()`, `list_generators()`)
+- [x] 기존 템플릿 fallback 유지
+- [x] 기존 테스트 통과
+- [ ] tools/circuit.py에서 generator 우선 사용 연동 (향후)
+- [ ] services에서 CircuitSpec 기반 create_circuit 연동 (향후)

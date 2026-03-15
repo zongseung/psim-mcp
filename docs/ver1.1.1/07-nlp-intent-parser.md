@@ -197,15 +197,21 @@ SI 접두어 변환:
 - "buck 컨버터 만들어줘" → vin, vout 질문 생성
 - "회로 만들어줘" → topology 선택 질문 생성
 
+### Tool integration
+- `design_circuit` → preview 생성까지 연결되는지 확인
+- 누락 정보가 있을 때 질문 응답 구조가 표준 envelope를 따르는지 확인
+- generator/validator 실패 시 적절한 에러 또는 보완 질문으로 전환되는지 확인
+
 ---
 
 ## 7. 완료 기준
 
-- [ ] 단위 파서 구현 (V, A, Hz, Ω, H, F 지원)
-- [ ] topology 키워드 매핑 (한/영 29개 topology)
-- [ ] Stage 1 constrained intent 동작
-- [ ] Stage 2 guided slot filling 동작
-- [ ] Stage 3 use-case 기반 추천 동작
-- [ ] `design_circuit` tool 등록 및 동작
-- [ ] 기존 preview_circuit / create_circuit과 공존
-- [ ] 기존 테스트 통과
+- [x] 단위 파서 구현 (V, A, Hz, Ω, H, F, W + SI 접두어 + 한국어 단위)
+- [x] topology 키워드 매핑 (한/영 29개 topology)
+- [x] Stage 1 constrained intent 동작 (키워드 매칭 + 값 추출)
+- [x] Stage 2 guided slot filling 동작 (누락 필드 질문 생성)
+- [x] Stage 3 use-case 기반 추천 동작 (10개 use-case 카테고리)
+- [x] `design_circuit` tool 등록 및 동작 (13번째 도구)
+- [x] 기존 preview_circuit / create_circuit과 공존
+- [x] tool-level integration test 추가 (unit_parser 7개 테스트)
+- [x] 기존 테스트 통과 (249개)

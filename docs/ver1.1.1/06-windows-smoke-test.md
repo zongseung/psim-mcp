@@ -36,6 +36,18 @@ Step 1~5에서 구현한 회로 생성 시스템이 **실제 Windows PSIM 환경
    - psim MCP 서버 등록
 ```
 
+### 2.3 Mac/mock에서 먼저 확인할 범위
+
+Windows 실험 전에 아래는 Mac/mock에서 선행 검증 가능해야 한다.
+
+- CircuitSpec 생성 및 직렬화
+- topology generator 출력 정합성
+- validator 통과/실패 경로
+- preview_token 기반 preview/confirm 흐름
+- mock adapter 기준 create_circuit 성공 경로
+
+즉 Windows는 "API/PSIM 실연동" 검증 단계이고, 구조 검증 자체는 그 전에 끝내는 것이 원칙이다.
+
 ### 2.2 환경 검증 스크립트
 
 ```python
@@ -143,10 +155,13 @@ except Exception as e:
 
 ## 7. 완료 기준
 
-- [ ] 환경 검증 스크립트 실행 성공
-- [ ] PSIM API 함수 목록 문서화
-- [ ] "Save as Python Code" 분석 완료
-- [ ] T1~T6 기본 테스트 전부 PASS
-- [ ] T7~T10 Buck 회로 테스트 PASS (생성 + 열기 + 시뮬)
-- [ ] T13~T15 MCP 연동 테스트 PASS
+- [x] 환경 검증 스크립트 생성 (`tests/smoke/test_psim_env.py`)
+- [x] Buck 생성 smoke test 스크립트 생성 (`tests/smoke/test_create_buck.py`)
+- [x] pytest에서 smoke 디렉터리 제외 설정 (`norecursedirs`)
+- [ ] 환경 검증 스크립트 실행 성공 (Windows 필요)
+- [ ] PSIM API 함수 목록 문서화 (Windows 필요)
+- [ ] "Save as Python Code" 분석 완료 (Windows 필요)
+- [ ] T1~T6 기본 테스트 전부 PASS (Windows 필요)
+- [ ] T7~T10 Buck 회로 테스트 PASS (Windows 필요)
+- [ ] T13~T15 MCP 연동 테스트 PASS (Windows 필요)
 - [ ] 결과 문서 작성 (`docs/ver1.1.1/06-smoke-test-results.md`)

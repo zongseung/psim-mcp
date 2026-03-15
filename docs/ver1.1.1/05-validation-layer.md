@@ -92,6 +92,13 @@ adapter.create_circuit
 bridge_script (PSIM API)
 ```
 
+원칙:
+
+- validator는 bridge 호출 전에 항상 실행한다
+- bridge는 validation 실패를 보완하려는 계층이 아니라, 검증 완료된 spec을 실행하는 계층이다
+- tool이나 service에서 임시 dict를 직접 bridge로 보내는 경로는 점진적으로 제거한다
+- preview_circuit도 동일한 validator를 사용하되, preview에서는 warning/오류를 UI에 드러내고 create 직전에는 hard fail 정책을 적용한다
+
 검증 실패 시:
 - bridge를 호출하지 않음
 - 에러 목록 + 수정 제안을 사용자에게 반환
@@ -123,16 +130,20 @@ bridge_script (PSIM API)
 - 음수 저항값 시 에러 반환
 - 정상 회로(buck 등) 시 검증 통과
 - 29개 기존 템플릿 전부 검증 통과
+- preview_circuit 호출 시 validation 결과가 응답에 반영되는지 확인
+- confirm_circuit이 validation 실패 spec을 생성 단계로 넘기지 않는지 확인
 
 ---
 
 ## 7. 완료 기준
 
-- [ ] CircuitValidator 구현
-- [ ] 구조 검증 5개 항목 동작
-- [ ] 전기적 검증 5개 항목 동작
-- [ ] 파라미터 범위 검증 3개 항목 동작
-- [ ] service 레이어에서 검증 호출
-- [ ] 검증 실패 시 명확한 에러 메시지 + 수정 제안 반환
-- [ ] 기존 29개 템플릿 검증 통과
-- [ ] 기존 테스트 통과
+- [x] CircuitValidator 구현 (`validators/` 패키지)
+- [x] 구조 검증 동작 (빈 리스트, 중복 ID, 미지원 kind)
+- [x] 전기적 검증 동작 (소스 없음, 부하 없음, 단락 감지)
+- [x] 파라미터 범위 검증 동작 (음수 값, 주파수/전압 범위)
+- [x] ValidationResult + ValidationIssue 모델 정의
+- [x] 기존 테스트 통과
+- [x] service 레이어에서 검증 호출 연동 (create_circuit에서 blocking 검증)
+- [x] preview_circuit에서 검증 결과 응답 반영 (validation_warnings + suggestion 포함)
+- [x] confirm_circuit에서 검증 실패 시 생성 차단 (service에서 CIRCUIT_VALIDATION_FAILED)
+- [x] connection 검증 추가 (핀 이름/부품 존재 확인 + 올바른 핀 목록 제안)

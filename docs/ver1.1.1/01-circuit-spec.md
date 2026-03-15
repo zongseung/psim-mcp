@@ -96,6 +96,13 @@ net 기반 표현:
 - floating net(미연결) 검출이 쉬움
 - GND net 존재 여부 검증이 단순함
 
+Bridge 전달 원칙:
+
+- `CircuitSpec`의 표준 표현은 `nets`다
+- bridge는 자유형 `connections` dict를 직접 해석하지 않는다
+- generator / validator 이후, 필요하면 `nets -> wire plan`으로 한 번 더 정규화한 결과를 bridge에 전달한다
+- 즉 bridge 입력은 최종적으로 "정규화된 배선 계획"이어야 한다
+
 ---
 
 ## 4. kind 표준화
@@ -128,6 +135,7 @@ net 기반 표현:
 ### 하위 호환
 - 기존 dict 기반 입력도 `CircuitSpec.from_legacy(dict)` 로 변환 가능하게 한다
 - 기존 테스트가 깨지지 않도록 점진적 전환
+- 단, 신규 기능은 legacy dict를 직접 처리하지 않고 반드시 `CircuitSpec` 정규화를 거친다
 
 ---
 
@@ -142,8 +150,8 @@ net 기반 표현:
 
 ## 7. 완료 기준
 
-- [ ] `CircuitSpec` Pydantic 모델 정의 완료
-- [ ] 기존 29개 템플릿이 CircuitSpec으로 변환 가능
-- [ ] `from_legacy()` 변환 함수 동작
-- [ ] 기본 validation (필수 필드, kind 존재 여부) 통과
-- [ ] 기존 221개 테스트 깨지지 않음
+- [x] `CircuitSpec` Pydantic 모델 정의 완료
+- [x] 기존 29개 템플릿이 CircuitSpec으로 변환 가능
+- [x] `from_legacy()` 변환 함수 동작 (Union-Find 기반 net 그룹핑)
+- [x] 기본 validation (필수 필드, kind 존재 여부) 통과
+- [x] 기존 221개 테스트 깨지지 않음

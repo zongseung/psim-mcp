@@ -11,6 +11,13 @@
 
 현재 bridge_script의 `handle_create_circuit`에서 **배선(wire) 생성이 실제로 동작하는지 확인하고, 안정적으로 구현**한다.
 
+중요 원칙:
+
+- bridge는 검증되지 않은 자유형 dict를 직접 판단하는 계층이 아니다
+- Step 5 validator를 통과한 `CircuitSpec` 또는 그에 준하는 정규화 결과만 bridge에 전달한다
+- bridge의 책임은 "PSIM API 실행"과 "실행 결과 보고"에 한정한다
+- bridge는 이상적으로 `connections` 원문이 아니라 `wire plan` 또는 동등한 정규화 배선 입력을 받는다
+
 현재 상태:
 - 부품 생성(`PsimCreateNewElement`)은 코드가 있으나, 실환경 검증 미완료
 - 배선 생성은 `PsimCreateWire`, `PsimConnect` 등 함수명을 탐색하는 코드가 있으나, 실제 API 존재 여부 미확인
@@ -85,6 +92,24 @@ CircuitSpec의 net:
 2. net 내 모든 핀을 star 또는 chain 방식으로 연결
 3. wire 좌표 생성 (Manhattan routing)
 
+입력 계약 정리:
+
+- validator/generator 단계까지는 `nets`
+- bridge 직전 정규화 단계에서는 `wire_plan`
+- bridge는 `wire_plan`을 실행만 함
+
+예:
+
+```json
+{
+  "net": "SW_NODE",
+  "segments": [
+    {"from": "SW1.source", "to": "D1.cathode"},
+    {"from": "SW1.source", "to": "L1.input"}
+  ]
+}
+```
+
 ---
 
 ## 4. 실패 처리 강화
@@ -120,6 +145,7 @@ CircuitSpec의 net:
   - `handle_create_circuit`: 배선 로직 보강
   - 부품 type 매핑 추가 (kind → PSIM element type)
   - 생성 후 검증 로직 추가
+  - 입력은 정규화된 `CircuitSpec` 변환 결과만 받도록 단순화
 
 ### 파일 생성 (선택)
 - `src/psim_mcp/bridge/wiring.py`: 배선 좌표 계산 로직 분리
@@ -132,6 +158,7 @@ CircuitSpec의 net:
 - net 기반 배선 의도가 정확히 전달되는지 확인
 - failed_connections 반환 형식 확인
 - 성공률 기반 전체 실패 로직 확인
+- wire_plan 변환 결과가 deterministic 한지 확인
 
 ### Windows (real) — 핵심
 - buck 컨버터 생성 → PSIM에서 열기 → 부품 존재 확인
@@ -143,10 +170,11 @@ CircuitSpec의 net:
 
 ## 7. 완료 기준
 
-- [ ] PSIM Python API 함수 목록 문서화
-- [ ] "Save as Python Code" 패턴 분석 완료
-- [ ] 배선 생성 로직 구현 (API 존재 시)
-- [ ] 배선 실패 시 graceful 처리
-- [ ] 생성 후 검증 로직 추가
+- [x] `bridge/wiring.py` 구조 생성 (nets_to_wire_plan, resolve_pin_position 스텁)
+- [ ] PSIM Python API 함수 목록 문서화 (Windows 필요)
+- [ ] "Save as Python Code" 패턴 분석 완료 (Windows 필요)
+- [ ] 배선 생성 로직 구현 (API 존재 시) (Windows 필요)
+- [ ] 배선 실패 시 graceful 처리 (Windows 필요)
+- [ ] 생성 후 검증 로직 추가 (Windows 필요)
 - [ ] Windows에서 buck 컨버터 생성 + 열기 성공
 - [ ] Windows에서 생성 후 시뮬레이션 실행 성공

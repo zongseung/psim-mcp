@@ -47,6 +47,58 @@ Step 1 ──→ Step 2 ──→ Step 3 ──→ Step 5
 
 ---
 
+## 누락 보완 항목
+
+현재 코드 기준으로, 아래 2개는 별도 단계 문서까지는 아니더라도 P0 성격으로 함께 반영해야 한다.
+
+### 1. Preview 상태 관리
+
+현재 `preview_circuit` / `confirm_circuit` 흐름은 전역 in-memory 상태에 의존하고 있다.
+
+필요 보완:
+
+- preview 결과를 전역 변수 1개가 아니라 `preview_token` 기준으로 저장
+- 요청 단위 또는 세션 단위로 분리
+- `confirm_circuit(preview_token=...)` 형식으로 확정
+- preview 만료 시간(TTL)과 정리 정책 정의
+
+예상 변경 대상:
+
+- `src/psim_mcp/tools/circuit.py`
+- `src/psim_mcp/services/preview_store.py` 신규
+
+완료 기준:
+
+- [x] `preview_token` 발급 및 조회 가능
+- [x] token별 preview가 서로 덮어쓰지 않음
+- [x] `confirm_circuit(preview_token=...)` 형식으로 확정 가능
+- [x] confirm 성공 시 token 삭제
+- [x] 만료/없는 token 요청 시 명시적 에러 반환
+
+### 2. Legacy → CircuitSpec 마이그레이션
+
+현재 구현은 템플릿 dict, `components` / `connections`, `specs` dict가 섞여 있다.
+
+필요 보완:
+
+- 기존 dict 입력은 당장 제거하지 않음
+- 모든 입력을 먼저 `CircuitSpec.from_legacy(...)` 또는 동등한 adapter로 변환
+- 이후 validator / generator / bridge는 `CircuitSpec`만 받도록 고정
+- generator가 없는 topology만 기존 템플릿 fallback 허용
+
+즉 전환 순서는 아래가 맞다.
+
+`legacy input 유지 -> CircuitSpec adapter 추가 -> generator 우선 사용 -> legacy 경로 축소`
+
+정리 기준:
+
+- Step 1 완료 후 모든 신규 로직은 내부적으로 `CircuitSpec`으로 정규화
+- Step 3 완료 후 generator 지원 topology는 legacy dict 경로를 기본 경로로 사용하지 않음
+- Step 5 완료 후 validator를 거치지 않는 직접 bridge 호출 경로는 deprecated 처리
+- Step 6 완료 후 Windows smoke test 통과 topology부터 legacy 직접 처리 경로 제거 검토
+
+---
+
 ## 최소 성공 기준
 
 1. buck, boost, full_bridge가 Windows real mode에서 생성 + 열기 + 시뮬 성공
@@ -54,6 +106,7 @@ Step 1 ──→ Step 2 ──→ Step 3 ──→ Step 5
 3. 실패 시 어느 소자/배선이 실패했는지 응답에 포함
 4. topology 추가가 generator 추가로 가능 (dict 복붙이 아닌)
 5. "48V to 12V buck" 자연어 입력 → 회로 생성까지 연결
+6. preview token 흐름이 세션 간 충돌 없이 동작
 
 ---
 
@@ -65,6 +118,7 @@ Step 1 ──→ Step 2 ──→ Step 3 ──→ Step 5
 | `src/psim_mcp/generators/` | 신규 패키지 |
 | `src/psim_mcp/validators/` | 신규 패키지 |
 | `src/psim_mcp/parsers/` | 신규 패키지 |
+| `src/psim_mcp/services/preview_store.py` | 신규 |
 | `src/psim_mcp/data/component_library.py` | 리팩터링 |
 | `src/psim_mcp/data/circuit_templates.py` | 점진적 대체 (generator fallback) |
 | `src/psim_mcp/tools/circuit.py` | 수정 (generator/validator 연동) |
