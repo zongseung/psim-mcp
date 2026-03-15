@@ -1,0 +1,86 @@
+"""Abstract base class for PSIM adapters."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+
+
+class BasePsimAdapter(ABC):
+    """Contract that every PSIM adapter must satisfy.
+
+    The service layer programs against this interface so that the concrete
+    backend (mock on macOS, real on Windows) can be swapped via configuration.
+    """
+
+    @abstractmethod
+    async def open_project(self, path: str) -> dict:
+        """Open a PSIM project file.
+
+        Args:
+            path: Absolute filesystem path to the ``.psimsch`` file.
+
+        Returns:
+            Dict with project metadata (name, path, components, counts).
+        """
+
+    @abstractmethod
+    async def set_parameter(
+        self,
+        component_id: str,
+        parameter_name: str,
+        value: int | float | str,
+    ) -> dict:
+        """Set a single parameter on a component.
+
+        Args:
+            component_id: Identifier of the target component.
+            parameter_name: Name of the parameter to update.
+            value: New value (numeric or string).
+
+        Returns:
+            Dict with previous_value, new_value, and unit.
+
+        Raises:
+            ValueError: If the component or parameter is not found.
+        """
+
+    @abstractmethod
+    async def run_simulation(self, options: dict | None = None) -> dict:
+        """Execute the simulation for the currently open project.
+
+        Args:
+            options: Optional overrides (time_step, total_time, etc.).
+
+        Returns:
+            Dict with status, duration, result_file, and summary.
+        """
+
+    @abstractmethod
+    async def export_results(
+        self,
+        output_dir: str,
+        format: str = "json",
+        signals: list[str] | None = None,
+    ) -> dict:
+        """Export simulation results to disk.
+
+        Args:
+            output_dir: Directory where files will be written.
+            format: ``"json"`` or ``"csv"``.
+            signals: Specific signal names to export; *None* means all.
+
+        Returns:
+            Dict with list of exported files and metadata.
+        """
+
+    @abstractmethod
+    async def get_status(self) -> dict:
+        """Return the current adapter / PSIM status."""
+
+    @abstractmethod
+    async def get_project_info(self) -> dict:
+        """Return detailed information about the currently open project.
+
+        Raises:
+            RuntimeError: If no project is open.
+        """
