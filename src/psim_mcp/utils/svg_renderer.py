@@ -7,7 +7,7 @@ standard schematic conventions.  Connection wires use Manhattan routing
 
 from __future__ import annotations
 
-from psim_mcp.data.component_library import LEFT_PINS, RIGHT_PINS
+from psim_mcp.data.component_library import LEFT_PINS, RIGHT_PINS, get_component, get_pin_side
 
 # Component body width — all symbols are 60px wide with pins at x=0 and x=80
 _BODY_W = 60
@@ -43,8 +43,15 @@ def _svg_resistor(x: int, y: int, comp_id: str, params: dict) -> str:
 
 def _svg_capacitor(x: int, y: int, comp_id: str, params: dict) -> str:
     val = params.get("capacitance", "")
-    if isinstance(val, float) and val < 1e-3:
-        label = f"{comp_id}  {val*1e6:.0f}μF"
+    if isinstance(val, (int, float)):
+        if val < 1e-9:
+            label = f"{comp_id}  {val*1e12:.1f}pF"
+        elif val < 1e-6:
+            label = f"{comp_id}  {val*1e9:.1f}nF"
+        elif val < 1e-3:
+            label = f"{comp_id}  {val*1e6:.0f}μF"
+        else:
+            label = f"{comp_id}  {val*1e3:.0f}mF"
     else:
         label = f"{comp_id}  {val}F" if val else comp_id
     cx = 40
@@ -63,8 +70,15 @@ def _svg_capacitor(x: int, y: int, comp_id: str, params: dict) -> str:
 
 def _svg_inductor(x: int, y: int, comp_id: str, params: dict) -> str:
     val = params.get("inductance", "")
-    if isinstance(val, float) and val < 1e-3:
-        label = f"{comp_id}  {val*1e6:.0f}μH"
+    if isinstance(val, (int, float)):
+        if val < 1e-9:
+            label = f"{comp_id}  {val*1e12:.1f}pH"
+        elif val < 1e-6:
+            label = f"{comp_id}  {val*1e9:.1f}nH"
+        elif val < 1e-3:
+            label = f"{comp_id}  {val*1e6:.0f}μH"
+        else:
+            label = f"{comp_id}  {val*1e3:.0f}mH"
     else:
         label = f"{comp_id}  {val}H" if val else comp_id
     bumps = ""
@@ -166,28 +180,88 @@ _SYMBOL_MAP = {
 
 
 # ---------------------------------------------------------------------------
-# Manhattan-routed wires
+# Pin geometry
 # ---------------------------------------------------------------------------
 
-def _render_connections(components: list[dict], connections: list[dict]) -> str:
-    """Render Manhattan-routed wires between component pins.
+def _spread_positions(count: int, start: int, end: int) -> list[int]:
+    """Return *count* evenly spread integer positions between *start* and *end*."""
+    if count <= 0:
+        return []
+    if count == 1:
+        return [round((start + end) / 2)]
+    gap = (end - start) / (count + 1)
+    return [round(start + gap * (i + 1)) for i in range(count)]
 
-    Pin convention (horizontal components):
-      - positive / drain / input / anode   → left pin  (x, y+15)
-      - negative / source / output / cathode → right pin (x+80, y+15)
-    """
+
+def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
+    """Build pin reference -> SVG coordinate map from component metadata."""
     pin_pos: dict[str, tuple[int, int]] = {}
     for comp in components:
         cid = comp.get("id", "")
         if not cid:
             continue
+        comp_type = comp.get("type", "")
         pos = comp.get("position", {"x": 0, "y": 0})
-        lx, ly = pos["x"], pos["y"] + _MID_Y
-        rx, ry = pos["x"] + _TOTAL_W, pos["y"] + _MID_Y
-        for pin in LEFT_PINS:
-            pin_pos[f"{cid}.{pin}"] = (lx, ly)
-        for pin in RIGHT_PINS:
-            pin_pos[f"{cid}.{pin}"] = (rx, ry)
+        lib_comp = get_component(comp_type)
+        pins = list(lib_comp.get("pins", [])) if lib_comp else []
+
+        if not pins:
+            for pin in LEFT_PINS:
+                pin_pos[f"{cid}.{pin}"] = (pos["x"], pos["y"] + _MID_Y)
+            for pin in RIGHT_PINS:
+                pin_pos[f"{cid}.{pin}"] = (pos["x"] + _TOTAL_W, pos["y"] + _MID_Y)
+            continue
+
+        left_pins = [pin for pin in pins if get_pin_side(pin) == "left"]
+        right_pins = [pin for pin in pins if get_pin_side(pin) == "right"]
+        center_pins = [pin for pin in pins if get_pin_side(pin) == "center"]
+
+        left_ys = _spread_positions(len(left_pins), 4, _BODY_H - 4)
+        right_ys = _spread_positions(len(right_pins), 4, _BODY_H - 4)
+
+        for pin, y in zip(left_pins, left_ys):
+            pin_pos[f"{cid}.{pin}"] = (pos["x"], pos["y"] + y)
+        for pin, y in zip(right_pins, right_ys):
+            pin_pos[f"{cid}.{pin}"] = (pos["x"] + _TOTAL_W, pos["y"] + y)
+
+        bottom_pins = [
+            pin for pin in center_pins
+            if pin in {"gate", "control", "ground", "thermal_in", "secondary_center"}
+        ]
+        top_pins = [pin for pin in center_pins if pin not in bottom_pins]
+
+        top_xs = _spread_positions(len(top_pins), 12, _TOTAL_W - 12)
+        bottom_xs = _spread_positions(len(bottom_pins), 12, _TOTAL_W - 12)
+
+        for pin, x in zip(top_pins, top_xs):
+            pin_pos[f"{cid}.{pin}"] = (pos["x"] + x, pos["y"])
+        for pin, x in zip(bottom_pins, bottom_xs):
+            pin_pos[f"{cid}.{pin}"] = (pos["x"] + x, pos["y"] + _BODY_H)
+
+    return pin_pos
+
+
+def _draw_segment(x1: int, y1: int, x2: int, y2: int) -> str:
+    """Draw a straight or Manhattan-routed wire segment."""
+    if x1 == x2 or y1 == y2:
+        return (
+            f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
+            f'stroke="#2980b9" stroke-width="2"/>'
+        )
+    mx = (x1 + x2) // 2
+    return (
+        f'<polyline points="{x1},{y1} {mx},{y1} {mx},{y2} {x2},{y2}" '
+        f'fill="none" stroke="#2980b9" stroke-width="2"/>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Manhattan-routed wires
+# ---------------------------------------------------------------------------
+
+def _render_connections(components: list[dict], connections: list[dict]) -> str:
+    """Render point-to-point wires between component pins."""
+    pin_pos = _build_pin_positions(components)
 
     lines = ""
     for conn in connections:
@@ -217,25 +291,43 @@ def _render_connections(components: list[dict], connections: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Junction dots (where 3+ wires meet)
+# Net-based wires and junction dots
 # ---------------------------------------------------------------------------
+
+def _render_nets(components: list[dict], nets: list[dict]) -> tuple[str, str]:
+    """Render shared nets directly instead of flattening them into chains."""
+    pin_pos = _build_pin_positions(components)
+    lines = ""
+    dots = ""
+    for net in nets:
+        refs = net.get("pins", net.get("connections", []))
+        points = []
+        seen = set()
+        for ref in refs:
+            point = pin_pos.get(ref)
+            if point and point not in seen:
+                seen.add(point)
+                points.append(point)
+        if len(points) < 2:
+            continue
+        if len(points) == 2:
+            (x1, y1), (x2, y2) = points
+            lines += _draw_segment(x1, y1, x2, y2)
+            continue
+
+        hub_x = round(sum(x for x, _ in points) / len(points))
+        hub_y = round(sum(y for _, y in points) / len(points))
+        for x, y in points:
+            lines += _draw_segment(x, y, hub_x, hub_y)
+        dots += f'<circle cx="{hub_x}" cy="{hub_y}" r="4" fill="#2980b9"/>'
+
+    return lines, dots
+
 
 def _render_junctions(components: list[dict], connections: list[dict]) -> str:
     """Draw junction dots where multiple wires share a pin."""
-    pin_pos: dict[str, tuple[int, int]] = {}
-    for comp in components:
-        cid = comp.get("id", "")
-        if not cid:
-            continue
-        pos = comp.get("position", {"x": 0, "y": 0})
-        lx, ly = pos["x"], pos["y"] + _MID_Y
-        rx, ry = pos["x"] + _TOTAL_W, pos["y"] + _MID_Y
-        for pin in LEFT_PINS:
-            pin_pos[f"{cid}.{pin}"] = (lx, ly)
-        for pin in RIGHT_PINS:
-            pin_pos[f"{cid}.{pin}"] = (rx, ry)
+    pin_pos = _build_pin_positions(components)
 
-    # Count how many connections each position has
     pos_count: dict[tuple[int, int], int] = {}
     for conn in connections:
         for key in ("from", "to"):
@@ -283,6 +375,7 @@ def render_circuit_svg(
     circuit_type: str,
     components: list[dict],
     connections: list[dict],
+    nets: list[dict] | None = None,
     title: str | None = None,
 ) -> str:
     """Render a circuit diagram as an SVG string."""
@@ -307,11 +400,16 @@ def render_circuit_svg(
         f'font-weight="bold" font-family="sans-serif" fill="#2c3e50">{display_title}</text>'
     )
 
-    # Wires (behind components)
-    parts.append(_render_connections(components, connections))
+    if nets:
+        net_lines, net_dots = _render_nets(components, nets)
+        parts.append(net_lines)
+        parts.append(net_dots)
+    else:
+        # Wires (behind components)
+        parts.append(_render_connections(components, connections))
 
-    # Junction dots
-    parts.append(_render_junctions(components, connections))
+        # Junction dots
+        parts.append(_render_junctions(components, connections))
 
     # Components
     for comp in components:

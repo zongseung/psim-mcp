@@ -210,6 +210,7 @@ def register_tools(mcp, service=None):
             circuit_type=circuit_type,
             components=resolved_components,
             connections=resolved_connections,
+            nets=resolved_nets,
         )
 
         # Save SVG to temp file

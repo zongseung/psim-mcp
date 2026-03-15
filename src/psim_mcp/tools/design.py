@@ -221,7 +221,7 @@ def register_tools(mcp, service=None):
 
                 # Render SVG
                 svg_content = render_circuit_svg(
-                    topology, resolved_components, resolved_connections
+                    topology, resolved_components, resolved_connections, nets=resolved_nets
                 )
                 svg_dir = tempfile.gettempdir()
                 svg_path = os.path.join(svg_dir, f"psim_preview_{topology}.svg")
@@ -581,7 +581,7 @@ def register_tools(mcp, service=None):
             topology, resolved_components, resolved_connections
         )
         svg_content = render_circuit_svg(
-            topology, resolved_components, resolved_connections
+            topology, resolved_components, resolved_connections, nets=resolved_nets
         )
         svg_dir = tempfile.gettempdir()
         svg_path = os.path.join(svg_dir, f"psim_preview_{topology}.svg")
