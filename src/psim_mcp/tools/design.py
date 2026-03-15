@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import platform
 import subprocess
 import tempfile
+
+logger = logging.getLogger(__name__)
 
 from psim_mcp.data.circuit_templates import TEMPLATES
 from psim_mcp.generators import get_generator
@@ -17,6 +20,7 @@ from psim_mcp.tools import tool_handler
 from psim_mcp.tools.circuit import _TEMPLATES, _apply_specs, _SPEC_MAP
 from psim_mcp.utils.ascii_renderer import render_circuit_ascii
 from psim_mcp.utils.svg_renderer import render_circuit_svg
+from psim_mcp.validators import validate_circuit
 
 
 def register_tools(mcp, service=None):
@@ -24,9 +28,9 @@ def register_tools(mcp, service=None):
 
     @mcp.tool(
         description=(
-            "자연어로 회로를 설계합니다. "
-            "예: 'Buck 컨버터 48V 입력 12V 출력 5A 부하', "
-            "'태양광 MPPT 회로', 'BLDC 모터 드라이브 48V'"
+            "자연어로 회로를 빠르게 설계합니다 (buck, boost, buck_boost 자동 계산 지원). "
+            "다른 토폴로지나 커스텀 회로는 get_component_library()로 부품을 확인한 후 "
+            "preview_circuit()에 components/connections를 직접 전달하세요."
         ),
     )
     @tool_handler("design_circuit")
@@ -39,7 +43,7 @@ def register_tools(mcp, service=None):
         intent = parse_circuit_intent(description)
 
         topology = intent["topology"]
-        specs = intent["specs"]
+        specs = intent.get("normalized_specs", intent["specs"])
         candidates = intent["topology_candidates"]
         missing = intent["missing_fields"]
         questions = intent["questions"]
@@ -58,14 +62,26 @@ def register_tools(mcp, service=None):
             resolved_components = None
             resolved_connections = []
             resolved_nets = []
+            generation_mode = "template_fallback"
+            generation_note = None
 
             if generator and not generator.missing_fields(specs):
                 try:
                     gen_result = generator.generate(specs)
                     resolved_components = gen_result["components"]
                     resolved_nets = gen_result.get("nets", [])
-                except Exception:
-                    pass
+                    generation_mode = "generator"
+                except Exception as exc:
+                    logger.warning(
+                        "Generator failed for topology '%s': %s. "
+                        "Falling back to template.",
+                        topology,
+                        exc,
+                    )
+                    generation_note = (
+                        "Generator not available for this topology. "
+                        "Using template with default values."
+                    )
 
             # Fallback to template
             if resolved_components is None:
@@ -75,8 +91,51 @@ def register_tools(mcp, service=None):
                     resolved_connections = copy.deepcopy(template["connections"])
                     if specs:
                         _apply_specs(resolved_components, specs)
+                    if generation_note is None and generator is not None:
+                        generation_note = (
+                            "Generator not available for this topology. "
+                            "Using template with default values."
+                        )
 
             if resolved_components:
+                # If we have nets but no connections, convert for rendering
+                if resolved_nets and not resolved_connections:
+                    from psim_mcp.bridge.wiring import nets_to_connections
+                    resolved_connections = nets_to_connections(resolved_nets)
+
+                validation_input = {
+                    "components": resolved_components,
+                    "connections": resolved_connections,
+                    "nets": resolved_nets,
+                }
+                validation_result = validate_circuit(validation_input)
+                validation_issues = [
+                    {
+                        "code": issue.code,
+                        "message": issue.message,
+                        "component_id": issue.component_id,
+                        "suggestion": issue.suggestion,
+                    }
+                    for issue in (validation_result.errors + validation_result.warnings)
+                ]
+
+                if validation_result.errors:
+                    return {
+                        "success": False,
+                        "error": {
+                            "code": "CIRCUIT_VALIDATION_FAILED",
+                            "message": "자동 설계 결과가 유효한 회로 검증을 통과하지 못했습니다.",
+                            "suggestion": "입력 조건을 더 구체화하거나 preview_circuit에 components/connections를 직접 전달해 수정하세요.",
+                        },
+                        "data": {
+                            "topology": topology,
+                            "specs_applied": specs,
+                            "intent": intent,
+                            "generation_mode": generation_mode,
+                            "validation_issues": validation_issues,
+                        },
+                    }
+
                 # Render ASCII
                 ascii_diagram = render_circuit_ascii(
                     topology, resolved_components, resolved_connections
@@ -116,9 +175,7 @@ def register_tools(mcp, service=None):
                     "svg_path": svg_path,
                 })
 
-                return {
-                    "success": True,
-                    "data": {
+                response_data = {
                         "ascii_diagram": ascii_diagram,
                         "svg_path": svg_path,
                         "circuit_type": topology,
@@ -126,7 +183,15 @@ def register_tools(mcp, service=None):
                         "component_count": len(resolved_components),
                         "specs_applied": specs,
                         "intent": intent,
-                    },
+                        "generation_mode": generation_mode,
+                        "validation_issues": validation_issues,
+                    }
+                if generation_note:
+                    response_data["generation_note"] = generation_note
+
+                return {
+                    "success": True,
+                    "data": response_data,
                     "message": (
                         f"'{topology}' 회로가 자동 설계되었습니다 (token: {token}):\n\n"
                         f"```\n{ascii_diagram}\n```\n\n"
