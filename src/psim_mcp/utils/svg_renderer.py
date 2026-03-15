@@ -179,7 +179,9 @@ def _render_connections(components: list[dict], connections: list[dict]) -> str:
 
     pin_pos: dict[str, tuple[int, int]] = {}
     for comp in components:
-        cid = comp["id"]
+        cid = comp.get("id", "")
+        if not cid:
+            continue
         pos = comp.get("position", {"x": 0, "y": 0})
         lx, ly = pos["x"], pos["y"] + _MID_Y
         rx, ry = pos["x"] + _TOTAL_W, pos["y"] + _MID_Y
@@ -226,7 +228,9 @@ def _render_junctions(components: list[dict], connections: list[dict]) -> str:
 
     pin_pos: dict[str, tuple[int, int]] = {}
     for comp in components:
-        cid = comp["id"]
+        cid = comp.get("id", "")
+        if not cid:
+            continue
         pos = comp.get("position", {"x": 0, "y": 0})
         lx, ly = pos["x"], pos["y"] + _MID_Y
         rx, ry = pos["x"] + _TOTAL_W, pos["y"] + _MID_Y
@@ -315,8 +319,8 @@ def render_circuit_svg(
 
     # Components
     for comp in components:
-        cid = comp["id"]
-        ctype = comp["type"]
+        cid = comp.get("id", "?")
+        ctype = comp.get("type", "Unknown")
         params = comp.get("parameters", {})
         pos = comp.get("position", {"x": 0, "y": 0})
         renderer = _SYMBOL_MAP.get(ctype, lambda x, y, i, p: _svg_generic(x, y, i, ctype, p))

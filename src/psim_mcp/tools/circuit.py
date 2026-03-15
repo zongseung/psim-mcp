@@ -5,9 +5,12 @@ from __future__ import annotations
 import copy
 import json
 import os
+import platform
+import subprocess
 import tempfile
 
 from psim_mcp.tools import tool_handler
+from psim_mcp.utils.ascii_renderer import render_circuit_ascii
 from psim_mcp.utils.svg_renderer import render_circuit_svg
 
 
@@ -102,6 +105,55 @@ _TEMPLATES: dict[str, dict] = {
 }
 
 # ---------------------------------------------------------------------------
+# Specs → template parameter mapping
+# ---------------------------------------------------------------------------
+
+# Maps spec keys to (component_type, parameter_name) so that high-level
+# specifications like {"V_in": 48} get applied to the right component.
+_SPEC_MAP: dict[str, list[tuple[str, str]]] = {
+    "V_in": [("DC_Source", "voltage")],
+    "v_in": [("DC_Source", "voltage")],
+    "voltage": [("DC_Source", "voltage")],
+    "R_load": [("Resistor", "resistance")],
+    "r_load": [("Resistor", "resistance")],
+    "resistance": [("Resistor", "resistance")],
+    "load": [("Resistor", "resistance")],
+    "switching_frequency": [("MOSFET", "switching_frequency")],
+    "frequency": [("MOSFET", "switching_frequency")],
+    "freq": [("MOSFET", "switching_frequency")],
+    "inductance": [("Inductor", "inductance")],
+    "L": [("Inductor", "inductance")],
+    "capacitance": [("Capacitor", "capacitance")],
+    "C": [("Capacitor", "capacitance")],
+    "forward_voltage": [("Diode", "forward_voltage")],
+    "on_resistance": [("MOSFET", "on_resistance")],
+}
+
+
+def _apply_specs(components: list[dict], specs: dict) -> None:
+    """Apply high-level specs to template components in-place.
+
+    Handles both mapped keys (V_in → DC_Source.voltage) and derived
+    values (V_out + I_load → R_load).
+    """
+    # Derive R_load from V_out and I_load if not explicitly given
+    v_out = specs.get("V_out") or specs.get("v_out")
+    i_load = specs.get("I_load") or specs.get("i_load")
+    if v_out and i_load and "R_load" not in specs and "r_load" not in specs:
+        specs["R_load"] = v_out / i_load
+
+    for key, value in specs.items():
+        targets = _SPEC_MAP.get(key)
+        if not targets:
+            continue
+        for comp_type, param_name in targets:
+            for comp in components:
+                if comp.get("type") == comp_type:
+                    comp.setdefault("parameters", {})[param_name] = value
+                    break  # apply to first matching component only
+
+
+# ---------------------------------------------------------------------------
 # Pending preview storage (in-memory, per server session)
 # ---------------------------------------------------------------------------
 _pending_preview: dict | None = None
@@ -117,20 +169,28 @@ def register_tools(mcp, service=None):
     @mcp.tool(
         description=(
             "회로도를 SVG 미리보기로 생성합니다. "
-            "Mac/Windows 모두 가능. 확인 후 confirm_circuit으로 실제 생성합니다."
+            "Mac/Windows 모두 가능. 확인 후 confirm_circuit으로 실제 생성합니다. "
+            "specs로 사양(입력전압, 출력전압, 부하 등)을 지정하면 템플릿에 자동 반영됩니다."
         ),
     )
     @tool_handler("preview_circuit")
     async def preview_circuit(
         circuit_type: str,
+        specs: dict | None = None,
         components: list[dict] | None = None,
         connections: list[dict] | None = None,
         simulation_settings: dict | None = None,
     ) -> str:
         """Generate an SVG preview of the circuit diagram.
 
-        The preview is saved as an SVG file that can be opened in a browser.
-        Use confirm_circuit to proceed with actual .psimsch generation.
+        Args:
+            circuit_type: Template name (buck, boost, half_bridge, full_bridge) or "custom".
+            specs: High-level specifications to apply to the template. Example:
+                {"V_in": 48, "V_out": 12, "I_load": 5, "R_load": 2.4,
+                 "switching_frequency": 100000, "inductance": 22e-6}
+            components: Explicit component list (overrides template).
+            connections: Explicit connection list (overrides template).
+            simulation_settings: Optional simulation parameters.
         """
         global _pending_preview
 
@@ -139,21 +199,51 @@ def register_tools(mcp, service=None):
         if template and not components:
             resolved_components = copy.deepcopy(template["components"])
             resolved_connections = connections or copy.deepcopy(template["connections"])
-        elif components:
+
+            # Apply specs to template components
+            if specs:
+                _apply_specs(resolved_components, specs)
+
+        elif components and isinstance(components, list):
             resolved_components = copy.deepcopy(components)
             resolved_connections = connections or []
         else:
-            return {
-                "success": False,
-                "error": {
-                    "code": "NO_COMPONENTS",
-                    "message": "components를 지정하거나 유효한 circuit_type 템플릿을 사용하세요.",
-                    "suggestion": "list_circuit_templates로 사용 가능한 템플릿을 확인하세요.",
-                },
-            }
+            # Fallback: if components was passed as a dict (specs), treat it as specs
+            if components and isinstance(components, dict):
+                specs = components
+                template = _TEMPLATES.get(circuit_type.lower())
+                if template:
+                    resolved_components = copy.deepcopy(template["components"])
+                    resolved_connections = connections or copy.deepcopy(template["connections"])
+                    _apply_specs(resolved_components, specs)
+                else:
+                    return {
+                        "success": False,
+                        "error": {
+                            "code": "NO_TEMPLATE",
+                            "message": f"'{circuit_type}' 템플릿을 찾을 수 없습니다.",
+                            "suggestion": "list_circuit_templates로 사용 가능한 템플릿을 확인하세요.",
+                        },
+                    }
+            else:
+                return {
+                    "success": False,
+                    "error": {
+                        "code": "NO_COMPONENTS",
+                        "message": "components를 지정하거나 유효한 circuit_type 템플릿을 사용하세요.",
+                        "suggestion": "list_circuit_templates로 사용 가능한 템플릿을 확인하세요.",
+                    },
+                }
 
         if resolved_connections is None:
             resolved_connections = []
+
+        # Render ASCII diagram for inline chat display
+        ascii_diagram = render_circuit_ascii(
+            circuit_type=circuit_type,
+            components=resolved_components,
+            connections=resolved_connections,
+        )
 
         # Render SVG
         svg_content = render_circuit_svg(
@@ -168,6 +258,18 @@ def register_tools(mcp, service=None):
         with open(svg_path, "w", encoding="utf-8") as f:
             f.write(svg_content)
 
+        # Auto-open SVG in browser
+        try:
+            system = platform.system()
+            if system == "Darwin":
+                subprocess.Popen(["open", svg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif system == "Windows":
+                os.startfile(svg_path)
+            elif system == "Linux":
+                subprocess.Popen(["xdg-open", svg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass  # Non-critical: user can still open manually
+
         # Store pending preview for confirm_circuit
         _pending_preview = {
             "circuit_type": circuit_type,
@@ -180,21 +282,21 @@ def register_tools(mcp, service=None):
         return {
             "success": True,
             "data": {
+                "ascii_diagram": ascii_diagram,
                 "svg_path": svg_path,
                 "circuit_type": circuit_type,
                 "component_count": len(resolved_components),
                 "connection_count": len(resolved_connections),
                 "components": [
-                    {"id": c["id"], "type": c["type"], "parameters": c.get("parameters", {})}
+                    {"id": c.get("id", "?"), "type": c.get("type", "?"), "parameters": c.get("parameters", {})}
                     for c in resolved_components
                 ],
             },
             "message": (
-                f"'{circuit_type}' 회로 미리보기가 생성되었습니다. "
-                f"SVG 파일: {svg_path}\n"
-                f"브라우저에서 열어 확인하세요. "
-                f"확정하려면 confirm_circuit을 호출하세요. "
-                f"수정이 필요하면 preview_circuit을 다시 호출하세요."
+                f"'{circuit_type}' 회로 미리보기:\n\n"
+                f"```\n{ascii_diagram}\n```\n\n"
+                f"SVG 파일이 브라우저에서 자동으로 열립니다: {svg_path}\n"
+                f"확정하려면 confirm_circuit을, 수정하려면 preview_circuit을 다시 호출하세요."
             ),
         }
 

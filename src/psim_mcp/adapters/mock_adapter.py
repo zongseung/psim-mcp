@@ -73,7 +73,7 @@ class MockPsimAdapter(BasePsimAdapter):
     async def open_project(self, path: str) -> dict:
         """Store a dummy project with pre-defined components."""
         components = copy.deepcopy(_DEFAULT_COMPONENTS)
-        param_count = sum(len(c["parameters"]) for c in components)
+        param_count = sum(len(c.get("parameters", {})) for c in components)
 
         self._current_project = {
             "name": _stem_from_path(path),
@@ -213,7 +213,7 @@ class MockPsimAdapter(BasePsimAdapter):
             "path": self._current_project["path"],
             "components": components,
             "component_count": len(components),
-            "parameter_count": sum(len(c["parameters"]) for c in components),
+            "parameter_count": sum(len(c.get("parameters", {})) for c in components),
         }
 
     async def create_circuit(
