@@ -11,6 +11,7 @@ from psim_mcp.config import AppConfig
 from psim_mcp.services.response import ResponseBuilder
 from psim_mcp.utils.logging import SecurityAuditLogger, hash_input
 from psim_mcp.utils.sanitize import sanitize_for_llm_context, sanitize_path_for_display
+from psim_mcp.validators import validate_circuit as validate_circuit_spec
 from psim_mcp.services.validators import (
     validate_component_id,
     validate_output_dir,
@@ -312,6 +313,16 @@ class SimulationService:
                 return ResponseBuilder.error(
                     code="VALIDATION_ERROR",
                     message="save_path는 .psimsch 확장자여야 합니다.",
+                )
+
+            # Validate circuit spec (blocking — reject invalid circuits)
+            validation_input = {"components": components, "nets": []}
+            validation = validate_circuit_spec(validation_input)
+            if not validation.is_valid:
+                error_messages = "; ".join(e.message for e in validation.errors)
+                return ResponseBuilder.error(
+                    code="CIRCUIT_VALIDATION_FAILED",
+                    message=f"회로 검증 실패: {error_messages}",
                 )
 
             try:

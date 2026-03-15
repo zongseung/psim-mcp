@@ -9,16 +9,22 @@ import platform
 import subprocess
 import tempfile
 
+from psim_mcp.data.circuit_templates import TEMPLATES as _ALL_TEMPLATES, CATEGORIES as _CATEGORIES
+from psim_mcp.generators import get_generator
+from psim_mcp.services.preview_store import get_preview_store
 from psim_mcp.tools import tool_handler
 from psim_mcp.utils.ascii_renderer import render_circuit_ascii
 from psim_mcp.utils.svg_renderer import render_circuit_svg
+from psim_mcp.validators import validate_circuit
 
 
 # ---------------------------------------------------------------------------
-# Pre-defined circuit templates
+# Templates — imported from comprehensive data module
 # ---------------------------------------------------------------------------
+_TEMPLATES = _ALL_TEMPLATES
 
-_TEMPLATES: dict[str, dict] = {
+# Keep legacy inline templates as fallback (empty — all moved to data module)
+_LEGACY_TEMPLATES: dict[str, dict] = {
     "buck": {
         "description": "DC-DC Buck (step-down) converter",
         "components": [
@@ -154,9 +160,8 @@ def _apply_specs(components: list[dict], specs: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pending preview storage (in-memory, per server session)
+# Preview storage — token-based (supports concurrent previews)
 # ---------------------------------------------------------------------------
-_pending_preview: dict | None = None
 
 
 def register_tools(mcp, service=None):
@@ -192,11 +197,34 @@ def register_tools(mcp, service=None):
             connections: Explicit connection list (overrides template).
             simulation_settings: Optional simulation parameters.
         """
-        global _pending_preview
+        store = get_preview_store()
+        resolved_nets: list[dict] = []
 
-        # Resolve template
-        template = _TEMPLATES.get(circuit_type.lower())
-        if template and not components:
+        # Try generator first
+        _generator_resolved = False
+        try:
+            generator = get_generator(circuit_type.lower())
+        except KeyError:
+            generator = None
+
+        if generator and not components:
+            req = specs or {}
+            missing = generator.missing_fields(req)
+            if not missing:
+                try:
+                    gen_result = generator.generate(req)
+                    resolved_components = gen_result["components"]
+                    resolved_connections = []  # generator uses nets
+                    resolved_nets = gen_result.get("nets", [])
+                    _generator_resolved = True
+                except Exception:
+                    pass  # generator failed, fall back to template
+
+        # Resolve template (fallback if generator didn't resolve)
+        if not _generator_resolved:
+            template = _TEMPLATES.get(circuit_type.lower())
+
+        if not _generator_resolved and template and not components:
             resolved_components = copy.deepcopy(template["components"])
             resolved_connections = connections or copy.deepcopy(template["connections"])
 
@@ -204,10 +232,10 @@ def register_tools(mcp, service=None):
             if specs:
                 _apply_specs(resolved_components, specs)
 
-        elif components and isinstance(components, list):
+        elif not _generator_resolved and components and isinstance(components, list):
             resolved_components = copy.deepcopy(components)
             resolved_connections = connections or []
-        else:
+        elif not _generator_resolved:
             # Fallback: if components was passed as a dict (specs), treat it as specs
             if components and isinstance(components, dict):
                 specs = components
@@ -237,6 +265,17 @@ def register_tools(mcp, service=None):
 
         if resolved_connections is None:
             resolved_connections = []
+
+        # Run validation (non-blocking for preview, just include warnings in response)
+        validation_input = {
+            "components": resolved_components,
+            "nets": resolved_nets,
+        }
+        validation_result = validate_circuit(validation_input)
+        validation_warnings = [
+            {"code": w.code, "message": w.message, "component_id": w.component_id}
+            for w in (validation_result.errors + validation_result.warnings)
+        ]
 
         # Render ASCII diagram for inline chat display
         ascii_diagram = render_circuit_ascii(
@@ -270,14 +309,14 @@ def register_tools(mcp, service=None):
         except Exception:
             pass  # Non-critical: user can still open manually
 
-        # Store pending preview for confirm_circuit
-        _pending_preview = {
+        # Store pending preview for confirm_circuit (token-based)
+        token = store.save({
             "circuit_type": circuit_type,
             "components": resolved_components,
             "connections": resolved_connections,
             "simulation_settings": simulation_settings,
             "svg_path": svg_path,
-        }
+        })
 
         return {
             "success": True,
@@ -285,18 +324,21 @@ def register_tools(mcp, service=None):
                 "ascii_diagram": ascii_diagram,
                 "svg_path": svg_path,
                 "circuit_type": circuit_type,
+                "preview_token": token,
                 "component_count": len(resolved_components),
                 "connection_count": len(resolved_connections),
                 "components": [
                     {"id": c.get("id", "?"), "type": c.get("type", "?"), "parameters": c.get("parameters", {})}
                     for c in resolved_components
                 ],
+                "validation_warnings": validation_warnings,
             },
             "message": (
-                f"'{circuit_type}' 회로 미리보기:\n\n"
+                f"'{circuit_type}' 회로 미리보기 (token: {token}):\n\n"
                 f"```\n{ascii_diagram}\n```\n\n"
                 f"SVG 파일이 브라우저에서 자동으로 열립니다: {svg_path}\n"
-                f"확정하려면 confirm_circuit을, 수정하려면 preview_circuit을 다시 호출하세요."
+                f"확정하려면 confirm_circuit(preview_token='{token}')을, "
+                f"수정하려면 preview_circuit을 다시 호출하세요."
             ),
         }
 
@@ -309,32 +351,42 @@ def register_tools(mcp, service=None):
     @tool_handler("confirm_circuit")
     async def confirm_circuit(
         save_path: str,
+        preview_token: str | None = None,
         modifications: dict | None = None,
     ) -> str:
         """Confirm the previewed circuit and generate the actual .psimsch file.
 
         Args:
             save_path: Path to save the .psimsch file.
+            preview_token: Token returned by preview_circuit to identify which preview to confirm.
             modifications: Optional dict to override parameters before creation.
                 Example: {"V1": {"voltage": 24.0}, "R1": {"resistance": 50.0}}
         """
-        global _pending_preview
         svc = service or _get_service()
+        store = get_preview_store()
 
-        if _pending_preview is None:
+        # Retrieve preview data by token
+        preview = None
+        if preview_token:
+            preview = store.get(preview_token)
+
+        if preview is None:
             return {
                 "success": False,
                 "error": {
                     "code": "NO_PREVIEW",
                     "message": "확정할 미리보기가 없습니다.",
-                    "suggestion": "먼저 preview_circuit을 호출하여 회로를 미리보기하세요.",
+                    "suggestion": (
+                        "먼저 preview_circuit을 호출하여 회로를 미리보기하고, "
+                        "반환된 preview_token을 전달하세요."
+                    ),
                 },
             }
 
-        components = copy.deepcopy(_pending_preview["components"])
-        connections = _pending_preview["connections"]
-        circuit_type = _pending_preview["circuit_type"]
-        simulation_settings = _pending_preview["simulation_settings"]
+        components = copy.deepcopy(preview["components"])
+        connections = preview["connections"]
+        circuit_type = preview["circuit_type"]
+        simulation_settings = preview["simulation_settings"]
 
         # Apply modifications if provided
         if modifications:
@@ -350,9 +402,9 @@ def register_tools(mcp, service=None):
             simulation_settings=simulation_settings,
         )
 
-        # Clear pending preview after successful creation
+        # Clear preview after successful creation
         if isinstance(result, dict) and result.get("success"):
-            _pending_preview = None
+            store.delete(preview_token)
 
         return result
 
@@ -373,13 +425,33 @@ def register_tools(mcp, service=None):
         """Create a new PSIM circuit schematic directly (without preview)."""
         svc = service or _get_service()
 
-        template = _TEMPLATES.get(circuit_type.lower())
-        if template and not components:
-            components = template["components"]
-            connections = connections or template["connections"]
-        elif not components:
-            components = []
-            connections = connections or []
+        # Try generator first
+        _generator_resolved = False
+        try:
+            generator = get_generator(circuit_type.lower())
+        except KeyError:
+            generator = None
+
+        if generator and not components:
+            req = simulation_settings or {}
+            missing = generator.missing_fields(req)
+            if not missing:
+                try:
+                    gen_result = generator.generate(req)
+                    components = gen_result["components"]
+                    connections = []  # generator uses nets
+                    _generator_resolved = True
+                except Exception:
+                    pass  # generator failed, fall back to template
+
+        if not _generator_resolved:
+            template = _TEMPLATES.get(circuit_type.lower())
+            if template and not components:
+                components = template["components"]
+                connections = connections or template["connections"]
+            elif not components:
+                components = []
+                connections = connections or []
 
         if connections is None:
             connections = []
@@ -393,20 +465,33 @@ def register_tools(mcp, service=None):
         )
 
     @mcp.tool(
-        description="사용 가능한 회로 템플릿 목록을 반환합니다.",
+        description=(
+            "사용 가능한 회로 템플릿 목록을 반환합니다. "
+            "카테고리(dc_dc, dc_ac, ac_dc, pfc, renewable, motor_drive, battery, filter)로 필터링 가능."
+        ),
     )
     @tool_handler("list_circuit_templates")
-    async def list_circuit_templates() -> str:
-        """Return a list of available pre-defined circuit templates."""
-        templates = []
+    async def list_circuit_templates(category: str | None = None) -> str:
+        """Return available circuit templates, optionally filtered by category."""
+        by_category: dict[str, list] = {}
         for name, tmpl in _TEMPLATES.items():
-            templates.append({
+            cat = tmpl.get("category", "other")
+            if category and cat != category.lower():
+                continue
+            cat_label = _CATEGORIES.get(cat, cat)
+            by_category.setdefault(cat_label, []).append({
                 "name": name,
                 "description": tmpl["description"],
                 "component_count": len(tmpl["components"]),
-                "components": [
-                    {"id": c["id"], "type": c["type"]}
-                    for c in tmpl["components"]
-                ],
             })
-        return {"success": True, "data": {"templates": templates}, "message": f"{len(templates)}개 템플릿 사용 가능."}
+
+        total = sum(len(v) for v in by_category.values())
+        return {
+            "success": True,
+            "data": {
+                "categories": by_category,
+                "total_templates": total,
+                "available_categories": list(_CATEGORIES.keys()),
+            },
+            "message": f"{total}개 템플릿 사용 가능 ({len(by_category)}개 카테고리).",
+        }

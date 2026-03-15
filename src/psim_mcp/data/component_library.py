@@ -1,0 +1,281 @@
+"""PSIM component library — all component types available for circuit building."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+# ---------------------------------------------------------------------------
+# Pin & Parameter definition helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PinDef:
+    """Definition of a single component pin."""
+
+    name: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class ParamDef:
+    """Definition of a single component parameter."""
+
+    name: str
+    default: float | int | str = 0
+    unit: str = ""
+    description: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Component definitions
+# ---------------------------------------------------------------------------
+# Each entry: type_name → {category, korean, default_parameters, symbol,
+#                           pins, psim_element_type}
+# symbol is used for ASCII rendering
+
+COMPONENTS: dict[str, dict] = {
+    # === Switches ===
+    "MOSFET": {"category": "switch", "korean": "MOSFET", "symbol": "MOS",
+               "default_parameters": {"switching_frequency": 50000, "on_resistance": 0.01},
+               "pins": ["drain", "source", "gate"],
+               "psim_element_type": ""},
+    "IGBT": {"category": "switch", "korean": "IGBT", "symbol": "IGBT",
+             "default_parameters": {"switching_frequency": 20000, "on_resistance": 0.02},
+             "pins": ["collector", "emitter", "gate"],
+             "psim_element_type": ""},
+    "Thyristor": {"category": "switch", "korean": "사이리스터(SCR)", "symbol": "SCR",
+                  "default_parameters": {"firing_angle": 30},
+                  "pins": ["anode", "cathode", "gate"],
+                  "psim_element_type": ""},
+    "TRIAC": {"category": "switch", "korean": "트라이액", "symbol": "TRIAC",
+              "default_parameters": {"firing_angle": 90},
+              "pins": ["terminal1", "terminal2", "gate"],
+              "psim_element_type": ""},
+    "GTO": {"category": "switch", "korean": "GTO", "symbol": "GTO",
+            "default_parameters": {"switching_frequency": 1000},
+            "pins": ["anode", "cathode", "gate"],
+            "psim_element_type": ""},
+    "Ideal_Switch": {"category": "switch", "korean": "이상 스위치", "symbol": "SW",
+                     "default_parameters": {},
+                     "pins": ["pin1", "pin2", "control"],
+                     "psim_element_type": ""},
+
+    # === Diodes ===
+    "Diode": {"category": "diode", "korean": "다이오드", "symbol": "D",
+              "default_parameters": {"forward_voltage": 0.7},
+              "pins": ["anode", "cathode"],
+              "psim_element_type": ""},
+    "Zener_Diode": {"category": "diode", "korean": "제너 다이오드", "symbol": "ZD",
+                    "default_parameters": {"zener_voltage": 5.1},
+                    "pins": ["anode", "cathode"],
+                    "psim_element_type": ""},
+    "Schottky_Diode": {"category": "diode", "korean": "쇼트키 다이오드", "symbol": "SD",
+                       "default_parameters": {"forward_voltage": 0.3},
+                       "pins": ["anode", "cathode"],
+                       "psim_element_type": ""},
+
+    # === Passives ===
+    "Resistor": {"category": "passive", "korean": "저항", "symbol": "R",
+                 "default_parameters": {"resistance": 10.0},
+                 "pins": ["pin1", "pin2"],
+                 "psim_element_type": ""},
+    "Inductor": {"category": "passive", "korean": "인덕터", "symbol": "L",
+                 "default_parameters": {"inductance": 100e-6},
+                 "pins": ["pin1", "pin2"],
+                 "psim_element_type": ""},
+    "Capacitor": {"category": "passive", "korean": "커패시터", "symbol": "C",
+                  "default_parameters": {"capacitance": 100e-6},
+                  "pins": ["positive", "negative"],
+                  "psim_element_type": ""},
+    "Coupled_Inductor": {"category": "passive", "korean": "결합 인덕터", "symbol": "CL",
+                         "default_parameters": {"L1": 100e-6, "L2": 100e-6, "coupling": 0.99},
+                         "pins": ["L1_pin1", "L1_pin2", "L2_pin1", "L2_pin2"],
+                         "psim_element_type": ""},
+
+    # === Sources ===
+    "DC_Source": {"category": "source", "korean": "DC 전원", "symbol": "VDC",
+                  "default_parameters": {"voltage": 48.0},
+                  "pins": ["positive", "negative"],
+                  "psim_element_type": ""},
+    "AC_Source": {"category": "source", "korean": "AC 전원", "symbol": "VAC",
+                  "default_parameters": {"voltage": 220.0, "frequency": 60},
+                  "pins": ["positive", "negative"],
+                  "psim_element_type": ""},
+    "DC_Current_Source": {"category": "source", "korean": "DC 전류원", "symbol": "IDC",
+                          "default_parameters": {"current": 1.0},
+                          "pins": ["positive", "negative"],
+                          "psim_element_type": ""},
+    "AC_Current_Source": {"category": "source", "korean": "AC 전류원", "symbol": "IAC",
+                          "default_parameters": {"current": 1.0, "frequency": 60},
+                          "pins": ["positive", "negative"],
+                          "psim_element_type": ""},
+    "PV_Panel": {"category": "source", "korean": "태양광 패널", "symbol": "PV",
+                 "default_parameters": {"Voc": 40.0, "Isc": 10.0, "Vmp": 32.0, "Imp": 9.0},
+                 "pins": ["positive", "negative"],
+                 "psim_element_type": ""},
+
+    # === Transformers ===
+    "Transformer": {"category": "transformer", "korean": "변압기", "symbol": "XFMR",
+                    "default_parameters": {"turns_ratio": 1.0, "Lm": 1e-3},
+                    "pins": ["primary_in", "primary_out", "secondary_in", "secondary_out"],
+                    "psim_element_type": ""},
+    "Three_Phase_Transformer": {"category": "transformer", "korean": "3상 변압기", "symbol": "3XFMR",
+                                 "default_parameters": {"turns_ratio": 1.0, "connection": "Yy"},
+                                 "pins": ["primary_a", "primary_b", "primary_c",
+                                          "secondary_a", "secondary_b", "secondary_c"],
+                                 "psim_element_type": ""},
+    "Center_Tap_Transformer": {"category": "transformer", "korean": "센터탭 변압기", "symbol": "CTXF",
+                                "default_parameters": {"turns_ratio": 1.0},
+                                "pins": ["primary_in", "primary_out",
+                                         "secondary_top", "secondary_center", "secondary_bottom"],
+                                "psim_element_type": ""},
+
+    # === Motors ===
+    "DC_Motor": {"category": "motor", "korean": "DC 모터", "symbol": "DCM",
+                 "default_parameters": {"Ra": 0.5, "La": 5e-3, "Ke": 0.1, "J": 0.01},
+                 "pins": ["positive", "negative"],
+                 "psim_element_type": ""},
+    "Induction_Motor": {"category": "motor", "korean": "유도 전동기", "symbol": "IM",
+                        "default_parameters": {"poles": 4, "Rs": 0.5, "Rr": 0.4, "Ls": 0.08, "Lr": 0.08, "Lm": 0.075, "J": 0.1},
+                        "pins": ["phase_a", "phase_b", "phase_c"],
+                        "psim_element_type": ""},
+    "PMSM": {"category": "motor", "korean": "영구자석 동기 전동기", "symbol": "PMSM",
+             "default_parameters": {"poles": 8, "Rs": 0.1, "Ld": 1e-3, "Lq": 1e-3, "flux": 0.05, "J": 0.01},
+             "pins": ["phase_a", "phase_b", "phase_c"],
+             "psim_element_type": ""},
+    "BLDC_Motor": {"category": "motor", "korean": "BLDC 모터", "symbol": "BLDC",
+                   "default_parameters": {"poles": 8, "Rs": 0.1, "Ls": 1e-3, "Ke": 0.01, "J": 0.005},
+                   "pins": ["phase_a", "phase_b", "phase_c"],
+                   "psim_element_type": ""},
+    "SRM": {"category": "motor", "korean": "스위치드 릴럭턴스 모터", "symbol": "SRM",
+            "default_parameters": {"poles_stator": 8, "poles_rotor": 6, "J": 0.01},
+            "pins": ["phase_a", "phase_b", "phase_c"],
+            "psim_element_type": ""},
+
+    # === Sensors ===
+    "Voltage_Probe": {"category": "sensor", "korean": "전압 프로브", "symbol": "VP",
+                      "default_parameters": {},
+                      "pins": ["positive", "negative"],
+                      "psim_element_type": ""},
+    "Current_Probe": {"category": "sensor", "korean": "전류 프로브", "symbol": "IP",
+                      "default_parameters": {},
+                      "pins": ["pin1", "pin2"],
+                      "psim_element_type": ""},
+
+    # === Filters ===
+    "L_Filter": {"category": "filter", "korean": "L 필터", "symbol": "LF",
+                 "default_parameters": {"inductance": 1e-3},
+                 "pins": ["input", "output"],
+                 "psim_element_type": ""},
+    "LC_Filter": {"category": "filter", "korean": "LC 필터", "symbol": "LCF",
+                  "default_parameters": {"inductance": 1e-3, "capacitance": 10e-6},
+                  "pins": ["input", "output", "ground"],
+                  "psim_element_type": ""},
+    "LCL_Filter": {"category": "filter", "korean": "LCL 필터", "symbol": "LCLF",
+                   "default_parameters": {"L1": 1e-3, "C": 10e-6, "L2": 0.5e-3},
+                   "pins": ["input", "output", "ground"],
+                   "psim_element_type": ""},
+    "EMI_Filter": {"category": "filter", "korean": "EMI 필터", "symbol": "EMI",
+                   "default_parameters": {"Lcm": 1e-3, "Cx": 100e-9, "Cy": 2.2e-9},
+                   "pins": ["line_in", "neutral_in", "line_out", "neutral_out", "ground"],
+                   "psim_element_type": ""},
+
+    # === Control ===
+    "PI_Controller": {"category": "control", "korean": "PI 제어기", "symbol": "PI",
+                      "default_parameters": {"Kp": 1.0, "Ki": 100.0},
+                      "pins": ["input", "output"],
+                      "psim_element_type": ""},
+    "PID_Controller": {"category": "control", "korean": "PID 제어기", "symbol": "PID",
+                       "default_parameters": {"Kp": 1.0, "Ki": 100.0, "Kd": 0.001},
+                       "pins": ["input", "output"],
+                       "psim_element_type": ""},
+    "PWM_Generator": {"category": "control", "korean": "PWM 생성기", "symbol": "PWM",
+                      "default_parameters": {"frequency": 50000, "duty_cycle": 0.5},
+                      "pins": ["input", "output"],
+                      "psim_element_type": ""},
+    "PLL": {"category": "control", "korean": "PLL (위상 동기 루프)", "symbol": "PLL",
+            "default_parameters": {"frequency": 60},
+            "pins": ["input", "output"],
+            "psim_element_type": ""},
+
+    # === Battery ===
+    "Battery": {"category": "storage", "korean": "배터리", "symbol": "BAT",
+                "default_parameters": {"voltage": 48.0, "capacity_Ah": 100, "SOC": 0.8},
+                "pins": ["positive", "negative"],
+                "psim_element_type": ""},
+    "Supercapacitor": {"category": "storage", "korean": "슈퍼커패시터", "symbol": "SCAP",
+                       "default_parameters": {"capacitance": 100.0, "voltage": 2.7},
+                       "pins": ["positive", "negative"],
+                       "psim_element_type": ""},
+
+    # === Thermal ===
+    "Heatsink": {"category": "thermal", "korean": "방열판", "symbol": "HS",
+                 "default_parameters": {"Rth_sa": 0.5},
+                 "pins": ["thermal_in"],
+                 "psim_element_type": ""},
+}
+
+# ---------------------------------------------------------------------------
+# Category labels
+# ---------------------------------------------------------------------------
+
+CATEGORIES: dict[str, str] = {
+    "switch": "스위치 소자",
+    "diode": "다이오드",
+    "passive": "수동 소자",
+    "source": "전원",
+    "transformer": "변압기",
+    "motor": "모터",
+    "sensor": "센서",
+    "filter": "필터",
+    "control": "제어",
+    "storage": "에너지 저장",
+    "thermal": "열 관리",
+}
+
+# ---------------------------------------------------------------------------
+# Lookup index: lowercase kind → canonical type name
+# ---------------------------------------------------------------------------
+
+_KIND_INDEX: dict[str, str] = {k.lower(): k for k in COMPONENTS}
+
+
+# ---------------------------------------------------------------------------
+# Public helper functions
+# ---------------------------------------------------------------------------
+
+
+def get_component(kind: str) -> dict | None:
+    """Return the component definition dict for a given *kind* (case-insensitive).
+
+    Returns ``None`` if *kind* is not found.
+    """
+    canonical = _KIND_INDEX.get(kind.lower())
+    if canonical is None:
+        return None
+    return COMPONENTS[canonical]
+
+
+def validate_kind(kind: str) -> bool:
+    """Return ``True`` if *kind* matches a known component type."""
+    return kind.lower() in _KIND_INDEX
+
+
+def validate_pin(kind: str, pin_name: str) -> bool:
+    """Return ``True`` if *pin_name* is a valid pin for the given component *kind*."""
+    comp = get_component(kind)
+    if comp is None:
+        return False
+    return pin_name in comp.get("pins", [])
+
+
+def get_default_params(kind: str) -> dict:
+    """Return a copy of the default parameter dict for *kind*.
+
+    Returns an empty dict if *kind* is unknown.
+    """
+    comp = get_component(kind)
+    if comp is None:
+        return {}
+    return dict(comp.get("default_parameters", {}))
