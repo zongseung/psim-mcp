@@ -1,156 +1,142 @@
-"""SVG circuit diagram renderer for preview on any platform (Mac/Windows).
-
-Components are drawn horizontally (left-pin → body → right-pin) to match
-standard schematic conventions.  Connection wires use Manhattan routing
-(horizontal + vertical segments only).
-"""
+"""SVG circuit diagram renderer for preview on any platform."""
 
 from __future__ import annotations
 
 from psim_mcp.data.component_library import LEFT_PINS, RIGHT_PINS, get_component, get_pin_side
 
-# Component body width — all symbols are 60px wide with pins at x=0 and x=80
 _BODY_W = 60
-_TOTAL_W = 80  # pin-to-pin
+_TOTAL_W = 80
 _BODY_H = 30
-_MID_Y = 15  # vertical centre of the body
+_MID_Y = 15
 
 
-# ---------------------------------------------------------------------------
-# Component symbol helpers (horizontal orientation)
-# ---------------------------------------------------------------------------
+def _format_value(params: dict, key: str, unit: str) -> str:
+    val = params.get(key, "")
+    if not val:
+        return ""
+    if isinstance(val, (int, float)):
+        if key in {"inductance", "capacitance"} and val < 1e-3:
+            if val < 1e-9:
+                return f"{val * 1e12:.1f}p{unit}"
+            if val < 1e-6:
+                return f"{val * 1e9:.1f}n{unit}"
+            return f"{val * 1e6:.1f}u{unit}"
+        if key == "switching_frequency" and val >= 1000:
+            return f"{val / 1000:.0f}kHz"
+        if float(val).is_integer():
+            return f"{int(val)}{unit}"
+    return f"{val}{unit}"
+
+
+def _label(comp_id: str, params: dict, key: str | None = None, unit: str = "") -> str:
+    if key is None:
+        return comp_id
+    value = _format_value(params, key, unit)
+    return f"{comp_id}  {value}" if value else comp_id
+
+
+def _line(x1: int, y1: int, x2: int, y2: int, color: str = "#333", width: float = 2) -> str:
+    return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{width}"/>'
+
+
+def _polyline(points: list[tuple[int, int]], color: str = "#333", width: float = 2) -> str:
+    pts = " ".join(f"{x},{y}" for x, y in points)
+    return f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="{width}"/>'
+
+
+def _pin_dot(x: int, y: int) -> str:
+    return f'<circle cx="{x}" cy="{y}" r="3" fill="#e74c3c"/>'
+
+
+def _text(x: int, y: int, content: str, anchor: str = "middle", size: int = 11, color: str = "#333") -> str:
+    return (
+        f'<text x="{x}" y="{y}" text-anchor="{anchor}" '
+        f'font-size="{size}" font-family="sans-serif" fill="{color}">{content}</text>'
+    )
+
 
 def _svg_resistor(x: int, y: int, comp_id: str, params: dict) -> str:
-    val = params.get("resistance", "")
-    label = f"{comp_id}  {val}Ω" if val else comp_id
+    label = _label(comp_id, params, "resistance", "Ohm")
     return (
         f'<g transform="translate({x},{y})">'
-        # left lead
-        f'<line x1="0" y1="{_MID_Y}" x2="10" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        # zigzag
+        f'{_line(0, _MID_Y, 10, _MID_Y)}'
         f'<polyline points="10,{_MID_Y} 15,5 25,25 35,5 45,25 55,5 60,{_MID_Y} 70,{_MID_Y}" '
         f'fill="none" stroke="#333" stroke-width="2"/>'
-        # right lead
-        f'<line x1="70" y1="{_MID_Y}" x2="{_TOTAL_W}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        # pins
-        f'<circle cx="0" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<circle cx="{_TOTAL_W}" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        # label
-        f'<text x="40" y="-4" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">{label}</text>'
+        f'{_line(70, _MID_Y, _TOTAL_W, _MID_Y)}'
+        f'{_pin_dot(0, _MID_Y)}{_pin_dot(_TOTAL_W, _MID_Y)}'
+        f'{_text(40, -4, label)}'
         f'</g>'
     )
 
 
 def _svg_capacitor(x: int, y: int, comp_id: str, params: dict) -> str:
-    val = params.get("capacitance", "")
-    if isinstance(val, (int, float)):
-        if val < 1e-9:
-            label = f"{comp_id}  {val*1e12:.1f}pF"
-        elif val < 1e-6:
-            label = f"{comp_id}  {val*1e9:.1f}nF"
-        elif val < 1e-3:
-            label = f"{comp_id}  {val*1e6:.0f}μF"
-        else:
-            label = f"{comp_id}  {val*1e3:.0f}mF"
-    else:
-        label = f"{comp_id}  {val}F" if val else comp_id
-    cx = 40
+    label = _label(comp_id, params, "capacitance", "F")
     return (
         f'<g transform="translate({x},{y})">'
-        f'<line x1="0" y1="{_MID_Y}" x2="{cx-4}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<line x1="{cx-4}" y1="2" x2="{cx-4}" y2="28" stroke="#333" stroke-width="2.5"/>'
-        f'<line x1="{cx+4}" y1="2" x2="{cx+4}" y2="28" stroke="#333" stroke-width="2.5"/>'
-        f'<line x1="{cx+4}" y1="{_MID_Y}" x2="{_TOTAL_W}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<circle cx="0" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<circle cx="{_TOTAL_W}" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<text x="40" y="-4" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">{label}</text>'
+        f'{_line(0, _MID_Y, 36, _MID_Y)}'
+        f'{_line(36, 2, 36, 28, width=2.5)}'
+        f'{_line(44, 2, 44, 28, width=2.5)}'
+        f'{_line(44, _MID_Y, _TOTAL_W, _MID_Y)}'
+        f'{_pin_dot(0, _MID_Y)}{_pin_dot(_TOTAL_W, _MID_Y)}'
+        f'{_text(40, -4, label)}'
         f'</g>'
     )
 
 
 def _svg_inductor(x: int, y: int, comp_id: str, params: dict) -> str:
-    val = params.get("inductance", "")
-    if isinstance(val, (int, float)):
-        if val < 1e-9:
-            label = f"{comp_id}  {val*1e12:.1f}pH"
-        elif val < 1e-6:
-            label = f"{comp_id}  {val*1e9:.1f}nH"
-        elif val < 1e-3:
-            label = f"{comp_id}  {val*1e6:.0f}μH"
-        else:
-            label = f"{comp_id}  {val*1e3:.0f}mH"
-    else:
-        label = f"{comp_id}  {val}H" if val else comp_id
-    bumps = ""
-    for i in range(4):
-        sx = 12 + i * 14
-        bumps += f'<path d="M {sx} {_MID_Y} A 7 7 0 0 1 {sx+14} {_MID_Y}" fill="none" stroke="#333" stroke-width="2"/>'
+    label = _label(comp_id, params, "inductance", "H")
+    bumps = "".join(
+        f'<path d="M {12 + i * 14} {_MID_Y} A 7 7 0 0 1 {26 + i * 14} {_MID_Y}" fill="none" stroke="#333" stroke-width="2"/>'
+        for i in range(4)
+    )
     return (
         f'<g transform="translate({x},{y})">'
-        f'<line x1="0" y1="{_MID_Y}" x2="12" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'{bumps}'
-        f'<line x1="68" y1="{_MID_Y}" x2="{_TOTAL_W}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<circle cx="0" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<circle cx="{_TOTAL_W}" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<text x="40" y="-4" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">{label}</text>'
+        f'{_line(0, _MID_Y, 12, _MID_Y)}{bumps}{_line(68, _MID_Y, _TOTAL_W, _MID_Y)}'
+        f'{_pin_dot(0, _MID_Y)}{_pin_dot(_TOTAL_W, _MID_Y)}'
+        f'{_text(40, -4, label)}'
         f'</g>'
     )
 
 
 def _svg_dc_source(x: int, y: int, comp_id: str, params: dict) -> str:
-    val = params.get("voltage", "")
-    label = f"{comp_id}  {val}V" if val else comp_id
-    cx = 40
+    label = _label(comp_id, params, "voltage", "V")
     return (
         f'<g transform="translate({x},{y})">'
-        f'<line x1="0" y1="{_MID_Y}" x2="{cx-18}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<circle cx="{cx}" cy="{_MID_Y}" r="18" fill="none" stroke="#333" stroke-width="2"/>'
-        f'<text x="{cx-6}" y="{_MID_Y+1}" font-size="14" font-family="sans-serif" fill="#333">+</text>'
-        f'<text x="{cx+3}" y="{_MID_Y+1}" font-size="14" font-family="sans-serif" fill="#333">−</text>'
-        f'<line x1="{cx+18}" y1="{_MID_Y}" x2="{_TOTAL_W}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<circle cx="0" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<circle cx="{_TOTAL_W}" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<text x="40" y="-6" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">{label}</text>'
+        f'{_line(0, _MID_Y, 22, _MID_Y)}'
+        f'<circle cx="40" cy="{_MID_Y}" r="18" fill="none" stroke="#333" stroke-width="2"/>'
+        f'{_text(34, 19, "+", size=14)}{_text(46, 19, "-", size=14)}'
+        f'{_line(58, _MID_Y, _TOTAL_W, _MID_Y)}'
+        f'{_pin_dot(0, _MID_Y)}{_pin_dot(_TOTAL_W, _MID_Y)}'
+        f'{_text(40, -6, label)}'
         f'</g>'
     )
 
 
 def _svg_mosfet(x: int, y: int, comp_id: str, params: dict) -> str:
-    freq = params.get("switching_frequency", "")
-    if isinstance(freq, (int, float)) and freq >= 1000:
-        label = f"{comp_id}  {freq/1000:.0f}kHz"
-    else:
-        label = f"{comp_id}" if not freq else f"{comp_id}  {freq}Hz"
+    label = _label(comp_id, params, "switching_frequency", "Hz")
     return (
         f'<g transform="translate({x},{y})">'
-        f'<line x1="0" y1="{_MID_Y}" x2="15" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
+        f'{_line(0, _MID_Y, 15, _MID_Y)}'
         f'<rect x="15" y="2" width="50" height="26" rx="3" fill="#e8f4fd" stroke="#333" stroke-width="2"/>'
-        f'<text x="40" y="19" text-anchor="middle" font-size="9" font-family="sans-serif" fill="#333">MOS</text>'
-        # gate tick
-        f'<line x1="25" y1="28" x2="25" y2="35" stroke="#333" stroke-width="1.5"/>'
-        f'<text x="20" y="44" font-size="8" font-family="sans-serif" fill="#666">G</text>'
-        f'<line x1="65" y1="{_MID_Y}" x2="{_TOTAL_W}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<circle cx="0" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<circle cx="{_TOTAL_W}" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<text x="40" y="-4" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">{label}</text>'
+        f'{_text(40, 19, "MOS", size=9)}'
+        f'{_line(25, 28, 25, 35, width=1.5)}{_text(20, 44, "G", anchor="start", size=8, color="#666")}'
+        f'{_line(65, _MID_Y, _TOTAL_W, _MID_Y)}'
+        f'{_pin_dot(0, _MID_Y)}{_pin_dot(_TOTAL_W, _MID_Y)}'
+        f'{_text(40, -4, label)}'
         f'</g>'
     )
 
 
 def _svg_diode(x: int, y: int, comp_id: str, params: dict) -> str:
-    val = params.get("forward_voltage", "")
-    label = f"{comp_id}  {val}V" if val else comp_id
+    label = _label(comp_id, params, "forward_voltage", "V")
     return (
         f'<g transform="translate({x},{y})">'
-        f'<line x1="0" y1="{_MID_Y}" x2="25" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        # triangle pointing right
+        f'{_line(0, _MID_Y, 25, _MID_Y)}'
         f'<polygon points="25,4 25,26 48,{_MID_Y}" fill="none" stroke="#333" stroke-width="2"/>'
-        # bar
-        f'<line x1="48" y1="4" x2="48" y2="26" stroke="#333" stroke-width="2.5"/>'
-        f'<line x1="48" y1="{_MID_Y}" x2="{_TOTAL_W}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<circle cx="0" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<circle cx="{_TOTAL_W}" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<text x="40" y="-4" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">{label}</text>'
+        f'{_line(48, 4, 48, 26, width=2.5)}'
+        f'{_line(48, _MID_Y, _TOTAL_W, _MID_Y)}'
+        f'{_pin_dot(0, _MID_Y)}{_pin_dot(_TOTAL_W, _MID_Y)}'
+        f'{_text(40, -4, label)}'
         f'</g>'
     )
 
@@ -158,13 +144,12 @@ def _svg_diode(x: int, y: int, comp_id: str, params: dict) -> str:
 def _svg_generic(x: int, y: int, comp_id: str, comp_type: str, params: dict) -> str:
     return (
         f'<g transform="translate({x},{y})">'
-        f'<line x1="0" y1="{_MID_Y}" x2="10" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
+        f'{_line(0, _MID_Y, 10, _MID_Y)}'
         f'<rect x="10" y="2" width="60" height="26" rx="3" fill="#f5f5f5" stroke="#333" stroke-width="2"/>'
-        f'<text x="40" y="19" text-anchor="middle" font-size="9" font-family="sans-serif" fill="#333">{comp_type[:8]}</text>'
-        f'<line x1="70" y1="{_MID_Y}" x2="{_TOTAL_W}" y2="{_MID_Y}" stroke="#333" stroke-width="2"/>'
-        f'<circle cx="0" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<circle cx="{_TOTAL_W}" cy="{_MID_Y}" r="3" fill="#e74c3c"/>'
-        f'<text x="40" y="-4" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">{comp_id}</text>'
+        f'{_text(40, 19, comp_type[:8], size=9)}'
+        f'{_line(70, _MID_Y, _TOTAL_W, _MID_Y)}'
+        f'{_pin_dot(0, _MID_Y)}{_pin_dot(_TOTAL_W, _MID_Y)}'
+        f'{_text(40, -4, comp_id)}'
         f'</g>'
     )
 
@@ -174,86 +159,87 @@ _SYMBOL_MAP = {
     "Capacitor": _svg_capacitor,
     "Inductor": _svg_inductor,
     "DC_Source": _svg_dc_source,
+    "AC_Source": _svg_dc_source,
+    "Battery": _svg_dc_source,
     "MOSFET": _svg_mosfet,
+    "IGBT": _svg_mosfet,
     "Diode": _svg_diode,
 }
 
 _PIN_ANCHOR_MAP: dict[str, dict[str, tuple[int, int]]] = {
-    "Resistor": {
-        "pin1": (0, _MID_Y),
-        "input": (0, _MID_Y),
-        "pin2": (_TOTAL_W, _MID_Y),
-        "output": (_TOTAL_W, _MID_Y),
-    },
-    "Inductor": {
-        "pin1": (0, _MID_Y),
-        "input": (0, _MID_Y),
-        "pin2": (_TOTAL_W, _MID_Y),
-        "output": (_TOTAL_W, _MID_Y),
-    },
-    "Capacitor": {
-        "positive": (0, _MID_Y),
-        "pin1": (0, _MID_Y),
-        "negative": (_TOTAL_W, _MID_Y),
-        "pin2": (_TOTAL_W, _MID_Y),
-    },
-    "DC_Source": {
-        "positive": (0, _MID_Y),
-        "pin1": (0, _MID_Y),
-        "negative": (_TOTAL_W, _MID_Y),
-        "pin2": (_TOTAL_W, _MID_Y),
-    },
-    "AC_Source": {
-        "positive": (0, _MID_Y),
-        "pin1": (0, _MID_Y),
-        "negative": (_TOTAL_W, _MID_Y),
-        "pin2": (_TOTAL_W, _MID_Y),
-    },
-    "Battery": {
-        "positive": (0, _MID_Y),
-        "pin1": (0, _MID_Y),
-        "negative": (_TOTAL_W, _MID_Y),
-        "pin2": (_TOTAL_W, _MID_Y),
-    },
-    "Diode": {
-        "anode": (0, _MID_Y),
-        "pin1": (0, _MID_Y),
-        "cathode": (_TOTAL_W, _MID_Y),
-        "pin2": (_TOTAL_W, _MID_Y),
-    },
-    "MOSFET": {
-        "drain": (0, _MID_Y),
-        "source": (_TOTAL_W, _MID_Y),
-        "gate": (25, _BODY_H),
-    },
-    "IGBT": {
-        "collector": (0, _MID_Y),
-        "emitter": (_TOTAL_W, _MID_Y),
-        "gate": (25, _BODY_H),
-    },
-    "Transformer": {
-        "primary_in": (0, 8),
-        "primary_out": (0, 22),
-        "secondary_out": (_TOTAL_W, 8),
-        "secondary_in": (_TOTAL_W, 22),
-    },
-    "Center_Tap_Transformer": {
-        "primary_top": (0, 6),
-        "primary_center": (0, _MID_Y),
-        "primary_bottom": (0, 24),
-        "secondary_top": (_TOTAL_W, 6),
-        "secondary_center": (_TOTAL_W, _MID_Y),
-        "secondary_bottom": (_TOTAL_W, 24),
-    },
+    "Resistor": {"pin1": (0, _MID_Y), "input": (0, _MID_Y), "pin2": (_TOTAL_W, _MID_Y), "output": (_TOTAL_W, _MID_Y)},
+    "Inductor": {"pin1": (0, _MID_Y), "input": (0, _MID_Y), "pin2": (_TOTAL_W, _MID_Y), "output": (_TOTAL_W, _MID_Y)},
+    "Capacitor": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
+    "DC_Source": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
+    "AC_Source": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
+    "Battery": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
+    "Diode": {"anode": (0, _MID_Y), "pin1": (0, _MID_Y), "cathode": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
+    "MOSFET": {"drain": (0, _MID_Y), "source": (_TOTAL_W, _MID_Y), "gate": (25, _BODY_H)},
+    "IGBT": {"collector": (0, _MID_Y), "emitter": (_TOTAL_W, _MID_Y), "gate": (25, _BODY_H)},
 }
 
 
-# ---------------------------------------------------------------------------
-# Pin geometry
-# ---------------------------------------------------------------------------
+def _port_pin_map(comp: dict) -> dict[str, tuple[int, int]]:
+    comp_id = comp.get("id", "")
+    comp_type = comp.get("type", "")
+    ports = comp.get("ports", [])
+    if not comp_id or not ports:
+        return {}
+
+    pin_map: dict[str, tuple[int, int]] = {}
+    if comp_type in ("MOSFET", "IGBT") and len(ports) >= 6:
+        pin_map[f"{comp_id}.drain"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.collector"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.source"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.emitter"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.gate"] = (ports[4], ports[5])
+    elif comp_type in ("Diode", "DIODE") and len(ports) >= 4:
+        pin_map[f"{comp_id}.anode"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.cathode"] = (ports[2], ports[3])
+    elif comp_type in ("DC_Source", "AC_Source", "Battery") and len(ports) >= 4:
+        pin_map[f"{comp_id}.positive"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.negative"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.pin2"] = (ports[2], ports[3])
+    elif comp_type in ("Inductor", "Resistor") and len(ports) >= 4:
+        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.input"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.pin2"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.output"] = (ports[2], ports[3])
+    elif comp_type == "Capacitor" and len(ports) >= 4:
+        pin_map[f"{comp_id}.positive"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.negative"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.pin2"] = (ports[2], ports[3])
+    elif comp_type == "Ground" and len(ports) >= 2:
+        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
+    elif comp_type == "PWM_Generator" and len(ports) >= 2:
+        pin_map[f"{comp_id}.output"] = (ports[0], ports[1])
+    elif comp_type == "DiodeBridge" and len(ports) >= 8:
+        pin_map[f"{comp_id}.ac_pos"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.ac_neg"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.dc_pos"] = (ports[4], ports[5])
+        pin_map[f"{comp_id}.dc_neg"] = (ports[6], ports[7])
+    elif comp_type == "Transformer" and len(ports) >= 8:
+        pin_map[f"{comp_id}.primary1"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.primary_in"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.primary2"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.primary_out"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.secondary1"] = (ports[4], ports[5])
+        pin_map[f"{comp_id}.secondary_out"] = (ports[4], ports[5])
+        pin_map[f"{comp_id}.secondary2"] = (ports[6], ports[7])
+        pin_map[f"{comp_id}.secondary_in"] = (ports[6], ports[7])
+    elif comp_type == "Center_Tap_Transformer" and len(ports) >= 12:
+        pin_map[f"{comp_id}.primary_top"] = (ports[0], ports[1])
+        pin_map[f"{comp_id}.primary_center"] = (ports[2], ports[3])
+        pin_map[f"{comp_id}.primary_bottom"] = (ports[4], ports[5])
+        pin_map[f"{comp_id}.secondary_top"] = (ports[6], ports[7])
+        pin_map[f"{comp_id}.secondary_center"] = (ports[8], ports[9])
+        pin_map[f"{comp_id}.secondary_bottom"] = (ports[10], ports[11])
+    return pin_map
+
 
 def _spread_positions(count: int, start: int, end: int) -> list[int]:
-    """Return *count* evenly spread integer positions between *start* and *end*."""
     if count <= 0:
         return []
     if count == 1:
@@ -263,7 +249,6 @@ def _spread_positions(count: int, start: int, end: int) -> list[int]:
 
 
 def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
-    """Build pin reference -> SVG coordinate map from component metadata."""
     pin_pos: dict[str, tuple[int, int]] = {}
     for comp in components:
         cid = comp.get("id", "")
@@ -271,6 +256,11 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
             continue
         comp_type = comp.get("type", "")
         pos = comp.get("position", {"x": 0, "y": 0})
+        port_map = _port_pin_map(comp)
+        if port_map:
+            pin_pos.update(port_map)
+            continue
+
         explicit_anchors = _PIN_ANCHOR_MAP.get(comp_type)
         if explicit_anchors:
             for pin_name, (dx, dy) in explicit_anchors.items():
@@ -279,7 +269,6 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
 
         lib_comp = get_component(comp_type)
         pins = list(lib_comp.get("pins", [])) if lib_comp else []
-
         if not pins:
             for pin in LEFT_PINS:
                 pin_pos[f"{cid}.{pin}"] = (pos["x"], pos["y"] + _MID_Y)
@@ -290,7 +279,6 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
         left_pins = [pin for pin in pins if get_pin_side(pin) == "left"]
         right_pins = [pin for pin in pins if get_pin_side(pin) == "right"]
         center_pins = [pin for pin in pins if get_pin_side(pin) == "center"]
-
         left_ys = _spread_positions(len(left_pins), 4, _BODY_H - 4)
         right_ys = _spread_positions(len(right_pins), 4, _BODY_H - 4)
 
@@ -299,85 +287,41 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
         for pin, y in zip(right_pins, right_ys):
             pin_pos[f"{cid}.{pin}"] = (pos["x"] + _TOTAL_W, pos["y"] + y)
 
-        bottom_pins = [
-            pin for pin in center_pins
-            if pin in {"gate", "control", "ground", "thermal_in", "secondary_center"}
-        ]
+        bottom_pins = [pin for pin in center_pins if pin in {"gate", "control", "ground", "thermal_in", "secondary_center"}]
         top_pins = [pin for pin in center_pins if pin not in bottom_pins]
-
         top_xs = _spread_positions(len(top_pins), 12, _TOTAL_W - 12)
         bottom_xs = _spread_positions(len(bottom_pins), 12, _TOTAL_W - 12)
-
         for pin, x in zip(top_pins, top_xs):
             pin_pos[f"{cid}.{pin}"] = (pos["x"] + x, pos["y"])
         for pin, x in zip(bottom_pins, bottom_xs):
             pin_pos[f"{cid}.{pin}"] = (pos["x"] + x, pos["y"] + _BODY_H)
-
     return pin_pos
 
 
 def _draw_segment(x1: int, y1: int, x2: int, y2: int) -> str:
-    """Draw a straight or Manhattan-routed wire segment."""
     if x1 == x2 or y1 == y2:
-        return (
-            f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
-            f'stroke="#2980b9" stroke-width="2"/>'
-        )
+        return _line(x1, y1, x2, y2, color="#2980b9")
     mx = (x1 + x2) // 2
-    return (
-        f'<polyline points="{x1},{y1} {mx},{y1} {mx},{y2} {x2},{y2}" '
-        f'fill="none" stroke="#2980b9" stroke-width="2"/>'
+    return _polyline([(x1, y1), (mx, y1), (mx, y2), (x2, y2)], color="#2980b9")
+
+
+def _render_connections(components: list[dict], connections: list[dict]) -> str:
+    pin_pos = _build_pin_positions(components)
+    return "".join(
+        _draw_segment(*pin_pos[conn["from"]], *pin_pos[conn["to"]])
+        for conn in connections
+        if conn.get("from") in pin_pos and conn.get("to") in pin_pos
     )
 
 
-# ---------------------------------------------------------------------------
-# Manhattan-routed wires
-# ---------------------------------------------------------------------------
-
-def _render_connections(components: list[dict], connections: list[dict]) -> str:
-    """Render point-to-point wires between component pins."""
-    pin_pos = _build_pin_positions(components)
-
-    lines = ""
-    for conn in connections:
-        p1 = pin_pos.get(conn.get("from", ""))
-        p2 = pin_pos.get(conn.get("to", ""))
-        if not p1 or not p2:
-            continue
-
-        x1, y1 = p1
-        x2, y2 = p2
-
-        if y1 == y2:
-            # Straight horizontal
-            lines += (
-                f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
-                f'stroke="#2980b9" stroke-width="2"/>'
-            )
-        else:
-            # Manhattan: horizontal to midpoint, then vertical, then horizontal
-            mx = (x1 + x2) // 2
-            lines += (
-                f'<polyline points="{x1},{y1} {mx},{y1} {mx},{y2} {x2},{y2}" '
-                f'fill="none" stroke="#2980b9" stroke-width="2"/>'
-            )
-
-    return lines
-
-
-# ---------------------------------------------------------------------------
-# Net-based wires and junction dots
-# ---------------------------------------------------------------------------
-
 def _render_nets(components: list[dict], nets: list[dict]) -> tuple[str, str]:
-    """Render shared nets directly instead of flattening them into chains."""
     pin_pos = _build_pin_positions(components)
     lines = ""
     dots = ""
     for net in nets:
         refs = net.get("pins", net.get("connections", []))
-        points = []
-        seen = set()
+        points: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
         for ref in refs:
             point = pin_pos.get(ref)
             if point and point not in seen:
@@ -386,65 +330,219 @@ def _render_nets(components: list[dict], nets: list[dict]) -> tuple[str, str]:
         if len(points) < 2:
             continue
         if len(points) == 2:
-            (x1, y1), (x2, y2) = points
-            lines += _draw_segment(x1, y1, x2, y2)
+            lines += _draw_segment(*points[0], *points[1])
             continue
-
         hub_x = round(sum(x for x, _ in points) / len(points))
         hub_y = round(sum(y for _, y in points) / len(points))
         for x, y in points:
             lines += _draw_segment(x, y, hub_x, hub_y)
         dots += f'<circle cx="{hub_x}" cy="{hub_y}" r="4" fill="#2980b9"/>'
-
     return lines, dots
 
 
 def _render_junctions(components: list[dict], connections: list[dict]) -> str:
-    """Draw junction dots where multiple wires share a pin."""
     pin_pos = _build_pin_positions(components)
-
     pos_count: dict[tuple[int, int], int] = {}
     for conn in connections:
         for key in ("from", "to"):
-            p = pin_pos.get(conn.get(key, ""))
-            if p:
-                pos_count[p] = pos_count.get(p, 0) + 1
+            point = pin_pos.get(conn.get(key, ""))
+            if point:
+                pos_count[point] = pos_count.get(point, 0) + 1
+    return "".join(
+        f'<circle cx="{x}" cy="{y}" r="4" fill="#2980b9"/>'
+        for (x, y), count in pos_count.items()
+        if count >= 2
+    )
 
-    dots = ""
-    for (x, y), count in pos_count.items():
-        if count >= 2:
-            dots += f'<circle cx="{x}" cy="{y}" r="4" fill="#2980b9"/>'
-    return dots
-
-
-# ---------------------------------------------------------------------------
-# GND symbol
-# ---------------------------------------------------------------------------
 
 def _render_gnd_symbols(components: list[dict]) -> str:
-    """Draw GND symbols at negative pins of voltage sources."""
+    if any(comp.get("type") == "Ground" for comp in components):
+        return ""
     gnd = ""
     for comp in components:
-        if comp["type"] != "DC_Source":
+        if comp.get("type") != "DC_Source":
             continue
-        pos = comp.get("position", {"x": 0, "y": 0})
-        # Right pin is negative for horizontal DC source
-        gx = pos["x"] + _TOTAL_W
-        gy = pos["y"] + _MID_Y
+        ports = comp.get("ports", [])
+        if len(ports) >= 4:
+            gx, gy = ports[2], ports[3]
+        else:
+            pos = comp.get("position", {"x": 0, "y": 0})
+            gx, gy = pos["x"] + _TOTAL_W, pos["y"] + _MID_Y
         gnd += (
             f'<g transform="translate({gx},{gy})">'
-            f'<line x1="0" y1="0" x2="0" y2="12" stroke="#333" stroke-width="2"/>'
-            f'<line x1="-10" y1="12" x2="10" y2="12" stroke="#333" stroke-width="2"/>'
-            f'<line x1="-6" y1="16" x2="6" y2="16" stroke="#333" stroke-width="1.5"/>'
-            f'<line x1="-3" y1="20" x2="3" y2="20" stroke="#333" stroke-width="1"/>'
+            f'{_line(0, 0, 0, 12)}{_line(-10, 12, 10, 12)}{_line(-6, 16, 6, 16, width=1.5)}{_line(-3, 20, 3, 20, width=1)}'
             f'</g>'
         )
     return gnd
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def _render_two_terminal_with_ports(comp: dict, label: str, kind: str) -> str:
+    ports = comp.get("ports", [])
+    if len(ports) < 4:
+        return ""
+    x1, y1, x2, y2 = ports[:4]
+    cid = comp.get("id", "?")
+    horizontal = y1 == y2
+    parts = [f'<g transform="translate(0,0)">']
+    parts.append(_pin_dot(x1, y1))
+    parts.append(_pin_dot(x2, y2))
+    if horizontal:
+        midx = (x1 + x2) // 2
+        parts.append(_line(x1, y1, midx - 18, y1))
+        parts.append(_line(midx + 18, y1, x2, y2))
+        if kind == "resistor":
+            parts.append(_polyline([(midx - 18, y1), (midx - 12, y1 - 10), (midx - 4, y1 + 10), (midx + 4, y1 - 10), (midx + 12, y1 + 10), (midx + 18, y1)]))
+        elif kind == "inductor":
+            for i in range(4):
+                sx = midx - 16 + i * 8
+                parts.append(f'<path d="M {sx} {y1} A 4 4 0 0 1 {sx + 8} {y1}" fill="none" stroke="#333" stroke-width="2"/>')
+        elif kind == "capacitor":
+            parts.append(_line(midx - 4, y1 - 12, midx - 4, y1 + 12, width=2.5))
+            parts.append(_line(midx + 4, y1 - 12, midx + 4, y1 + 12, width=2.5))
+        elif kind == "diode":
+            parts.append(f'<polygon points="{midx - 12},{y1 - 11} {midx - 12},{y1 + 11} {midx + 8},{y1}" fill="none" stroke="#333" stroke-width="2"/>')
+            parts.append(_line(midx + 8, y1 - 11, midx + 8, y1 + 11, width=2.5))
+        elif kind == "source":
+            parts.append(f'<circle cx="{midx}" cy="{y1}" r="16" fill="none" stroke="#333" stroke-width="2"/>')
+            parts.append(_text(midx - 5, y1 + 4, "+", size=13))
+            parts.append(_text(midx + 5, y1 + 4, "-", size=13))
+        parts.append(_text(midx, y1 - 18, label))
+    else:
+        midy = (y1 + y2) // 2
+        parts.append(_line(x1, y1, x1, midy - 18))
+        parts.append(_line(x2, midy + 18, x2, y2))
+        if kind == "resistor":
+            parts.append(_polyline([(x1, midy - 18), (x1 - 10, midy - 12), (x1 + 10, midy - 4), (x1 - 10, midy + 4), (x1 + 10, midy + 12), (x1, midy + 18)]))
+        elif kind == "inductor":
+            for i in range(4):
+                sy = midy - 16 + i * 8
+                parts.append(f'<path d="M {x1} {sy} A 4 4 0 0 0 {x1} {sy + 8}" fill="none" stroke="#333" stroke-width="2"/>')
+        elif kind == "capacitor":
+            parts.append(_line(x1 - 12, midy - 4, x1 + 12, midy - 4, width=2.5))
+            parts.append(_line(x1 - 12, midy + 4, x1 + 12, midy + 4, width=2.5))
+        elif kind == "diode":
+            parts.append(f'<polygon points="{x1 - 11},{midy + 12} {x1 + 11},{midy + 12} {x1},{midy - 8}" fill="none" stroke="#333" stroke-width="2"/>')
+            parts.append(_line(x1 - 11, midy - 8, x1 + 11, midy - 8, width=2.5))
+        elif kind == "source":
+            parts.append(f'<circle cx="{x1}" cy="{midy}" r="16" fill="none" stroke="#333" stroke-width="2"/>')
+            parts.append(_text(x1 - 4, midy - 3, "+", size=13))
+            parts.append(_text(x1 - 4, midy + 13, "-", size=13))
+        parts.append(_text(x1 + 20, midy - 20, label, anchor="start"))
+    parts.append("</g>")
+    return "".join(parts)
+
+
+def _render_switch_with_ports(comp: dict) -> str:
+    ports = comp.get("ports", [])
+    if len(ports) < 6:
+        return ""
+    drain_x, drain_y, source_x, source_y, gate_x, gate_y = ports[:6]
+    cid = comp.get("id", "?")
+    label = _label(cid, comp.get("parameters", {}), "switching_frequency", "Hz")
+    midx = (drain_x + source_x) // 2
+    midy = (drain_y + source_y) // 2
+    left = min(drain_x, source_x) + 10 if drain_y == source_y else drain_x - 12
+    top = min(drain_y, source_y) + 10 if drain_x == source_x else drain_y - 12
+    if drain_x == source_x:
+        body = f'<rect x="{drain_x - 14}" y="{min(drain_y, source_y) + 12}" width="28" height="{abs(source_y - drain_y) - 24}" rx="3" fill="#e8f4fd" stroke="#333" stroke-width="2"/>'
+        leads = _line(drain_x, drain_y, drain_x, min(drain_y, source_y) + 12) + _line(source_x, max(drain_y, source_y) - 12, source_x, source_y)
+    else:
+        body = f'<rect x="{min(drain_x, source_x) + 12}" y="{drain_y - 14}" width="{abs(source_x - drain_x) - 24}" height="28" rx="3" fill="#e8f4fd" stroke="#333" stroke-width="2"/>'
+        leads = _line(drain_x, drain_y, min(drain_x, source_x) + 12, drain_y) + _line(max(drain_x, source_x) - 12, source_y, source_x, source_y)
+    return (
+        f'<g transform="translate(0,0)">'
+        f'{leads}{body}{_line(gate_x, gate_y, midx if drain_x == source_x else gate_x, midy if drain_x == source_x else drain_y, width=1.5)}'
+        f'{_pin_dot(drain_x, drain_y)}{_pin_dot(source_x, source_y)}{_pin_dot(gate_x, gate_y)}'
+        f'{_text(midx, min(drain_y, source_y) - 8, label)}'
+        f'</g>'
+    )
+
+
+def _render_transformer_with_ports(comp: dict, center_tap: bool = False) -> str:
+    ports = comp.get("ports", [])
+    cid = comp.get("id", "?")
+    if center_tap and len(ports) < 12:
+        return ""
+    if not center_tap and len(ports) < 8:
+        return ""
+    if center_tap:
+        p1x, p1y, pcx, pcy, p2x, p2y, s1x, s1y, scx, scy, s2x, s2y = ports[:12]
+    else:
+        p1x, p1y, p2x, p2y, s1x, s1y, s2x, s2y = ports[:8]
+        pcx = pcy = scx = scy = None
+    left_x = min(p1x, p2x) + 14
+    right_x = max(s1x, s2x) - 14
+    top_y = min(p1y, p2y, s1y, s2y)
+    coils = []
+    for i in range(3):
+        sy = top_y + 5 + i * 8
+        coils.append(f'<path d="M {left_x} {sy} A 5 4 0 0 1 {left_x} {sy + 8}" fill="none" stroke="#333" stroke-width="1.6"/>')
+        coils.append(f'<path d="M {right_x} {sy} A 5 4 0 0 0 {right_x} {sy + 8}" fill="none" stroke="#333" stroke-width="1.6"/>')
+    parts = [
+        '<g transform="translate(0,0)">',
+        _line(p1x, p1y, left_x, p1y),
+        _line(p2x, p2y, left_x, p2y),
+        _line(right_x, s1y, s1x, s1y),
+        _line(right_x, s2y, s2x, s2y),
+        _line((left_x + right_x) // 2 - 6, top_y, (left_x + right_x) // 2 - 6, top_y + 30, width=1.5),
+        _line((left_x + right_x) // 2 + 6, top_y, (left_x + right_x) // 2 + 6, top_y + 30, width=1.5),
+        "".join(coils),
+        f'<circle cx="{left_x + 7}" cy="{top_y + 7}" r="2.5" fill="#333"/>',
+        f'<circle cx="{right_x - 7}" cy="{top_y + 7}" r="2.5" fill="#333"/>',
+        _pin_dot(p1x, p1y), _pin_dot(p2x, p2y), _pin_dot(s1x, s1y), _pin_dot(s2x, s2y),
+        _text(left_x + 7, top_y - 6, "P", size=8),
+        _text(right_x - 7, top_y - 6, "S", size=8),
+        _text((left_x + right_x) // 2, top_y - 8, cid),
+    ]
+    if center_tap and pcx is not None and scx is not None:
+        parts.extend([_line(pcx, pcy, left_x, pcy), _pin_dot(pcx, pcy), _line(right_x, scy, scx, scy), _pin_dot(scx, scy)])
+    parts.append("</g>")
+    return "".join(parts)
+
+
+def _render_component(comp: dict) -> str:
+    comp_type = comp.get("type", "Unknown")
+    cid = comp.get("id", "?")
+    params = comp.get("parameters", {})
+    ports = comp.get("ports", [])
+    if ports:
+        if comp_type == "Ground" and len(ports) >= 2:
+            return (
+                f'<g transform="translate({ports[0]},{ports[1]})">'
+                f'{_line(0, 0, 0, 10)}{_line(-10, 10, 10, 10)}{_line(-6, 14, 6, 14, width=1.5)}{_line(-3, 18, 3, 18, width=1)}'
+                f'{_text(0, -6, cid)}'
+                f'</g>'
+            )
+        if comp_type == "PWM_Generator" and len(ports) >= 2:
+            x, y = ports[0], ports[1]
+            return (
+                f'<g transform="translate({x},{y})">'
+                f'<rect x="-24" y="-14" width="48" height="28" rx="4" fill="#fff7e6" stroke="#333" stroke-width="2"/>'
+                f'{_polyline([(-16, 4), (-8, -4), (0, 4), (8, -4), (16, 4)], width=1.5)}'
+                f'{_line(24, 0, 36, 0)}{_pin_dot(36, 0)}{_text(0, -18, cid)}'
+                f'</g>'
+            )
+        if comp_type == "Transformer":
+            return _render_transformer_with_ports(comp)
+        if comp_type == "Center_Tap_Transformer":
+            return _render_transformer_with_ports(comp, center_tap=True)
+        if comp_type == "Resistor":
+            return _render_two_terminal_with_ports(comp, _label(cid, params, "resistance", "Ohm"), "resistor")
+        if comp_type == "Inductor":
+            return _render_two_terminal_with_ports(comp, _label(cid, params, "inductance", "H"), "inductor")
+        if comp_type == "Capacitor":
+            return _render_two_terminal_with_ports(comp, _label(cid, params, "capacitance", "F"), "capacitor")
+        if comp_type in {"Diode", "DIODE"}:
+            return _render_two_terminal_with_ports(comp, _label(cid, params, "forward_voltage", "V"), "diode")
+        if comp_type in {"DC_Source", "AC_Source", "Battery"}:
+            return _render_two_terminal_with_ports(comp, _label(cid, params, "voltage", "V"), "source")
+        if comp_type in {"MOSFET", "IGBT"}:
+            return _render_switch_with_ports(comp)
+
+    pos = comp.get("position", {"x": 0, "y": 0})
+    renderer = _SYMBOL_MAP.get(comp_type, lambda x, y, i, p: _svg_generic(x, y, i, comp_type, p))
+    return renderer(pos["x"], pos["y"], cid, params)
+
 
 def render_circuit_svg(
     circuit_type: str,
@@ -453,69 +551,32 @@ def render_circuit_svg(
     nets: list[dict] | None = None,
     title: str | None = None,
 ) -> str:
-    """Render a circuit diagram as an SVG string."""
-    # Canvas size from component positions
-    max_x = max((c.get("position", {}).get("x", 0) for c in components), default=0) + _TOTAL_W + 80
-    max_y = max((c.get("position", {}).get("y", 0) for c in components), default=0) + 80
+    max_x = max((max(c.get("ports", [c.get("position", {}).get("x", 0)])) if c.get("ports") else c.get("position", {}).get("x", 0) for c in components), default=0) + 80
+    max_y = max((max(c.get("ports", [c.get("position", {}).get("y", 0)])) if c.get("ports") else c.get("position", {}).get("y", 0) for c in components), default=0) + 80
     width = max(max_x, 500)
     height = max(max_y, 250)
+    display_title = title or f"{circuit_type.upper()} Converter Preview"
 
-    display_title = title or f"{circuit_type.upper()} Converter — Preview"
-
-    parts: list[str] = []
-    parts.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}" '
-        f'style="background:#fafafa; border:1px solid #ddd; border-radius:8px;">'
-    )
-
-    # Title
-    parts.append(
-        f'<text x="{width//2}" y="25" text-anchor="middle" font-size="16" '
-        f'font-weight="bold" font-family="sans-serif" fill="#2c3e50">{display_title}</text>'
-    )
-
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" style="background:#fafafa; border:1px solid #ddd; border-radius:8px;">',
+        f'<text x="{width // 2}" y="25" text-anchor="middle" font-size="16" font-weight="bold" font-family="sans-serif" fill="#2c3e50">{display_title}</text>',
+    ]
     if nets:
         net_lines, net_dots = _render_nets(components, nets)
-        parts.append(net_lines)
-        parts.append(net_dots)
+        parts.extend([net_lines, net_dots])
     else:
-        # Wires (behind components)
-        parts.append(_render_connections(components, connections))
-
-        # Junction dots
-        parts.append(_render_junctions(components, connections))
-
-    # Components
-    for comp in components:
-        cid = comp.get("id", "?")
-        ctype = comp.get("type", "Unknown")
-        params = comp.get("parameters", {})
-        pos = comp.get("position", {"x": 0, "y": 0})
-        renderer = _SYMBOL_MAP.get(ctype, lambda x, y, i, p: _svg_generic(x, y, i, ctype, p))
-        parts.append(renderer(pos["x"], pos["y"], cid, params))
-
-    # GND symbols
+        parts.extend([_render_connections(components, connections), _render_junctions(components, connections)])
+    parts.extend(_render_component(comp) for comp in components)
     parts.append(_render_gnd_symbols(components))
-
-    # Legend
-    legend_y = height - 15
     parts.append(
-        f'<text x="10" y="{legend_y}" font-size="10" font-family="sans-serif" fill="#999">'
-        f'Components: {len(components)} | Connections: {len(connections)} | '
-        f'Preview — confirm to generate .psimsch</text>'
+        f'<text x="10" y="{height - 15}" font-size="10" font-family="sans-serif" fill="#999">'
+        f'Components: {len(components)} | Connections: {len(connections)} | Preview - confirm to generate .psimsch</text>'
     )
-
-    parts.append('</svg>')
+    parts.append("</svg>")
     return "\n".join(parts)
 
 
 def open_svg_in_browser(svg_path: str) -> None:
-    """Attempt to open an SVG file in the default browser.
-
-    This is a best-effort operation — failures are silently ignored
-    since the user can always open the file manually.
-    """
     import os
     import platform
     import subprocess
@@ -523,12 +584,10 @@ def open_svg_in_browser(svg_path: str) -> None:
     try:
         system = platform.system()
         if system == "Darwin":
-            subprocess.Popen(["open", svg_path],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["open", svg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif system == "Windows":
             os.startfile(svg_path)
         elif system == "Linux":
-            subprocess.Popen(["xdg-open", svg_path],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["xdg-open", svg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
