@@ -132,9 +132,14 @@ COMPONENTS: dict[str, dict] = {
                                  "psim_element_type": "TRANSFORMER_3P"},
     "Center_Tap_Transformer": {"category": "transformer", "korean": "센터탭 변압기", "symbol": "CTXF",
                                 "default_parameters": {"turns_ratio": 1.0},
-                                "pins": ["primary_in", "primary_out",
+                                "pins": ["primary_top", "primary_center", "primary_bottom",
                                          "secondary_top", "secondary_center", "secondary_bottom"],
                                 "psim_element_type": "TRANSFORMER_CT"},
+
+    "DiodeBridge": {"category": "rectifier", "korean": "다이오드 브릿지", "symbol": "BDIODE",
+                    "default_parameters": {},
+                    "pins": ["ac_pos", "ac_neg", "dc_pos", "dc_neg"],
+                    "psim_element_type": "BDIODE1"},
 
     # === Motors ===
     "DC_Motor": {"category": "motor", "korean": "DC 모터", "symbol": "DCM",
@@ -320,15 +325,17 @@ def resolve_psim_element_type(kind: str) -> str:
 
 LEFT_PINS: frozenset[str] = frozenset({
     "positive", "drain", "input", "anode", "pin1", "collector",
-    "primary_in", "phase_a", "terminal1", "line_in", "L1_pin1",
+    "primary1", "primary_in", "primary_top", "secondary_top", "ac_pos", "dc_pos",
+    "phase_a", "terminal1", "line_in", "L1_pin1",
 })
 
 RIGHT_PINS: frozenset[str] = frozenset({
     "negative", "source", "output", "cathode", "pin2", "emitter",
+    "primary2", "primary_bottom", "secondary1", "secondary2", "secondary_bottom", "ac_neg", "dc_neg",
     "primary_out", "secondary_in", "secondary_out", "phase_b", "phase_c",
     "terminal2", "line_out", "neutral_in", "neutral_out", "L1_pin2",
     "L2_pin1", "L2_pin2", "ground", "gate", "control", "thermal_in",
-    "secondary_top", "secondary_center", "secondary_bottom",
+    "secondary_center",
 })
 
 

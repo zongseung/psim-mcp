@@ -75,6 +75,39 @@ async def test_preview_circuit_with_specs(circuit_design_service):
     assert result["success"] is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("circuit_type", "specs"),
+    [
+        ("flyback", {"vin": 48, "vout_target": 12, "iout": 5}),
+        ("forward", {"vin": 48, "vout_target": 12, "iout": 5}),
+        ("llc", {"vin": 400, "vout_target": 48, "power": 500}),
+        ("boost_pfc", {"vin": 220, "vout_target": 400, "power": 1000}),
+    ],
+)
+async def test_preview_circuit_generator_topologies(circuit_design_service, circuit_type, specs):
+    result = await circuit_design_service.preview_circuit(
+        circuit_type=circuit_type,
+        specs=specs,
+    )
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_preview_circuit_fails_on_validation_errors(circuit_design_service):
+    result = await circuit_design_service.preview_circuit(
+        circuit_type="custom",
+        components=[
+            {"id": "V1", "type": "DC_Source", "parameters": {"voltage": 48.0}, "position": {"x": 0, "y": 0}},
+            {"id": "L1", "type": "Inductor", "parameters": {"inductance": 100e-6}, "position": {"x": 120, "y": 0}},
+        ],
+        connections=[{"from": "V1.invalid_pin", "to": "L1.input"}],
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "CIRCUIT_VALIDATION_FAILED"
+
+
 # --- Confirm ---
 
 @pytest.mark.asyncio

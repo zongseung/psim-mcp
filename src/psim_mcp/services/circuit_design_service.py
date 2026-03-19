@@ -507,9 +507,23 @@ class CircuitDesignService:
         if resolved_nets and not resolved_connections:
             resolved_connections = _convert_nets_to_connections(resolved_nets)
 
-        validation_issues, _has_errors = _run_validation(
+        validation_issues, has_errors = _run_validation(
             resolved_components, resolved_connections, resolved_nets,
         )
+
+        if has_errors:
+            return {
+                "success": False,
+                "error": {
+                    "code": "CIRCUIT_VALIDATION_FAILED",
+                    "message": "Preview blocked because the circuit spec contains validation errors.",
+                    "details": validation_issues,
+                    "suggestion": (
+                        "Fix invalid component.pin references or adjust the template/spec "
+                        "before requesting a preview."
+                    ),
+                },
+            }
 
         preview = _render_and_store(
             self._store,

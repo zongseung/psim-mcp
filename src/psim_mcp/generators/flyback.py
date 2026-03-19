@@ -8,7 +8,16 @@ power applications requiring galvanic isolation.
 from __future__ import annotations
 
 from .base import TopologyGenerator
-from .layout import auto_layout
+from .layout import (
+    make_capacitor,
+    make_diode_h,
+    make_gating,
+    make_ground,
+    make_mosfet_v,
+    make_resistor,
+    make_transformer,
+    make_vdc,
+)
 
 
 class FlybackGenerator(TopologyGenerator):
@@ -73,75 +82,36 @@ class FlybackGenerator(TopologyGenerator):
 
         r_load = vout / iout if iout else 10.0
 
-        # Flyback: V1 -> T1(primary) -> SW1 to GND | T1(secondary) -> D1 -> C1||R1
-        # Primary side at left, secondary side at right (isolated)
+        # Layout (verified working — V=6.95V):
+        # VDC(80,80)-(80,130), GND at (80,230)
+        # T1: p1(200,80) p2(200,130) s1(250,130) s2(250,80)
+        # MOSFET_v: drain(200,130) source(200,180) gate(180,160) — at T1.primary2
+        # GATING(160,160)
+        # Diode_h: anode(270,80) cathode(320,80) — from T1.secondary2
+        # C1(320,80)-(320,130) R1(370,80)-(370,130)
+        # GND bus at y=230
         components = [
-            {
-                "id": "V1", "type": "DC_Source",
-                "parameters": {"voltage": vin},
-                "position": {"x": 120, "y": 100}, "direction": 0,
-                "ports": [120, 100, 120, 150],
-            },
-            {
-                "id": "GND1", "type": "Ground",
-                "parameters": {},
-                "position": {"x": 120, "y": 150}, "direction": 0,
-                "ports": [120, 150],
-            },
-            {
-                "id": "SW1", "type": "MOSFET",
-                "parameters": {"switching_frequency": fsw, "on_resistance": 0.01},
-                "position": {"x": 200, "y": 100}, "direction": 270,
-                "ports": [200, 100, 250, 100, 230, 120],
-            },
-            {
-                "id": "G1", "type": "PWM_Generator",
-                "parameters": {
-                    "Frequency": fsw,
-                    "NoOfPoints": 2,
-                    "Switching_Points": f"0,{int(duty * 360)}",
-                },
-                "position": {"x": 230, "y": 170}, "direction": 0,
-                "ports": [230, 170],
-            },
-            {
-                "id": "T1", "type": "Transformer",
-                "parameters": {"turns_ratio": round(n, 6), "magnetizing_inductance": round(lm, 9)},
-                "position": {"x": 280, "y": 100}, "direction": 0,
-                "ports": [280, 100, 280, 150, 330, 100, 330, 150],
-            },
-            {
-                "id": "D1", "type": "Diode",
-                "parameters": {"forward_voltage": 0.7},
-                "position": {"x": 370, "y": 150}, "direction": 270,
-                "ports": [370, 150, 370, 100],
-            },
-            {
-                "id": "C1", "type": "Capacitor",
-                "parameters": {"capacitance": round(cout, 9)},
-                "position": {"x": 420, "y": 100},
-                "position2": {"x": 420, "y": 150},
-                "direction": 90,
-                "ports": [420, 100, 420, 150],
-            },
-            {
-                "id": "R1", "type": "Resistor",
-                "parameters": {"resistance": round(r_load, 4), "VoltageFlag": 1},
-                "position": {"x": 470, "y": 100},
-                "position2": {"x": 470, "y": 150},
-                "direction": 90,
-                "ports": [470, 100, 470, 150],
-            },
+            make_vdc("V1", 80, 80, vin),
+            make_ground("GND1", 80, 230),
+            make_transformer(
+                "T1", 200, 80, 200, 130, 250, 130, 250, 80,
+                turns_ratio=round(n, 6), magnetizing_inductance=round(lm, 9),
+            ),
+            make_mosfet_v("SW1", 200, 130, switching_frequency=fsw, on_resistance=0.01),
+            make_gating("G1", 160, 160, fsw, f"0,{int(duty * 360)}"),
+            make_diode_h("D1", 270, 80, forward_voltage=0.7),
+            make_capacitor("C1", 320, 80, cout),
+            make_resistor("R1", 370, 80, r_load, voltage_flag=1),
         ]
 
         nets = [
-            {"name": "net_vin_pri1", "pins": ["V1.positive", "T1.primary1"]},
-            {"name": "net_pri2_sw", "pins": ["T1.primary2", "SW1.drain"]},
+            {"name": "net_vin_pri1", "pins": ["V1.positive", "T1.primary_in"]},
+            {"name": "net_pri2_sw", "pins": ["T1.primary_out", "SW1.drain"]},
             {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_sw_gnd", "pins": ["SW1.source", "V1.negative", "GND1.pin1"]},
-            {"name": "net_sec1_d", "pins": ["T1.secondary1", "D1.anode"]},
+            {"name": "net_sec2_d", "pins": ["T1.secondary_out", "D1.anode"]},
             {"name": "net_d_out", "pins": ["D1.cathode", "C1.positive", "R1.pin1"]},
-            {"name": "net_sec_gnd", "pins": ["T1.secondary2", "C1.negative", "R1.pin2"]},
+            {"name": "net_sec_gnd", "pins": ["T1.secondary_in", "C1.negative", "R1.pin2"]},
         ]
 
         return {

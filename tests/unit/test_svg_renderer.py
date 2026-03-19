@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from psim_mcp.utils.svg_renderer import render_circuit_svg
+from psim_mcp.utils.svg_renderer import _build_pin_positions, render_circuit_svg
 
 
 def test_render_circuit_svg_accepts_nets_for_shared_junction():
@@ -63,3 +63,27 @@ def test_render_circuit_svg_handles_three_pin_component():
     assert "SW1" in svg
     assert "D1" in svg
     assert svg.count("stroke=\"#2980b9\"") >= 1
+
+
+def test_build_pin_positions_coalesces_alias_pins_on_two_terminal_parts():
+    components = [
+        {
+            "id": "L1",
+            "type": "Inductor",
+            "parameters": {"inductance": 100e-6},
+            "position": {"x": 120, "y": 40},
+        },
+        {
+            "id": "R1",
+            "type": "Resistor",
+            "parameters": {"resistance": 10.0},
+            "position": {"x": 240, "y": 40},
+        },
+    ]
+
+    pin_positions = _build_pin_positions(components)
+
+    assert pin_positions["L1.pin1"] == pin_positions["L1.input"]
+    assert pin_positions["L1.pin2"] == pin_positions["L1.output"]
+    assert pin_positions["R1.pin1"] == pin_positions["R1.input"]
+    assert pin_positions["R1.pin2"] == pin_positions["R1.output"]

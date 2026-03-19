@@ -102,6 +102,11 @@ _PSIM_TYPE_MAP = {
     "SIMCONTROL": "SIMCONTROL",
     "ONCTRL": "ONCTRL",
     "TF_1F_1": "TF_1F_1",
+    "Transformer": "TF_1F_1",
+    "DiodeBridge": "BDIODE1",
+    "AC_Source": "VSIN",
+    "VAC": "VSIN",
+    "DC_Source": "VDC",
     "BATTERY": "BATTERY",
     "GTO": "MULTI_GTO",
     "TRIAC": "MULTI_TRIAC",
@@ -132,6 +137,7 @@ _PARAM_NAME_MAP = {
     # Transformer
     "turns_ratio": "Ratio",
     "primary_inductance": "Inductance",
+    "magnetizing_inductance": None,  # skip — internal design param, not a PSIM TF_1F_1 param
     # Series impedance (sources)
     "Lseries": "Lseries",
     "Rseries": "Rseries",
@@ -596,16 +602,53 @@ def _resolve_pin_positions(components):
             elif len(ports) >= 2:
                 pin_map["%s.input" % comp_id] = (ports[0], ports[1])
 
+        elif comp_type == "DiodeBridge":
+            # 8 values: ac+_x,y, ac-_x,y, dc+_x,y, dc-_x,y
+            if len(ports) >= 8:
+                pin_map["%s.ac_pos" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.ac_neg" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.dc_pos" % comp_id] = (ports[4], ports[5])
+                pin_map["%s.dc_neg" % comp_id] = (ports[6], ports[7])
+
         elif comp_type == "Transformer":
             # 8 values: primary1, primary2, secondary1, secondary2
             if len(ports) >= 8:
                 pin_map["%s.primary1" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.primary_in" % comp_id] = (ports[0], ports[1])
                 pin_map["%s.primary2" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.primary_out" % comp_id] = (ports[2], ports[3])
                 pin_map["%s.secondary1" % comp_id] = (ports[4], ports[5])
+                pin_map["%s.secondary_out" % comp_id] = (ports[4], ports[5])
                 pin_map["%s.secondary2" % comp_id] = (ports[6], ports[7])
+                pin_map["%s.secondary_in" % comp_id] = (ports[6], ports[7])
             elif len(ports) >= 4:
                 pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
                 pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
+            else:
+                x = comp.get("position", {}).get("x", 0)
+                y = comp.get("position", {}).get("y", 0)
+                pin_map["%s.primary_in" % comp_id] = (x, y + 8)
+                pin_map["%s.primary_out" % comp_id] = (x, y + 22)
+                pin_map["%s.secondary_out" % comp_id] = (x + 80, y + 8)
+                pin_map["%s.secondary_in" % comp_id] = (x + 80, y + 22)
+
+        elif comp_type == "Center_Tap_Transformer":
+            if len(ports) >= 12:
+                pin_map["%s.primary_top" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.primary_center" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.primary_bottom" % comp_id] = (ports[4], ports[5])
+                pin_map["%s.secondary_top" % comp_id] = (ports[6], ports[7])
+                pin_map["%s.secondary_center" % comp_id] = (ports[8], ports[9])
+                pin_map["%s.secondary_bottom" % comp_id] = (ports[10], ports[11])
+            else:
+                x = comp.get("position", {}).get("x", 0)
+                y = comp.get("position", {}).get("y", 0)
+                pin_map["%s.primary_top" % comp_id] = (x, y + 6)
+                pin_map["%s.primary_center" % comp_id] = (x, y + 15)
+                pin_map["%s.primary_bottom" % comp_id] = (x, y + 24)
+                pin_map["%s.secondary_top" % comp_id] = (x + 80, y + 6)
+                pin_map["%s.secondary_center" % comp_id] = (x + 80, y + 15)
+                pin_map["%s.secondary_bottom" % comp_id] = (x + 80, y + 24)
 
         else:
             # Generic fallback: first pair = pin1/positive, second = pin2/negative

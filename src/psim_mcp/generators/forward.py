@@ -8,7 +8,18 @@ the output inductor provides continuous current to the load.
 from __future__ import annotations
 
 from .base import TopologyGenerator
-from .layout import auto_layout
+from .layout import (
+    make_capacitor,
+    make_diode_h,
+    make_diode_v,
+    make_gating,
+    make_ground,
+    make_inductor,
+    make_mosfet_v,
+    make_resistor,
+    make_transformer,
+    make_vdc,
+)
 
 
 class ForwardGenerator(TopologyGenerator):
@@ -67,89 +78,41 @@ class ForwardGenerator(TopologyGenerator):
 
         r_load = vout / iout if iout else 10.0
 
-        # Forward: V1 -> T1 primary -> SW1 to GND | T1 secondary -> D1 -> L1 -> C1||R1, D2 freewheeling
+        # Layout (verified working pattern):
+        # VDC(80,80)-(80,130), GND at (80,230)
+        # T1: p1(200,80) p2(200,130) s1(250,130) s2(250,80)
+        # MOSFET_v: drain(200,130) source(200,180) gate(180,160) — at T1.primary2
+        # GATING(160,160)
+        # D1(rectifier): anode(270,80) cathode(320,80) — horizontal from T1.secondary2
+        # D2(freewheel): anode(270,130) cathode(270,80) — vertical
+        # L1(340,80)-(390,80) horizontal inductor
+        # C1(390,80)-(390,130) R1(440,80)-(440,130)
+        # GND bus at y=230
         components = [
-            {
-                "id": "V1", "type": "DC_Source",
-                "parameters": {"voltage": vin},
-                "position": {"x": 120, "y": 100}, "direction": 0,
-                "ports": [120, 100, 120, 150],
-            },
-            {
-                "id": "GND1", "type": "Ground",
-                "parameters": {},
-                "position": {"x": 120, "y": 150}, "direction": 0,
-                "ports": [120, 150],
-            },
-            {
-                "id": "SW1", "type": "MOSFET",
-                "parameters": {"switching_frequency": fsw, "on_resistance": 0.01},
-                "position": {"x": 200, "y": 100}, "direction": 270,
-                "ports": [200, 100, 250, 100, 230, 120],
-            },
-            {
-                "id": "G1", "type": "PWM_Generator",
-                "parameters": {
-                    "Frequency": fsw,
-                    "NoOfPoints": 2,
-                    "Switching_Points": f"0,{int(duty * 360)}",
-                },
-                "position": {"x": 230, "y": 170}, "direction": 0,
-                "ports": [230, 170],
-            },
-            {
-                "id": "T1", "type": "Transformer",
-                "parameters": {"turns_ratio": round(n, 6)},
-                "position": {"x": 280, "y": 100}, "direction": 0,
-                "ports": [280, 100, 280, 150, 330, 100, 330, 150],
-            },
-            {
-                "id": "D1", "type": "Diode",
-                "parameters": {"forward_voltage": 0.7},
-                "position": {"x": 370, "y": 150}, "direction": 270,
-                "ports": [370, 150, 370, 100],
-            },
-            {
-                "id": "D2", "type": "Diode",
-                "parameters": {"forward_voltage": 0.7},
-                "position": {"x": 420, "y": 150}, "direction": 270,
-                "ports": [420, 150, 420, 100],
-            },
-            {
-                "id": "L1", "type": "Inductor",
-                "parameters": {"inductance": round(inductance, 9)},
-                "position": {"x": 450, "y": 100},
-                "position2": {"x": 500, "y": 100},
-                "direction": 0,
-                "ports": [450, 100, 500, 100],
-            },
-            {
-                "id": "C1", "type": "Capacitor",
-                "parameters": {"capacitance": round(capacitance, 9)},
-                "position": {"x": 500, "y": 100},
-                "position2": {"x": 500, "y": 150},
-                "direction": 90,
-                "ports": [500, 100, 500, 150],
-            },
-            {
-                "id": "R1", "type": "Resistor",
-                "parameters": {"resistance": round(r_load, 4), "VoltageFlag": 1},
-                "position": {"x": 550, "y": 100},
-                "position2": {"x": 550, "y": 150},
-                "direction": 90,
-                "ports": [550, 100, 550, 150],
-            },
+            make_vdc("V1", 80, 80, vin),
+            make_ground("GND1", 80, 230),
+            make_transformer(
+                "T1", 200, 80, 200, 130, 250, 130, 250, 80,
+                turns_ratio=round(n, 6),
+            ),
+            make_mosfet_v("SW1", 200, 130, switching_frequency=fsw, on_resistance=0.01),
+            make_gating("G1", 160, 160, fsw, f"0,{int(duty * 360)}"),
+            make_diode_h("D1", 270, 80, forward_voltage=0.7),
+            make_diode_v("D2", 270, 130, forward_voltage=0.7),
+            make_inductor("L1", 340, 80, inductance),
+            make_capacitor("C1", 390, 80, capacitance),
+            make_resistor("R1", 440, 80, r_load, voltage_flag=1),
         ]
 
         nets = [
-            {"name": "net_vin_pri1", "pins": ["V1.positive", "T1.primary1"]},
-            {"name": "net_pri2_sw", "pins": ["T1.primary2", "SW1.drain"]},
+            {"name": "net_vin_pri1", "pins": ["V1.positive", "T1.primary_in"]},
+            {"name": "net_pri2_sw", "pins": ["T1.primary_out", "SW1.drain"]},
             {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_sw_gnd", "pins": ["SW1.source", "V1.negative", "GND1.pin1"]},
-            {"name": "net_sec1_d1", "pins": ["T1.secondary1", "D1.anode"]},
+            {"name": "net_sec2_d1", "pins": ["T1.secondary_out", "D1.anode"]},
             {"name": "net_d1_l", "pins": ["D1.cathode", "D2.cathode", "L1.pin1"]},
             {"name": "net_l_out", "pins": ["L1.pin2", "C1.positive", "R1.pin1"]},
-            {"name": "net_sec_gnd", "pins": ["T1.secondary2", "D2.anode", "C1.negative", "R1.pin2"]},
+            {"name": "net_sec_gnd", "pins": ["T1.secondary_in", "D2.anode", "C1.negative", "R1.pin2"]},
         ]
 
         return {

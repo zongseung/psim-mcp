@@ -10,7 +10,17 @@ from __future__ import annotations
 import math
 
 from .base import TopologyGenerator
-from .layout import auto_layout
+from .layout import (
+    make_capacitor,
+    make_diode_h,
+    make_gating,
+    make_ground,
+    make_inductor,
+    make_mosfet_v,
+    make_resistor,
+    make_transformer,
+    make_vdc,
+)
 
 
 class LLCGenerator(TopologyGenerator):
@@ -88,121 +98,61 @@ class LLCGenerator(TopologyGenerator):
         cout = iout / (2 * 2 * fsw * vripple) if (fsw and vripple) else 100e-6
         cout = max(cout, 1e-12)
 
-        # LLC: Half-bridge (SW1+SW2) -> Lr -> Cr -> T1 -> D1+D2 rectifier -> Cout||R1
-        # 50% duty with complementary gating and dead time
+        # Layout (verified stacked MOSFET pattern):
+        # VDC(80,80)-(80,130), GND at (80,230)
+        # Stacked MOSFETs: SW1 drain(200,80) source(200,130),
+        #   30px gap, SW2 drain(200,160) source(200,210)
+        # G1(160,110) G2(160,190) — near gates, NOT overlapping GND bus
+        # Cr: horizontal capacitor at (260,130)-(310,130)
+        # Lr: inductor at (330,130)-(380,130)
+        # T1: p1(380,80) p2(380,130) s1(430,130) s2(430,80)
+        # D1: anode(450,80) cathode(500,80), D2: anode(450,130) cathode(500,130)
+        # Cout(500,80)-(500,130), R1(550,80)-(550,130)
+        # GND bus at y=230
+
+        # Cr is placed horizontally — inline dict since make_capacitor is vertical.
+        cr_cap = {
+            "id": "Cr", "type": "Capacitor",
+            "parameters": {"capacitance": round(cr, 9)},
+            "position": {"x": 260, "y": 130},
+            "position2": {"x": 310, "y": 130},
+            "direction": 0,
+            "ports": [260, 130, 310, 130],
+        }
+
         components = [
-            {
-                "id": "V1", "type": "DC_Source",
-                "parameters": {"voltage": vin},
-                "position": {"x": 120, "y": 100}, "direction": 0,
-                "ports": [120, 100, 120, 150],
-            },
-            {
-                "id": "GND1", "type": "Ground",
-                "parameters": {},
-                "position": {"x": 120, "y": 200}, "direction": 0,
-                "ports": [120, 200],
-            },
-            {
-                "id": "SW1", "type": "MOSFET",
-                "parameters": {"switching_frequency": fsw, "on_resistance": 0.01},
-                "position": {"x": 200, "y": 100}, "direction": 270,
-                "ports": [200, 100, 250, 100, 230, 120],
-            },
-            {
-                "id": "SW2", "type": "MOSFET",
-                "parameters": {"switching_frequency": fsw, "on_resistance": 0.01},
-                "position": {"x": 200, "y": 150}, "direction": 270,
-                "ports": [200, 150, 250, 150, 230, 170],
-            },
-            # Complementary gating: ~50% duty, small dead time
-            {
-                "id": "G1", "type": "PWM_Generator",
-                "parameters": {
-                    "Frequency": fsw,
-                    "NoOfPoints": 2,
-                    "Switching_Points": "0,175",
-                },
-                "position": {"x": 230, "y": 250}, "direction": 0,
-                "ports": [230, 250],
-            },
-            {
-                "id": "G2", "type": "PWM_Generator",
-                "parameters": {
-                    "Frequency": fsw,
-                    "NoOfPoints": 2,
-                    "Switching_Points": "180,355",
-                },
-                "position": {"x": 300, "y": 250}, "direction": 0,
-                "ports": [300, 250],
-            },
-            {
-                "id": "Lr", "type": "Inductor",
-                "parameters": {"inductance": round(lr, 9)},
-                "position": {"x": 300, "y": 100},
-                "position2": {"x": 350, "y": 100},
-                "direction": 0,
-                "ports": [300, 100, 350, 100],
-            },
-            {
-                "id": "Cr", "type": "Capacitor",
-                "parameters": {"capacitance": round(cr, 9)},
-                "position": {"x": 350, "y": 100},
-                "position2": {"x": 400, "y": 100},
-                "direction": 0,
-                "ports": [350, 100, 400, 100],
-            },
-            {
-                "id": "T1", "type": "Transformer",
-                "parameters": {"turns_ratio": round(n, 6), "magnetizing_inductance": round(lm, 9)},
-                "position": {"x": 430, "y": 100}, "direction": 0,
-                "ports": [430, 100, 430, 150, 480, 100, 480, 150],
-            },
-            {
-                "id": "D1", "type": "Diode",
-                "parameters": {"forward_voltage": 0.7},
-                "position": {"x": 520, "y": 150}, "direction": 270,
-                "ports": [520, 150, 520, 100],
-            },
-            {
-                "id": "D2", "type": "Diode",
-                "parameters": {"forward_voltage": 0.7},
-                "position": {"x": 570, "y": 150}, "direction": 270,
-                "ports": [570, 150, 570, 100],
-            },
-            {
-                "id": "Cout", "type": "Capacitor",
-                "parameters": {"capacitance": round(cout, 9)},
-                "position": {"x": 620, "y": 100},
-                "position2": {"x": 620, "y": 150},
-                "direction": 90,
-                "ports": [620, 100, 620, 150],
-            },
-            {
-                "id": "R1", "type": "Resistor",
-                "parameters": {"resistance": round(r_load, 4), "VoltageFlag": 1},
-                "position": {"x": 670, "y": 100},
-                "position2": {"x": 670, "y": 150},
-                "direction": 90,
-                "ports": [670, 100, 670, 150],
-            },
+            make_vdc("V1", 80, 80, vin),
+            make_ground("GND1", 80, 230),
+            make_mosfet_v("SW1", 200, 80, switching_frequency=fsw, on_resistance=0.01),
+            make_mosfet_v("SW2", 200, 160, switching_frequency=fsw, on_resistance=0.01),
+            make_gating("G1", 160, 110, fsw, "0,175"),
+            make_gating("G2", 160, 190, fsw, "180,355"),
+            cr_cap,
+            make_inductor("Lr", 330, 130, lr),
+            make_transformer(
+                "T1", 380, 80, 380, 130, 430, 130, 430, 80,
+                turns_ratio=round(n, 6), magnetizing_inductance=round(lm, 9),
+            ),
+            make_diode_h("D1", 450, 80, forward_voltage=0.7),
+            make_diode_h("D2", 450, 130, forward_voltage=0.7),
+            make_capacitor("Cout", 500, 80, cout),
+            make_resistor("R1", 550, 80, r_load, voltage_flag=1),
         ]
 
-        # Half-bridge LLC:
+        # Half-bridge LLC with stacked vertical MOSFETs:
         # SW1.drain = V+, SW1.source = SW2.drain = half-bridge midpoint
-        # SW2.source = V- (gnd)
-        # midpoint -> Lr -> Cr -> T1.primary1, T1.primary2 -> gnd
-        # T1.secondary1 -> D1 (center-tap rectifier)
-        # T1.secondary2 -> D2
+        # SW2.source = V- (gnd path via y=230)
+        # midpoint -> Cr -> Lr -> T1.primary_in, T1.primary_out -> gnd
+        # T1.secondary_out -> D1, T1.secondary_in -> D2
         # D1.cathode + D2.cathode -> Cout -> R1
         nets = [
             {"name": "net_vdc_pos", "pins": ["V1.positive", "SW1.drain"]},
-            {"name": "net_hb_mid", "pins": ["SW1.source", "SW2.drain", "Lr.pin1"]},
-            {"name": "net_lr_cr", "pins": ["Lr.pin2", "Cr.positive"]},
-            {"name": "net_cr_pri", "pins": ["Cr.negative", "T1.primary1"]},
-            {"name": "net_pri_gnd", "pins": ["T1.primary2", "V1.negative", "GND1.pin1", "SW2.source"]},
-            {"name": "net_sec1_d1", "pins": ["T1.secondary1", "D1.anode"]},
-            {"name": "net_sec2_d2", "pins": ["T1.secondary2", "D2.anode"]},
+            {"name": "net_hb_mid", "pins": ["SW1.source", "SW2.drain", "Cr.positive"]},
+            {"name": "net_cr_lr", "pins": ["Cr.negative", "Lr.pin1"]},
+            {"name": "net_lr_pri", "pins": ["Lr.pin2", "T1.primary_in"]},
+            {"name": "net_pri_gnd", "pins": ["T1.primary_out", "V1.negative", "GND1.pin1", "SW2.source"]},
+            {"name": "net_sec2_d1", "pins": ["T1.secondary_out", "D1.anode"]},
+            {"name": "net_sec1_d2", "pins": ["T1.secondary_in", "D2.anode"]},
             {"name": "net_rect_out", "pins": ["D1.cathode", "D2.cathode", "Cout.positive", "R1.pin1"]},
             {"name": "net_sec_gnd", "pins": ["Cout.negative", "R1.pin2"]},
             {"name": "net_gate1", "pins": ["G1.output", "SW1.gate"]},

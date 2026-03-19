@@ -178,6 +178,75 @@ _SYMBOL_MAP = {
     "Diode": _svg_diode,
 }
 
+_PIN_ANCHOR_MAP: dict[str, dict[str, tuple[int, int]]] = {
+    "Resistor": {
+        "pin1": (0, _MID_Y),
+        "input": (0, _MID_Y),
+        "pin2": (_TOTAL_W, _MID_Y),
+        "output": (_TOTAL_W, _MID_Y),
+    },
+    "Inductor": {
+        "pin1": (0, _MID_Y),
+        "input": (0, _MID_Y),
+        "pin2": (_TOTAL_W, _MID_Y),
+        "output": (_TOTAL_W, _MID_Y),
+    },
+    "Capacitor": {
+        "positive": (0, _MID_Y),
+        "pin1": (0, _MID_Y),
+        "negative": (_TOTAL_W, _MID_Y),
+        "pin2": (_TOTAL_W, _MID_Y),
+    },
+    "DC_Source": {
+        "positive": (0, _MID_Y),
+        "pin1": (0, _MID_Y),
+        "negative": (_TOTAL_W, _MID_Y),
+        "pin2": (_TOTAL_W, _MID_Y),
+    },
+    "AC_Source": {
+        "positive": (0, _MID_Y),
+        "pin1": (0, _MID_Y),
+        "negative": (_TOTAL_W, _MID_Y),
+        "pin2": (_TOTAL_W, _MID_Y),
+    },
+    "Battery": {
+        "positive": (0, _MID_Y),
+        "pin1": (0, _MID_Y),
+        "negative": (_TOTAL_W, _MID_Y),
+        "pin2": (_TOTAL_W, _MID_Y),
+    },
+    "Diode": {
+        "anode": (0, _MID_Y),
+        "pin1": (0, _MID_Y),
+        "cathode": (_TOTAL_W, _MID_Y),
+        "pin2": (_TOTAL_W, _MID_Y),
+    },
+    "MOSFET": {
+        "drain": (0, _MID_Y),
+        "source": (_TOTAL_W, _MID_Y),
+        "gate": (25, _BODY_H),
+    },
+    "IGBT": {
+        "collector": (0, _MID_Y),
+        "emitter": (_TOTAL_W, _MID_Y),
+        "gate": (25, _BODY_H),
+    },
+    "Transformer": {
+        "primary_in": (0, 8),
+        "primary_out": (0, 22),
+        "secondary_out": (_TOTAL_W, 8),
+        "secondary_in": (_TOTAL_W, 22),
+    },
+    "Center_Tap_Transformer": {
+        "primary_top": (0, 6),
+        "primary_center": (0, _MID_Y),
+        "primary_bottom": (0, 24),
+        "secondary_top": (_TOTAL_W, 6),
+        "secondary_center": (_TOTAL_W, _MID_Y),
+        "secondary_bottom": (_TOTAL_W, 24),
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Pin geometry
@@ -202,6 +271,12 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
             continue
         comp_type = comp.get("type", "")
         pos = comp.get("position", {"x": 0, "y": 0})
+        explicit_anchors = _PIN_ANCHOR_MAP.get(comp_type)
+        if explicit_anchors:
+            for pin_name, (dx, dy) in explicit_anchors.items():
+                pin_pos[f"{cid}.{pin_name}"] = (pos["x"] + dx, pos["y"] + dy)
+            continue
+
         lib_comp = get_component(comp_type)
         pins = list(lib_comp.get("pins", [])) if lib_comp else []
 
