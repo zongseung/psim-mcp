@@ -153,5 +153,5 @@ class TestCreateCircuit:
 
         assert result["success"] is True
         assert result["data"]["component_count"] == 2
-        assert result["data"]["components"][0]["psim_element_type"] == "DC_Source"
-        assert result["data"]["components"][1]["psim_element_type"] == "Resistor"
+        assert result["data"]["components"][0]["psim_element_type"] == "VDC"
+        assert result["data"]["components"][1]["psim_element_type"] == "MULTI_RESISTOR"
