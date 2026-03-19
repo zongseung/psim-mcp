@@ -148,11 +148,16 @@ class MockPsimAdapter(BasePsimAdapter):
         self._last_simulation = result
         return result
 
+    async def shutdown(self) -> None:
+        """Mock adapter는 정리할 리소스가 없으므로 no-op."""
+        pass
+
     async def export_results(
         self,
         output_dir: str,
         format: str = "json",
         signals: list[str] | None = None,
+        graph_file: str = "",
     ) -> dict:
         """Return a mock list of exported files."""
         if self._last_simulation is None:

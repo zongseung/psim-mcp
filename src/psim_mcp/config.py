@@ -72,6 +72,14 @@ class AppConfig(BaseSettings):
         if self.psim_mode != "real":
             return
 
+        # 각 필드별 예시값을 포함한 안내 메시지
+        field_examples = {
+            "PSIM_PATH": r"C:\Powersim\PSIM",
+            "PSIM_PYTHON_EXE": r"C:\Powersim\PSIM\python38\python.exe",
+            "PSIM_PROJECT_DIR": r"C:\Users\user\psim-projects",
+            "PSIM_OUTPUT_DIR": r"C:\Users\user\psim-output",
+        }
+
         missing: list[str] = []
         if self.psim_path is None:
             missing.append("PSIM_PATH")
@@ -83,8 +91,24 @@ class AppConfig(BaseSettings):
             missing.append("PSIM_OUTPUT_DIR")
 
         if missing:
+            details = "\n".join(
+                f"  - {field} (예: {field_examples[field]})"
+                for field in missing
+            )
             raise ValueError(
-                f"PSIM_MODE=real requires the following environment variables: "
-                f"{', '.join(missing)}. "
-                f"Set them in .env or as environment variables."
+                f"PSIM_MODE=real requires the following environment variables:\n"
+                f"{details}\n"
+                f"claude_desktop_config.json의 env 또는 .env 파일에 설정하세요."
+            )
+
+        # 경로 존재 여부 검증
+        if self.psim_path and not self.psim_path.is_dir():
+            raise ValueError(
+                f"PSIM_PATH 디렉터리가 존재하지 않습니다: {self.psim_path}\n"
+                f"PSIM이 올바르게 설치되어 있는지 확인하세요."
+            )
+        if self.psim_python_exe and not self.psim_python_exe.is_file():
+            raise ValueError(
+                f"PSIM_PYTHON_EXE 파일이 존재하지 않습니다: {self.psim_python_exe}\n"
+                f"PSIM Python 번들이 올바르게 설치되어 있는지 확인하세요."
             )

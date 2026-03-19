@@ -32,6 +32,8 @@ class RealPsimAdapter(BasePsimAdapter):
         self._timeout = config.simulation_timeout
         self._psim_path = config.psim_path
         self._project_open = False
+        self._process: asyncio.subprocess.Process | None = None
+        self._lock = asyncio.Lock()  # 동시 호출 방지
 
         # Startup validation: bridge script must exist
         if not Path(self._bridge_script).is_file():
@@ -72,14 +74,43 @@ class RealPsimAdapter(BasePsimAdapter):
         if self._psim_path:
             env["PSIM_PATH"] = str(self._psim_path)
 
+        # Force UTF-8 encoding for the subprocess on Windows
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+
         return env
 
     # ------------------------------------------------------------------
     # Internal bridge call
     # ------------------------------------------------------------------
 
+    async def _ensure_bridge(self) -> asyncio.subprocess.Process:
+        """Bridge 프로세스가 살아있으면 재사용, 아니면 새로 시작한다."""
+        if self._process is not None and self._process.returncode is None:
+            return self._process
+
+        logger.info("Starting new bridge process: %s %s", self._python_exe, self._bridge_script)
+        cmd = [self._python_exe, self._bridge_script]
+
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._get_sanitized_env(),
+            )
+        except FileNotFoundError as exc:
+            logger.error("Bridge executable not found: %s", cmd)
+            raise RuntimeError(
+                f"PSIM Python executable not found: {self._python_exe}. "
+                "Ensure psim_python_exe is set correctly in the configuration."
+            ) from exc
+
+        return self._process
+
     async def _call_bridge(self, action: str, params: dict[str, Any] | None = None) -> dict:
-        """Invoke the bridge script as a subprocess.
+        """장기 실행 Bridge 프로세스에 명령을 보내고 응답을 받는다.
 
         Args:
             action: The action name (e.g. ``"open_project"``).
@@ -89,59 +120,85 @@ class RealPsimAdapter(BasePsimAdapter):
             Parsed JSON response from the bridge script.
 
         Raises:
-            TimeoutError: If the subprocess exceeds the configured timeout.
-            RuntimeError: If the subprocess exits with a non-zero code or
-                returns invalid JSON.
+            TimeoutError: If the response exceeds the configured timeout.
+            RuntimeError: If the bridge process dies or returns invalid JSON.
         """
         payload = json.dumps({"action": action, "params": params or {}})
-        cmd = [self._python_exe, self._bridge_script]
 
         logger.debug("Bridge call: action=%s params=%s", action, params)
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._get_sanitized_env(),
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=payload.encode()),
-                timeout=self._timeout,
-            )
-        except asyncio.TimeoutError:
-            logger.error("Bridge call timed out: action=%s", action)
-            raise TimeoutError(
-                f"PSIM bridge timed out after {self._timeout}s for action '{action}'"
-            ) from None
-        except FileNotFoundError as exc:
-            logger.error("Bridge executable not found: %s", cmd)
-            raise RuntimeError(
-                f"PSIM Python executable not found: {self._python_exe}. "
-                "Ensure psim_python_exe is set correctly in the configuration."
-            ) from exc
+        async with self._lock:
+            proc = await self._ensure_bridge()
 
-        # Always log stderr (but never return it to the user)
-        stderr_text = stderr.decode(errors="replace").strip()
-        if stderr_text:
-            logger.debug("Bridge stderr output: %s", stderr_text)
+            # Bridge 프로세스가 종료된 경우 자동 재시작
+            if proc.returncode is not None:
+                logger.warning("Bridge process died (rc=%d), restarting...", proc.returncode)
+                self._process = None
+                proc = await self._ensure_bridge()
 
-        if proc.returncode != 0:
-            logger.error("Bridge returned non-zero exit code %d: %s", proc.returncode, stderr_text)
-            raise RuntimeError(
-                f"PSIM bridge exited with code {proc.returncode}"
-            )
+            try:
+                proc.stdin.write((payload + "\n").encode())
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError) as exc:
+                logger.warning("Bridge stdin write failed, restarting: %s", exc)
+                self._process = None
+                proc = await self._ensure_bridge()
+                proc.stdin.write((payload + "\n").encode())
+                await proc.stdin.drain()
 
-        try:
-            result = json.loads(stdout.decode())
-        except json.JSONDecodeError as exc:
-            logger.error("Bridge returned invalid JSON: %s", stdout[:500])
-            raise RuntimeError(
-                f"PSIM bridge returned invalid JSON for action '{action}': {exc}"
-            ) from exc
+            try:
+                raw = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=self._timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Bridge call timed out: action=%s", action)
+                # 타임아웃 시 프로세스를 종료하고 다음 호출에서 재시작
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                self._process = None
+                raise TimeoutError(
+                    f"PSIM bridge timed out after {self._timeout}s for action '{action}'"
+                ) from None
 
-        return result
+            if not raw:
+                # 빈 응답 = 프로세스가 종료됨
+                logger.error("Bridge returned empty response (process may have crashed)")
+                self._process = None
+                raise RuntimeError(
+                    f"PSIM bridge returned empty response for action '{action}'. "
+                    "The bridge process may have crashed."
+                )
+
+            try:
+                result = json.loads(raw.decode())
+            except json.JSONDecodeError as exc:
+                logger.error("Bridge returned invalid JSON: %s", raw[:500])
+                raise RuntimeError(
+                    f"PSIM bridge returned invalid JSON for action '{action}': {exc}"
+                ) from exc
+
+            return result
+
+    async def shutdown(self) -> None:
+        """MCP 서버 종료 시 Bridge 프로세스를 정리한다."""
+        if self._process is not None and self._process.returncode is None:
+            logger.info("Shutting down bridge process (pid=%d)", self._process.pid)
+            try:
+                self._process.stdin.close()
+                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Bridge process did not exit gracefully, killing...")
+                try:
+                    self._process.kill()
+                except ProcessLookupError:
+                    pass
+            except Exception:
+                logger.exception("Error during bridge shutdown")
+            finally:
+                self._process = None
 
     # ------------------------------------------------------------------
     # BasePsimAdapter interface
@@ -178,6 +235,7 @@ class RealPsimAdapter(BasePsimAdapter):
         output_dir: str,
         format: str = "json",
         signals: list[str] | None = None,
+        graph_file: str = "",
     ) -> dict:
         """Export results via the bridge."""
         return await self._call_bridge(
@@ -186,6 +244,7 @@ class RealPsimAdapter(BasePsimAdapter):
                 "output_dir": output_dir,
                 "format": format,
                 "signals": signals,
+                "graph_file": graph_file,
             },
         )
 

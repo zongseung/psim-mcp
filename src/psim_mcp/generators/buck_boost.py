@@ -45,27 +45,82 @@ class BuckBoostGenerator(TopologyGenerator):
         capacitance = iout * duty / (fsw * vripple_ratio * vout) if vout else 100e-6
         r_load = vout / iout if iout else 10.0
 
+        # Buck-boost (inverting): V1+ -> SW1(drain->source) -> L1 -> output(-)
+        # D1 freewheels from GND(anode) to SW-L junction(cathode)
+        # Output: C1||R1 from L1.pin2 to GND
+        #
+        # Layout follows verified buck pattern (DIR=270 horizontal MOSFET):
+        #   VDC(120,100)-(120,150) -> MOSFET drain(150,100) source(200,100) gate(180,120)
+        #   GATING(180,170) -> D1 anode(200,150) cathode(200,100)  [at SW-L node]
+        #   L(250,100)-(300,100) -> C(300,100)-(300,150) -> R(350,100)-(350,150)
+        #   GND at y=150
         components = [
-            {"id": "V1", "type": "DC_Source", "parameters": {"voltage": vin}},
-            {"id": "SW1", "type": "MOSFET", "parameters": {"switching_frequency": fsw, "on_resistance": 0.01}},
-            {"id": "L1", "type": "Inductor", "parameters": {"inductance": round(inductance, 9)}},
-            {"id": "D1", "type": "Diode", "parameters": {"forward_voltage": 0.7}},
-            {"id": "C1", "type": "Capacitor", "parameters": {"capacitance": round(capacitance, 9)}},
-            {"id": "R1", "type": "Resistor", "parameters": {"resistance": round(r_load, 4)}},
+            {
+                "id": "V1", "type": "DC_Source",
+                "parameters": {"voltage": vin},
+                "position": {"x": 120, "y": 100}, "direction": 0,
+                "ports": [120, 100, 120, 150],
+            },
+            {
+                "id": "GND1", "type": "Ground",
+                "parameters": {},
+                "position": {"x": 120, "y": 150}, "direction": 0,
+                "ports": [120, 150],
+            },
+            {
+                "id": "SW1", "type": "MOSFET",
+                "parameters": {"switching_frequency": fsw, "on_resistance": 0.01},
+                "position": {"x": 150, "y": 100}, "direction": 270,
+                "ports": [150, 100, 200, 100, 180, 120],
+            },
+            {
+                "id": "G1", "type": "PWM_Generator",
+                "parameters": {
+                    "Frequency": fsw,
+                    "NoOfPoints": 2,
+                    "Switching_Points": f"0,{int(duty * 360)}",
+                },
+                "position": {"x": 180, "y": 170}, "direction": 0,
+                "ports": [180, 170],
+            },
+            {
+                "id": "D1", "type": "Diode",
+                "parameters": {"forward_voltage": 0.7},
+                "position": {"x": 200, "y": 150}, "direction": 270,
+                "ports": [200, 150, 200, 100],
+            },
+            {
+                "id": "L1", "type": "Inductor",
+                "parameters": {"inductance": round(inductance, 9)},
+                "position": {"x": 250, "y": 100},
+                "position2": {"x": 300, "y": 100},
+                "direction": 0,
+                "ports": [250, 100, 300, 100],
+            },
+            {
+                "id": "C1", "type": "Capacitor",
+                "parameters": {"capacitance": round(capacitance, 9)},
+                "position": {"x": 300, "y": 100},
+                "position2": {"x": 300, "y": 150},
+                "direction": 90,
+                "ports": [300, 100, 300, 150],
+            },
+            {
+                "id": "R1", "type": "Resistor",
+                "parameters": {"resistance": round(r_load, 4), "VoltageFlag": 1},
+                "position": {"x": 350, "y": 100},
+                "position2": {"x": 350, "y": 150},
+                "direction": 90,
+                "ports": [350, 100, 350, 150],
+            },
         ]
-
-        positions = auto_layout(
-            main_path=["V1", "SW1", "L1", "R1"],
-            branches={"L1": ["D1"], "R1": ["C1"]},
-        )
-        for comp in components:
-            comp["position"] = positions.get(comp["id"], {"x": 0, "y": 0})
 
         nets = [
             {"name": "net_vin_sw", "pins": ["V1.positive", "SW1.drain"]},
-            {"name": "net_sw_l", "pins": ["SW1.source", "L1.pin1"]},
-            {"name": "net_l_d_out", "pins": ["L1.pin2", "D1.cathode", "C1.positive", "R1.pin1"]},
-            {"name": "net_gnd", "pins": ["V1.negative", "D1.anode", "C1.negative", "R1.pin2"]},
+            {"name": "net_sw_d_l", "pins": ["SW1.source", "D1.cathode", "L1.pin1"]},
+            {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
+            {"name": "net_out", "pins": ["L1.pin2", "C1.positive", "R1.pin1"]},
+            {"name": "net_gnd", "pins": ["V1.negative", "GND1.pin1", "D1.anode", "C1.negative", "R1.pin2"]},
         ]
 
         return {

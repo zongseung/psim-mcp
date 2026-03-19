@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""PSIM Bridge Script — PSIM 번들 Python 3.8로 실행됨.
+"""PSIM Bridge Script — psimapipy 기반 PSIM 2026 API 브릿지.
 
-이 스크립트는 MCP 서버(Python 3.12+)와 PSIM Python API(Python 3.8) 사이의
-브릿지 역할을 한다. stdin으로 JSON 명령을 받고, PSIM API를 호출한 뒤,
+이 스크립트는 MCP 서버(Python 3.12+)와 PSIM Python API 사이의
+브릿지 역할을 한다. stdin으로 JSON 명령을 받고, psimapipy를 호출한 뒤,
 stdout으로 JSON 결과를 반환한다.
 
 프로토콜:
@@ -10,10 +10,21 @@ stdout으로 JSON 결과를 반환한다.
     출력 (stdout): {"success": true, "data": {...}}
                    {"success": false, "error": {"code": "...", "message": "..."}}
 
-주의:
-    - 이 파일은 PSIM 번들 Python 3.8에서 실행되므로 3.8 호환 문법만 사용
-    - f-string, dataclass 등은 사용 가능하나 walrus operator(:=), match 등은 불가
-    - MCP 서버의 의존성(pydantic, mcp 등)을 import하면 안 됨
+PSIM API 참조 (psimapipy 2026.0):
+    - PSIM(psim_folder_path) → 인스턴스 생성
+    - p.IsValid() → bool
+    - p.get_psim_version() → (ver, sub, subsub, subsubsub)
+    - p.get_psim_version_name() → str
+    - p.PsimFileNew() → sch
+    - p.PsimFileOpen(path) → sch
+    - p.PsimFileSave(sch, path)
+    - p.PsimCreateNewElement(sch, type, name, PORTS=..., DIRECTION=0, **params)
+    - p.PsimCreateNewElement(sch, "WIRE", "", X1=..., Y1=..., X2=..., Y2=...)
+    - p.PsimSetElmValue(sch, elem, param_name, value)
+    - p.PsimSetElmValue2(sch, type, name, param_name, value)
+    - p.PsimGetElementList(sch, 0) → [element, ...]
+    - p.PsimSimulate(sch_or_path, output_path, Simview=0, **params)
+    - p.PsimReadGraphFile(path) → result with .Graph
 """
 
 import json
@@ -24,109 +35,234 @@ import traceback
 
 
 # ---------------------------------------------------------------------------
-# PSIM API Wrapper
+# 토폴로지별 기본 시뮬레이션 파라미터
+# (이 스크립트는 PSIM Python 3.8에서 실행되므로 psim_mcp 모듈을 import할 수 없다.
+#  simulation_defaults.py와 동일한 매핑을 인라인으로 유지한다.)
 # ---------------------------------------------------------------------------
-# PSIM Python API의 실제 함수명은 Windows에서 "Save as Python Code" 기능으로
-# 확인 후 아래 함수들을 업데이트해야 한다.
-# 현재는 import 시도 + 실패 시 명확한 에러를 반환하는 구조로 작성되어 있다.
 
-_psim = None
-_psim_available = False
+_SIMULATION_DEFAULTS = {
+    # DC-DC 컨버터
+    "buck": {"time_step": "1E-006", "total_time": "0.02"},
+    "boost": {"time_step": "1E-006", "total_time": "0.02"},
+    "buck_boost": {"time_step": "1E-006", "total_time": "0.02"},
+    "flyback": {"time_step": "5E-007", "total_time": "0.01"},
+    "llc": {"time_step": "1E-007", "total_time": "0.005"},
+    "dab": {"time_step": "1E-007", "total_time": "0.005"},
+    # 인버터
+    "half_bridge": {"time_step": "1E-006", "total_time": "0.04"},
+    "full_bridge": {"time_step": "1E-006", "total_time": "0.04"},
+    "three_phase_inverter": {"time_step": "1E-006", "total_time": "0.06"},
+    # 정류기
+    "diode_bridge_rectifier": {"time_step": "1E-005", "total_time": "0.06"},
+    # PFC
+    "boost_pfc": {"time_step": "1E-006", "total_time": "0.06"},
+    "totem_pole_pfc": {"time_step": "5E-007", "total_time": "0.06"},
+    # 모터 드라이브
+    "bldc_drive": {"time_step": "1E-006", "total_time": "0.5"},
+    "pmsm_foc_drive": {"time_step": "1E-006", "total_time": "0.5"},
+    # 배터리 충전
+    "cc_cv_charger": {"time_step": "1E-005", "total_time": "1.0"},
+    # 태양광
+    "pv_mppt_boost": {"time_step": "1E-006", "total_time": "0.1"},
+    "pv_grid_tied": {"time_step": "1E-006", "total_time": "0.1"},
+    # 필터
+    "lc_filter": {"time_step": "1E-006", "total_time": "0.01"},
+    "lcl_filter": {"time_step": "1E-006", "total_time": "0.01"},
+}
+
+_GLOBAL_DEFAULT = {"time_step": "1E-006", "total_time": "0.05"}
 
 
-def _ensure_psim():
-    """PSIM 모듈을 로드한다. 실패 시 ImportError를 raise."""
-    global _psim, _psim_available
-    if _psim_available:
-        return _psim
+# ---------------------------------------------------------------------------
+# PSIM element type mapping
+# ---------------------------------------------------------------------------
+# Internal/generic type names → PSIM MULTI_* element types.
+# PSIM's PsimConvertToPython output reveals that power components use
+# MULTI_* prefixed types (e.g. MULTI_MOSFET, MULTI_DIODE, etc.).
+
+_PSIM_TYPE_MAP = {
+    "MOSFET": "MULTI_MOSFET",
+    "IGBT": "MULTI_IGBT",
+    "DIODE": "MULTI_DIODE",
+    "Diode": "MULTI_DIODE",
+    "L": "MULTI_INDUCTOR",
+    "Inductor": "MULTI_INDUCTOR",
+    "C": "MULTI_CAPACITOR",
+    "Capacitor": "MULTI_CAPACITOR",
+    "R": "MULTI_RESISTOR",
+    "Resistor": "MULTI_RESISTOR",
+    # These stay the same — no MULTI_ prefix
+    "VDC": "VDC",
+    "VAC": "VAC",
+    "IDC": "IDC",
+    "Ground": "Ground",
+    "GATING": "GATING",
+    "VP": "VP",
+    "IP": "IP",
+    "SIMCONTROL": "SIMCONTROL",
+    "ONCTRL": "ONCTRL",
+    "TF_1F_1": "TF_1F_1",
+    "BATTERY": "BATTERY",
+    "GTO": "MULTI_GTO",
+    "TRIAC": "MULTI_TRIAC",
+}
+
+# Internal parameter name → PSIM API parameter name mapping.
+# None means the parameter should be skipped (not a PSIM creation parameter).
+_PARAM_NAME_MAP = {
+    # Sources
+    "voltage": "Amplitude",
+    "frequency": "Frequency",
+    "current": "Amplitude",
+    # Passives
+    "resistance": "Resistance",
+    "inductance": "Inductance",
+    "capacitance": "Capacitance",
+    # Switches — PSIM MULTI_* elements accept these directly
+    "switching_frequency": None,  # skip — not a PSIM element param
+    "on_resistance": "On_Resistance",
+    "forward_voltage": "Diode_Voltage_Drop",
+    # Flags
+    "VoltageFlag": "Voltage_Flag",
+    "CurrentFlag": "Current_Flag",
+    # GATING params
+    "Frequency": "Frequency",
+    "NoOfPoints": "No__of_Points",
+    "Switching_Points": "Switching_Points",
+    # Transformer
+    "turns_ratio": "Ratio",
+    "primary_inductance": "Inductance",
+    # Series impedance (sources)
+    "Lseries": "Lseries",
+    "Rseries": "Rseries",
+}
+
+
+def _get_simulation_defaults(topology):
+    """토폴로지에 맞는 기본 시뮬레이션 파라미터를 반환한다."""
+    if not topology:
+        return _GLOBAL_DEFAULT
+    return _SIMULATION_DEFAULTS.get(topology.lower(), _GLOBAL_DEFAULT)
+
+
+def _calculate_simcontrol_position(components):
+    """컴포넌트 bounding box 바깥에 SIMCONTROL 위치를 계산한다."""
+    if not components:
+        return "{130, 40}"  # 컴포넌트 없으면 기본값
+
+    max_x = max(c.get("position", {}).get("x", 0) for c in components)
+    min_y = min(c.get("position", {}).get("y", 0) for c in components)
+
+    # bounding box 우측 상단에서 100px 오프셋
+    sim_x = max_x + 100
+    sim_y = min_y - 50
+
+    return "{%d, %d}" % (sim_x, sim_y)
+
+
+# ---------------------------------------------------------------------------
+# PSIM Instance Management
+# ---------------------------------------------------------------------------
+
+_psim_instance = None
+_current_sch = None
+_current_path = None
+_element_cache = {}  # name → type 매핑 (set_parameter에서 component_type 자동 조회용)
+
+
+def _build_element_cache():
+    """열린 schematic의 모든 소자를 캐시한다 (name → type 매핑)."""
+    global _element_cache
+    _element_cache = {}
+    if _current_sch is None:
+        return
     try:
-        import psim
-        _psim = psim
-        _psim_available = True
-        return _psim
+        p = _get_psim()
+        elm_list = p.PsimGetElementList(_current_sch, 0)
+        if elm_list:
+            _element_cache = {elem.Name: elem.Type for elem in elm_list}
+    except Exception:
+        pass  # 캐시 빌드 실패해도 치명적이지 않음
+
+
+def _get_psim():
+    """PSIM 인스턴스를 반환한다. 없으면 생성."""
+    global _psim_instance
+    if _psim_instance is not None:
+        return _psim_instance
+
+    try:
+        from psimapipy import PSIM
     except ImportError:
         raise ImportError(
-            "PSIM Python API를 불러올 수 없습니다. "
-            "PSIM이 설치되어 있고, PSIM 번들 Python으로 이 스크립트를 "
-            "실행하고 있는지 확인하세요."
+            "psimapipy를 불러올 수 없습니다. "
+            "PSIM이 설치되어 있고 psimapipy가 Python 환경에 설치되어 있는지 확인하세요."
         )
 
+    psim_path = os.environ.get("PSIM_PATH", "")
+    p = PSIM(psim_path)
 
-# ---------------------------------------------------------------------------
-# Function discovery candidates — ordered by likelihood.
-# The actual function names must be confirmed via "Save as Python Code"
-# analysis on Windows. See docs/ver1.1.1/06-windows-smoke-test.md.
-# ---------------------------------------------------------------------------
+    if not p or not p.IsValid():
+        raise RuntimeError(
+            "PSIM 인스턴스 생성 실패. PSIM_PATH=%s 경로에 psim2.dll이 있는지 확인하세요." % psim_path
+        )
 
-_OPEN_FUNCTION_CANDIDATES = ("open_schematic", "load", "open", "load_schematic")
-_SET_PARAM_CANDIDATES = ("set_param", "set_parameter", "set_element_param")
-_RUN_SIM_CANDIDATES = ("run", "simulate", "run_simulation", "run_sim")
-_EXPORT_CANDIDATES = ("export", "export_results", "get_results", "get_simulation_data")
-_INFO_CANDIDATES = ("get_all_elements", "get_elements", "get_components", "get_schematic_info")
-# Wire creation function candidates — ordered by likelihood.
-# The actual function name must be confirmed via "Save as Python Code"
-# analysis on Windows. See docs/ver1.1.1/06-windows-smoke-test.md.
-_WIRE_FUNCTION_CANDIDATES = ("PsimCreateWire", "PsimConnect", "PsimCreateNewWire")
+    _psim_instance = p
+    return p
 
-
-def _get_override_name(env_name):
-    """Return a stripped override value from the environment, if present."""
-    value = os.environ.get(env_name, "").strip()
-    return value or None
-
-
-def _resolve_wire_function(psim_instance):
-    """Resolve the wire creation function with explicit override support."""
-    override = _get_override_name("PSIM_WIRE_FUNCTION")
-    if override:
-        if hasattr(psim_instance, override):
-            return getattr(psim_instance, override), override, None
-        return None, override, "override_not_found"
-
-    for fn_name in _WIRE_FUNCTION_CANDIDATES:
-        if hasattr(psim_instance, fn_name):
-            return getattr(psim_instance, fn_name), fn_name, None
-    return None, None, "no_candidate_found"
 
 # ---------------------------------------------------------------------------
 # Action Handlers
 # ---------------------------------------------------------------------------
-# 각 핸들러는 params dict를 받고 결과 dict를 반환한다.
-# PSIM API의 실제 함수명/시그니처가 확인되면 아래 TODO 부분을 교체한다.
 
 def handle_open_project(params):
-    """PSIM 프로젝트 파일을 연다."""
+    """PSIM 프로젝트 파일(.psimsch)을 연다."""
+    global _current_sch, _current_path
+
     path = params.get("path")
     if not path:
         return _error("INVALID_INPUT", "path가 지정되지 않았습니다.")
 
-    psim = _ensure_psim()
+    if not os.path.isfile(path):
+        return _error("FILE_NOT_FOUND", "파일을 찾을 수 없습니다: %s" % path)
 
-    # TODO: PSIM API 확인 후 실제 호출로 교체
-    # 예상 패턴 (Save as Python Code 기반):
-    #   psim.open_schematic(path)
-    #   components = psim.get_all_elements()
-    #
-    # 현재는 PSIM API 시그니처 미확인 상태이므로 아래 패턴을 시도한다.
-    # 실패 시 에러 메시지에 사용 가능한 함수 목록을 포함하여 디버깅을 돕는다.
     try:
-        # 시도 1: psim.load / psim.open_schematic / psim.open 등
-        open_fn = None
-        for fn_name in _OPEN_FUNCTION_CANDIDATES:
-            if hasattr(psim, fn_name):
-                open_fn = getattr(psim, fn_name)
-                break
+        p = _get_psim()
+        sch = p.PsimFileOpen(path)
+        if not sch:
+            return _error("PSIM_API_ERROR", "스키매틱 파일을 열 수 없습니다: %s" % path)
 
-        if open_fn is None:
-            available = [a for a in dir(psim) if not a.startswith("_")]
-            return _error(
-                "PSIM_API_ERROR",
-                "프로젝트 열기 함수를 찾을 수 없습니다. "
-                "사용 가능한 PSIM API 함수: %s" % ", ".join(available[:20]),
-            )
+        _current_sch = sch
+        _current_path = path
 
-        result = open_fn(path)
-        return _success(_serialize(result) if result else {"path": path, "status": "opened"})
+        # element cache 빌드 (set_parameter에서 component_type 자동 조회용)
+        _build_element_cache()
+
+        # 소자 목록 조회
+        components = []
+        try:
+            elm_list = p.PsimGetElementList(sch, 0)
+            if elm_list:
+                for elem in elm_list:
+                    comp = {
+                        "type": elem.Type,
+                        "name": elem.Name,
+                        "index": elem.Index,
+                    }
+                    if hasattr(elem, "Params") and elem.Params:
+                        comp["parameters"] = {
+                            param.Name: param.Value for param in elem.Params
+                        }
+                    components.append(comp)
+        except Exception:
+            pass  # 소자 목록 조회 실패해도 파일 열기는 성공
+
+        return _success({
+            "path": path,
+            "status": "opened",
+            "component_count": len(components),
+            "components": components[:50],  # 최대 50개만 반환
+        })
 
     except Exception as e:
         return _error("PSIM_ERROR", "프로젝트 열기 실패: %s" % str(e))
@@ -134,37 +270,37 @@ def handle_open_project(params):
 
 def handle_set_parameter(params):
     """컴포넌트 파라미터를 변경한다."""
+    global _current_sch
+
     component_id = params.get("component_id")
     parameter_name = params.get("parameter_name")
     value = params.get("value")
+    component_type = params.get("component_type")
 
     if not component_id or not parameter_name:
         return _error("INVALID_INPUT", "component_id와 parameter_name이 필요합니다.")
 
-    psim = _ensure_psim()
+    if _current_sch is None:
+        return _error("NO_PROJECT", "열린 프로젝트가 없습니다. open_project를 먼저 호출하세요.")
+
+    # component_type이 없으면 element cache에서 자동 조회
+    if not component_type:
+        component_type = _element_cache.get(component_id, "")
 
     try:
-        # TODO: PSIM API 확인 후 실제 호출로 교체
-        set_fn = None
-        for fn_name in _SET_PARAM_CANDIDATES:
-            if hasattr(psim, fn_name):
-                set_fn = getattr(psim, fn_name)
-                break
+        p = _get_psim()
 
-        if set_fn is None:
-            available = [a for a in dir(psim) if not a.startswith("_")]
-            return _error(
-                "PSIM_API_ERROR",
-                "파라미터 설정 함수를 찾을 수 없습니다. "
-                "사용 가능한 PSIM API 함수: %s" % ", ".join(available[:20]),
-            )
+        # PsimSetElmValue2: type + name으로 지정
+        result = p.PsimSetElmValue2(
+            _current_sch, component_type, component_id,
+            parameter_name, str(value)
+        )
 
-        result = set_fn(component_id, parameter_name, value)
         return _success({
             "component_id": component_id,
             "parameter_name": parameter_name,
-            "new_value": value,
-            "raw_result": _serialize(result) if result else None,
+            "new_value": str(value),
+            "raw_result": result,
         })
 
     except Exception as e:
@@ -173,34 +309,65 @@ def handle_set_parameter(params):
 
 def handle_run_simulation(params):
     """시뮬레이션을 실행한다."""
+    global _current_sch, _current_path
+
     options = params.get("options", {})
 
-    psim = _ensure_psim()
+    # 시뮬레이션 대상: 열린 sch 또는 직접 지정된 파일
+    sch_path = params.get("schematic_path") or _current_path
+    output_path = params.get("output_path", "")
+
+    if _current_sch is None and not sch_path:
+        return _error("NO_PROJECT", "열린 프로젝트가 없거나 schematic_path가 지정되지 않았습니다.")
 
     try:
-        # TODO: PSIM API 확인 후 실제 호출로 교체
-        run_fn = None
-        for fn_name in _RUN_SIM_CANDIDATES:
-            if hasattr(psim, fn_name):
-                run_fn = getattr(psim, fn_name)
-                break
+        p = _get_psim()
 
-        if run_fn is None:
-            available = [a for a in dir(psim) if not a.startswith("_")]
-            return _error(
-                "PSIM_API_ERROR",
-                "시뮬레이션 실행 함수를 찾을 수 없습니다. "
-                "사용 가능한 PSIM API 함수: %s" % ", ".join(available[:20]),
-            )
+        # 시뮬레이션 대상 결정
+        sim_target = _current_sch if _current_sch else sch_path
+
+        # 출력 경로가 없으면 기본값 생성
+        if not output_path and sch_path:
+            base = os.path.splitext(sch_path)[0]
+            output_path = base + "_result.smv"
+
+        # 시뮬레이션 옵션을 kwargs로 전달
+        sim_kwargs = {"Simview": options.get("simview", 0)}
+        if "total_time" in options:
+            sim_kwargs["TotalTime"] = options["total_time"]
+        if "time_step" in options:
+            sim_kwargs["TimeStep"] = options["time_step"]
+
+        # 추가 파라미터 오버라이드
+        for key, val in options.items():
+            if key not in ("simview", "total_time", "time_step"):
+                sim_kwargs[key] = val
 
         start_time = time.time()
-        result = run_fn()
+        result = p.PsimSimulate(sim_target, output_path, **sim_kwargs)
         duration = time.time() - start_time
+
+        if result.Result == 0:
+            return _error("SIMULATION_FAILED", "시뮬레이션 실패: %s" % result.ErrorMessage)
+
+        # 그래프 데이터 요약
+        graph_summary = []
+        if hasattr(result, "Graph") and result.Graph:
+            for curve in result.Graph:
+                summary = {
+                    "name": curve.Name,
+                    "rows": curve.Rows,
+                }
+                if curve.Rows > 0:
+                    summary["last_value"] = curve.Values[curve.Rows - 1]
+                graph_summary.append(summary)
 
         return _success({
             "status": "completed",
             "duration_seconds": round(duration, 3),
-            "raw_result": _serialize(result) if result else None,
+            "output_path": output_path,
+            "signal_count": len(graph_summary),
+            "signals": graph_summary,
         })
 
     except Exception as e:
@@ -208,37 +375,58 @@ def handle_run_simulation(params):
 
 
 def handle_export_results(params):
-    """시뮬레이션 결과를 내보낸다."""
+    """시뮬레이션 결과를 CSV로 내보낸다."""
     output_dir = params.get("output_dir", ".")
-    fmt = params.get("format", "json")
+    fmt = params.get("format", "csv")
     signals = params.get("signals")
+    graph_file = params.get("graph_file", "")
 
-    psim = _ensure_psim()
+    if not graph_file:
+        return _error("INVALID_INPUT", "graph_file 경로가 필요합니다.")
 
     try:
-        # TODO: PSIM API 확인 후 실제 결과 추출 로직으로 교체
-        # 예상 패턴:
-        #   data = psim.get_simulation_data()
-        #   또는 .smv 파일을 읽어 파싱
-        export_fn = None
-        for fn_name in _EXPORT_CANDIDATES:
-            if hasattr(psim, fn_name):
-                export_fn = getattr(psim, fn_name)
-                break
+        p = _get_psim()
 
-        if export_fn is None:
-            available = [a for a in dir(psim) if not a.startswith("_")]
-            return _error(
-                "PSIM_API_ERROR",
-                "결과 추출 함수를 찾을 수 없습니다. "
-                "사용 가능한 PSIM API 함수: %s" % ", ".join(available[:20]),
-            )
+        res = p.PsimReadGraphFile(graph_file)
+        if res.Result == 0:
+            return _error("EXPORT_FAILED", "그래프 파일 읽기 실패: %s" % res.ErrorMessage)
 
-        result = export_fn()
+        graph = res.Graph
+        if not graph:
+            return _error("EXPORT_FAILED", "그래프 데이터가 비어 있습니다.")
+
+        # 시그널 필터링
+        if signals:
+            signal_set = set(signals)
+            graph = [c for c in graph if c.Name in signal_set]
+
+        # CSV 출력
+        os.makedirs(output_dir, exist_ok=True)
+        base = os.path.splitext(os.path.basename(graph_file))[0]
+        out_file = os.path.join(output_dir, base + ".csv")
+
+        with open(out_file, "w") as f:
+            # 헤더
+            names = [curve.Name for curve in graph]
+            f.write(",".join(names) + "\n")
+
+            # 데이터
+            max_rows = max(curve.Rows for curve in graph)
+            for i in range(max_rows):
+                values = []
+                for curve in graph:
+                    if i < curve.Rows:
+                        values.append(str(curve.Values[i]))
+                    else:
+                        values.append("")
+                f.write(",".join(values) + "\n")
+
         return _success({
-            "output_dir": output_dir,
-            "format": fmt,
-            "raw_result": _serialize(result) if result else None,
+            "output_file": out_file,
+            "format": "csv",
+            "signal_count": len(graph),
+            "signal_names": [c.Name for c in graph],
+            "row_count": max_rows,
         })
 
     except Exception as e:
@@ -248,45 +436,252 @@ def handle_export_results(params):
 def handle_get_status(params):
     """PSIM 연결 상태를 반환한다."""
     try:
-        psim = _ensure_psim()
-        version = getattr(psim, "__version__", getattr(psim, "version", "unknown"))
+        p = _get_psim()
+        ver, sub, subsub, subsubsub = p.get_psim_version()
+        version_name = p.get_psim_version_name()
+
         return _success({
             "psim_available": True,
-            "psim_version": str(version),
+            "psim_version": "%d.%d.%d.%d" % (ver, sub, subsub, subsubsub),
+            "psim_version_name": version_name,
+            "psim_path": os.environ.get("PSIM_PATH", ""),
+            "project_open": _current_sch is not None,
+            "current_project": _current_path,
         })
     except ImportError:
         return _success({
             "psim_available": False,
             "psim_version": None,
+            "psim_version_name": None,
+        })
+    except Exception as e:
+        return _success({
+            "psim_available": False,
+            "psim_version": None,
+            "error": str(e),
         })
 
 
+def handle_get_project_info(params):
+    """열린 프로젝트의 상세 정보를 반환한다."""
+    global _current_sch, _current_path
+
+    if _current_sch is None:
+        return _error("NO_PROJECT", "열린 프로젝트가 없습니다.")
+
+    try:
+        p = _get_psim()
+        is_sub = p.PsimIsSubcircuit(_current_sch)
+
+        # 소자 목록
+        components = []
+        elm_list = p.PsimGetElementList(_current_sch, 0)
+        if elm_list:
+            for elem in elm_list:
+                comp = {
+                    "type": elem.Type,
+                    "name": elem.Name,
+                    "index": elem.Index,
+                }
+                if hasattr(elem, "Params") and elem.Params:
+                    comp["parameters"] = {
+                        param.Name: param.Value for param in elem.Params
+                    }
+                components.append(comp)
+
+        return _success({
+            "path": _current_path,
+            "is_subcircuit": is_sub,
+            "component_count": len(components),
+            "components": components,
+        })
+
+    except Exception as e:
+        return _error("PSIM_ERROR", "프로젝트 정보 조회 실패: %s" % str(e))
+
+
+def _resolve_pin_positions(components):
+    """Build a dict: 'ComponentID.pin_name' -> (x, y) for all placed components.
+
+    Pin positions are read from the ``ports`` field (a flat list of coordinates)
+    which mirrors the PSIM PORTS format.  If ``ports`` is not present, falls
+    back to ``position`` / ``position2`` fields for backward compatibility.
+    """
+    pin_map = {}
+
+    for comp in components:
+        comp_id = comp.get("id", "")
+        comp_type = comp.get("type", "")
+        ports = comp.get("ports", [])
+
+        # ------------------------------------------------------------------
+        # Fallback: build a ports list from position / position2 when the
+        # new ``ports`` field is not yet provided by the generator.
+        # ------------------------------------------------------------------
+        if not ports:
+            pos = comp.get("position", {})
+            pos2 = comp.get("position2")
+            x = pos.get("x", 0)
+            y = pos.get("y", 0)
+            if pos2:
+                ports = [x, y, pos2.get("x", x + 50), pos2.get("y", y)]
+            else:
+                ports = [x, y]
+
+        # ------------------------------------------------------------------
+        # Map ports to named pins based on component type.
+        # ------------------------------------------------------------------
+        if comp_type in ("MOSFET", "IGBT"):
+            # 6 values: drain/collector_x, y, source/emitter_x, y, gate_x, y
+            if len(ports) >= 6:
+                pin_map["%s.drain" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.collector" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.source" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.emitter" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.gate" % comp_id] = (ports[4], ports[5])
+            elif len(ports) >= 2:
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type in ("Diode", "DIODE"):
+            # 4 values: anode_x, y, cathode_x, y
+            if len(ports) >= 4:
+                pin_map["%s.anode" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.cathode" % comp_id] = (ports[2], ports[3])
+            elif len(ports) >= 2:
+                pin_map["%s.anode" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type in ("DC_Source", "AC_Source", "Battery"):
+            # 4 values: positive_x, y, negative_x, y
+            if len(ports) >= 4:
+                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.negative" % comp_id] = (ports[2], ports[3])
+            elif len(ports) >= 2:
+                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type in ("Inductor", "Resistor"):
+            # 4 values: pin1_x, y, pin2_x, y
+            if len(ports) >= 4:
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
+            elif len(ports) >= 2:
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type in ("Capacitor",):
+            # 4 values: positive/pin1_x, y, negative/pin2_x, y
+            if len(ports) >= 4:
+                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.negative" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
+            elif len(ports) >= 2:
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type == "Ground":
+            if len(ports) >= 2:
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type == "PWM_Generator":
+            if len(ports) >= 2:
+                pin_map["%s.output" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type == "Voltage_Probe":
+            if len(ports) >= 2:
+                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type == "Current_Probe":
+            if len(ports) >= 4:
+                pin_map["%s.input" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.output" % comp_id] = (ports[2], ports[3])
+            elif len(ports) >= 2:
+                pin_map["%s.input" % comp_id] = (ports[0], ports[1])
+
+        elif comp_type == "Transformer":
+            # 8 values: primary1, primary2, secondary1, secondary2
+            if len(ports) >= 8:
+                pin_map["%s.primary1" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.primary2" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.secondary1" % comp_id] = (ports[4], ports[5])
+                pin_map["%s.secondary2" % comp_id] = (ports[6], ports[7])
+            elif len(ports) >= 4:
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
+
+        else:
+            # Generic fallback: first pair = pin1/positive, second = pin2/negative
+            if len(ports) >= 2:
+                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
+            if len(ports) >= 4:
+                pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
+                pin_map["%s.negative" % comp_id] = (ports[2], ports[3])
+
+    return pin_map
+
+
+def _route_wire(p, sch, x1, y1, x2, y2):
+    """Route a wire between two points, using L-shaped routing if needed."""
+    # Skip zero-length wires (pins at same location are already connected)
+    if x1 == x2 and y1 == y2:
+        return
+    if x1 == x2 or y1 == y2:
+        # Straight line
+        p.PsimCreateNewElement(
+            sch, "WIRE", "",
+            X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y2),
+        )
+    else:
+        # L-shaped: go horizontal first, then vertical
+        p.PsimCreateNewElement(
+            sch, "WIRE", "",
+            X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y1),
+        )
+        p.PsimCreateNewElement(
+            sch, "WIRE", "",
+            X1=str(x2), Y1=str(y1), X2=str(x2), Y2=str(y2),
+        )
+
+
 def handle_create_circuit(params):
-    """psimapipy를 사용하여 새 PSIM 회로를 생성한다."""
+    """psimapipy를 사용하여 새 PSIM 회로를 생성한다.
+
+    PSIM 2026 API 기준 (PsimConvertToPython 출력 기반):
+    - 소자: PsimCreateNewElement(sch, "MULTI_MOSFET", name, PORTS=[x1,y1,...], DIRECTION=0, SubType="Ideal", ...)
+    - 와이어: PsimCreateNewElement(sch, "WIRE", "", X1=str, Y1=str, X2=str, Y2=str)
+    - 시뮬레이션 설정: PsimCreateNewElement(sch, "SIMCONTROL", "", POINT="{x,y}", TIMESTEP=..., TOTALTIME=...)
+
+    PORTS는 Python list (문자열 아님)이며, MULTI_* 타입에는 SubType="Ideal"이 필요하다.
+    """
+    global _current_sch, _current_path
+
     components = params.get("components", [])
     connections = params.get("connections", [])
     save_path = params.get("save_path")
-    simulation_settings = params.get("simulation_settings", {})
+    simulation_settings = params.get("simulation_settings") or {}
 
     if not save_path:
         return _error("INVALID_INPUT", "save_path가 지정되지 않았습니다.")
 
     try:
-        from psimapipy import PSIM
-
-        p = PSIM("")
-        if not p or not p.IsValid():
-            return _error("PSIM_API_ERROR", "PSIM 인스턴스를 생성할 수 없습니다.")
-
+        p = _get_psim()
         sch = p.PsimFileNew()
         if not sch:
             return _error("PSIM_API_ERROR", "새 스키매틱을 생성할 수 없습니다.")
 
-        # 시뮬레이션 설정 적용
-        ts = simulation_settings.get("time_step", 1e-5)
-        tt = simulation_settings.get("total_time", 0.1)
-        p.PsimSetElmValue(sch, None, "TIMESTEP", str(ts))
-        p.PsimSetElmValue(sch, None, "TOTALTIME", str(tt))
+        # 토폴로지별 기본 시뮬레이션 파라미터 적용
+        circuit_type = params.get("circuit_type", "")
+        defaults = _get_simulation_defaults(circuit_type)
+        ts = simulation_settings.get("time_step", defaults["time_step"])
+        tt = simulation_settings.get("total_time", defaults["total_time"])
+
+        # SIMCONTROL 위치를 컴포넌트 bounding box 바깥에 배치
+        simcontrol_point = _calculate_simcontrol_position(components)
+        p.PsimCreateNewElement(
+            sch, "SIMCONTROL", "",
+            POINT=simcontrol_point,
+            TIMESTEP=str(ts),
+            TOTALTIME=str(tt),
+        )
 
         # 컴포넌트 배치
         element_map = {}
@@ -294,84 +689,127 @@ def handle_create_circuit(params):
         for comp in components:
             comp_id = comp.get("id", "")
             comp_type = comp.get("type", "")
+            comp_name = comp.get("name", comp_id)
             comp_params = comp.get("parameters", {})
             position = comp.get("position", {"x": 0, "y": 0})
+            direction = comp.get("direction", 0)
+
+            # Resolve the actual PSIM element type via the mapping table.
+            # Priority: explicit psim_element_type > _PSIM_TYPE_MAP > raw type
+            raw_psim_type = comp.get("psim_element_type") or comp_type
+            psim_type = _PSIM_TYPE_MAP.get(raw_psim_type, raw_psim_type)
 
             try:
-                element_type = comp.get("psim_element_type") or comp_type
+                # ----------------------------------------------------------
+                # Build PORTS as a Python list (PSIM 2026 native format).
+                # The ``ports`` field is a flat list of coordinates produced
+                # by the circuit generators, e.g. [150, 100, 200, 100, 180, 120].
+                # ----------------------------------------------------------
+                ports_list = comp.get("ports")
+
+                if not ports_list:
+                    # Fallback: build from position / position2
+                    x = position.get("x", 0)
+                    y = position.get("y", 0)
+                    position2 = comp.get("position2")
+                    if position2:
+                        ports_list = [x, y, position2.get("x", x + 50), position2.get("y", y)]
+                    else:
+                        ports_list = [x, y]
+
+                # Build kwargs for PsimCreateNewElement
+                kwargs = {
+                    "PORTS": ports_list,
+                    "DIRECTION": direction,
+                    "PAGE": 0,
+                    "XFLIP": 0,
+                    "_OPTIONS_": 16,
+                }
+
+                # MULTI_* elements require SubType="Ideal"
+                if psim_type.startswith("MULTI_"):
+                    kwargs["SubType"] = "Ideal"
+
+                # Map and add parameters (내부 이름 → PSIM API 이름)
+                for param_name, param_value in comp_params.items():
+                    psim_name = _PARAM_NAME_MAP.get(param_name, param_name)
+                    if psim_name is not None:
+                        kwargs[psim_name] = str(param_value)
+
                 elem = p.PsimCreateNewElement(
-                    sch, element_type,
-                    position.get("x", 0),
-                    position.get("y", 0),
+                    sch, psim_type, comp_name, **kwargs
                 )
-                if elem:
-                    element_map[comp_id] = elem
-                    for param_name, param_value in comp_params.items():
-                        p.PsimSetElmValue(sch, elem, param_name, str(param_value))
-                else:
-                    failed_components.append({
-                        "id": comp_id,
-                        "type": comp_type,
-                        "psim_element_type": element_type,
-                        "reason": "PsimCreateNewElement returned None",
-                    })
+
+                element_map[comp_id] = {
+                    "elem": elem,
+                    "position": position,
+                    "type": psim_type,
+                }
+
             except Exception as e:
                 failed_components.append({
                     "id": comp_id,
                     "type": comp_type,
-                    "psim_element_type": comp.get("psim_element_type") or comp_type,
+                    "psim_element_type": psim_type,
                     "reason": str(e),
                 })
 
-        # 연결선 생성
+        # Build pin position map for accurate wire routing
+        pin_map = _resolve_pin_positions(components)
+
+        # 와이어(연결선) 생성
         connected = 0
         failed_connections = []
         for conn in connections:
-            from_pin = conn.get("from", "")
-            to_pin = conn.get("to", "")
             try:
-                wire_fn, wire_fn_name, wire_error = _resolve_wire_function(p)
+                # 연결 방식 1: 좌표 기반 (직접 좌표 지정)
+                if "x1" in conn and "y1" in conn:
+                    _route_wire(
+                        p, sch,
+                        int(conn["x1"]), int(conn["y1"]),
+                        int(conn["x2"]), int(conn["y2"]),
+                    )
+                    connected += 1
+                    continue
 
-                if wire_fn is not None:
-                    # from/to에서 component_id와 pin 분리
-                    from_parts = from_pin.split(".")
-                    to_parts = to_pin.split(".")
-                    from_elem = element_map.get(from_parts[0])
-                    to_elem = element_map.get(to_parts[0])
+                # 연결 방식 2: from/to 핀 이름 기반 → pin_map에서 좌표 조회
+                from_pin = conn.get("from", "")
+                to_pin = conn.get("to", "")
 
-                    if from_elem and to_elem:
-                        wire_fn(sch, from_elem, to_elem)
-                        connected += 1
-                    else:
-                        failed_connections.append({
-                            "from": from_pin,
-                            "to": to_pin,
-                            "reason": "element not found in element_map",
-                        })
+                from_pos = pin_map.get(from_pin)
+                to_pos = pin_map.get(to_pin)
+
+                if from_pos and to_pos:
+                    _route_wire(p, sch, from_pos[0], from_pos[1], to_pos[0], to_pos[1])
+                    connected += 1
                 else:
-                    # wire 함수가 없으면 전체 건너뜀 (한 번만 기록)
-                    if not failed_connections or failed_connections[-1].get("reason") not in (
-                        "no wire function found in psimapipy",
-                        "configured wire function not found in psimapipy",
-                    ):
-                        reason = "no wire function found in psimapipy"
-                        if wire_error == "override_not_found":
-                            reason = "configured wire function not found in psimapipy"
-                        failed_connections.append({
-                            "from": from_pin,
-                            "to": to_pin,
-                            "reason": reason,
-                            "wire_function": wire_fn_name,
-                        })
+                    missing = []
+                    if not from_pos:
+                        missing.append("from='%s'" % from_pin)
+                    if not to_pos:
+                        missing.append("to='%s'" % to_pin)
+                    failed_connections.append({
+                        "from": from_pin,
+                        "to": to_pin,
+                        "reason": "pin position not found: %s" % ", ".join(missing),
+                    })
+
             except Exception as e:
                 failed_connections.append({
-                    "from": from_pin,
-                    "to": to_pin,
+                    "connection": conn,
                     "reason": str(e),
                 })
 
         # 파일 저장
+        # 저장 디렉토리가 없으면 생성
+        save_dir = os.path.dirname(save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
         p.PsimFileSave(sch, save_path)
+
+        _current_sch = sch
+        _current_path = save_path
 
         result = {
             "file_path": save_path,
@@ -381,9 +819,6 @@ def handle_create_circuit(params):
             "total_connections_requested": len(connections),
             "status": "created",
         }
-        _, resolved_wire_function, _ = _resolve_wire_function(p)
-        if resolved_wire_function:
-            result["wire_function"] = resolved_wire_function
 
         if failed_components:
             result["failed_components"] = failed_components
@@ -396,38 +831,10 @@ def handle_create_circuit(params):
         return _error(
             "PSIM_NOT_AVAILABLE",
             "psimapipy를 불러올 수 없습니다. "
-            "PSIM이 설치되어 있고, PSIM 번들 Python으로 이 스크립트를 "
-            "실행하고 있는지 확인하세요."
+            "PSIM이 설치되어 있고 psimapipy가 Python 환경에 설치되어 있는지 확인하세요."
         )
     except Exception as e:
         return _error("CREATE_CIRCUIT_FAILED", "회로 생성 실패: %s" % str(e))
-
-
-def handle_get_project_info(params):
-    """열린 프로젝트의 상세 정보를 반환한다."""
-    psim = _ensure_psim()
-
-    try:
-        # TODO: PSIM API 확인 후 실제 호출로 교체
-        info_fn = None
-        for fn_name in _INFO_CANDIDATES:
-            if hasattr(psim, fn_name):
-                info_fn = getattr(psim, fn_name)
-                break
-
-        if info_fn is None:
-            available = [a for a in dir(psim) if not a.startswith("_")]
-            return _error(
-                "PSIM_API_ERROR",
-                "프로젝트 정보 조회 함수를 찾을 수 없습니다. "
-                "사용 가능한 PSIM API 함수: %s" % ", ".join(available[:20]),
-            )
-
-        result = info_fn()
-        return _success(_serialize(result) if result else {})
-
-    except Exception as e:
-        return _error("PSIM_ERROR", "프로젝트 정보 조회 실패: %s" % str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -442,23 +849,6 @@ def _success(data):
 def _error(code, message):
     """표준 에러 응답을 생성한다."""
     return {"success": False, "error": {"code": code, "message": message}}
-
-
-def _serialize(obj):
-    """PSIM 객체를 JSON 직렬화 가능한 형태로 변환한다."""
-    if obj is None:
-        return None
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, (list, tuple)):
-        return [_serialize(item) for item in obj]
-    if isinstance(obj, dict):
-        return {str(k): _serialize(v) for k, v in obj.items()}
-    # PSIM 객체 → 속성을 dict로 변환 시도
-    try:
-        return {k: _serialize(v) for k, v in vars(obj).items() if not k.startswith("_")}
-    except TypeError:
-        return str(obj)
 
 
 # ---------------------------------------------------------------------------
@@ -477,37 +867,40 @@ _ACTION_HANDLERS = {
 
 
 def main():
-    """stdin에서 JSON 명령을 읽고, 처리 후, stdout으로 JSON 응답을 출력한다."""
-    try:
-        raw_input = sys.stdin.read()
-        if not raw_input.strip():
-            output = _error("INVALID_INPUT", "빈 입력입니다.")
-            print(json.dumps(output))
-            return
+    """stdin에서 JSON 명령을 줄 단위로 읽고, 처리 후, stdout으로 JSON 응답을 한 줄씩 출력한다.
 
-        command = json.loads(raw_input)
-        action = command.get("action")
-        params = command.get("params", {})
+    장기 실행(long-running) 프로세스로 동작하여, 호출 간 _psim_instance,
+    _current_sch, _current_path 등 전역 상태를 유지한다.
+    """
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
 
-        handler = _ACTION_HANDLERS.get(action)
-        if handler is None:
-            output = _error(
-                "UNKNOWN_ACTION",
-                "알 수 없는 action: %s. 지원: %s" % (action, ", ".join(_ACTION_HANDLERS.keys())),
-            )
-        else:
-            output = handler(params)
+        try:
+            command = json.loads(line)
+            action = command.get("action")
+            params = command.get("params", {})
 
-    except json.JSONDecodeError as e:
-        output = _error("INVALID_JSON", "JSON 파싱 실패: %s" % str(e))
-    except ImportError as e:
-        output = _error("PSIM_NOT_AVAILABLE", str(e))
-    except Exception as e:
-        # 예상하지 못한 에러 — stderr에 스택 트레이스, stdout에 에러 응답
-        traceback.print_exc(file=sys.stderr)
-        output = _error("INTERNAL_ERROR", "브릿지 내부 오류: %s" % str(e))
+            handler = _ACTION_HANDLERS.get(action)
+            if handler is None:
+                output = _error(
+                    "UNKNOWN_ACTION",
+                    "알 수 없는 action: %s. 지원: %s" % (action, ", ".join(_ACTION_HANDLERS.keys())),
+                )
+            else:
+                output = handler(params)
 
-    print(json.dumps(output, ensure_ascii=False))
+        except json.JSONDecodeError as e:
+            output = _error("INVALID_JSON", "JSON 파싱 실패: %s" % str(e))
+        except ImportError as e:
+            output = _error("PSIM_NOT_AVAILABLE", str(e))
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            output = _error("INTERNAL_ERROR", "브릿지 내부 오류: %s" % str(e))
+
+        # 한 줄로 출력 (줄바꿈으로 구분), flush로 즉시 전송
+        print(json.dumps(output, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

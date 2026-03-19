@@ -10,15 +10,19 @@ compatibility with tool modules that do lazy imports like::
 
 from __future__ import annotations
 
+import asyncio
+import atexit
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from psim_mcp.adapters.base import BasePsimAdapter
-    from psim_mcp.services.simulation_service import SimulationService
 
 from mcp.server.fastmcp import FastMCP
 
 from psim_mcp.config import AppConfig
+
+_shutdown_logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -37,24 +41,59 @@ def create_adapter(config: AppConfig) -> BasePsimAdapter:
         return RealPsimAdapter(config=config)
 
 
-def create_service(config: AppConfig) -> SimulationService:
-    """Create a :class:`SimulationService` wired to the right adapter."""
+def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
+    """Create all domain services with proper dependency injection.
+
+    Returns a dict of service instances keyed by role.
+    """
+    from psim_mcp.services.project_service import ProjectService
+    from psim_mcp.services.parameter_service import ParameterService
+    from psim_mcp.services.simulation_service import SimulationService
+    from psim_mcp.services.circuit_design_service import CircuitDesignService
+
+    project_svc = ProjectService(adapter=adapter, config=config)
+    parameter_svc = ParameterService(
+        adapter=adapter, config=config, project_service=project_svc,
+    )
+    simulation_svc = SimulationService(
+        adapter=adapter, config=config, project_service=project_svc,
+    )
+    circuit_design_svc = CircuitDesignService(
+        adapter=adapter, config=config,
+    )
+
+    return {
+        "project": project_svc,
+        "parameter": parameter_svc,
+        "simulation": simulation_svc,
+        "circuit_design": circuit_design_svc,
+        # Legacy: combined service for backward compat
+        "_legacy": simulation_svc,
+    }
+
+
+def create_service(config: AppConfig):
+    """Create a :class:`SimulationService` wired to the right adapter.
+
+    Backward-compatible factory.  New code should use ``create_services()``.
+    """
     from psim_mcp.services.simulation_service import SimulationService
 
     adapter = create_adapter(config)
     return SimulationService(adapter=adapter, config=config)
 
 
-def register_all_tools(mcp: FastMCP, service: SimulationService) -> None:
-    """Register every tool module on *mcp*."""
+def register_all_tools(mcp: FastMCP, services: dict) -> None:
+    """Register every tool module on *mcp* using domain services."""
     from psim_mcp.tools import circuit, design, parameter, project, results, simulation
 
-    project.register_tools(mcp, service)
-    parameter.register_tools(mcp, service)
-    simulation.register_tools(mcp, service)
-    results.register_tools(mcp, service)
-    circuit.register_tools(mcp, service)
-    design.register_tools(mcp, service)
+    # Use dedicated services for each tool module
+    project.register_tools(mcp, services["project"])
+    parameter.register_tools(mcp, services["_legacy"])
+    simulation.register_tools(mcp, services["simulation"])
+    results.register_tools(mcp, services["_legacy"])
+    circuit.register_tools(mcp, services["circuit_design"])
+    design.register_tools(mcp, services["circuit_design"])
 
 
 def create_app(config: AppConfig | None = None) -> FastMCP:
@@ -75,14 +114,28 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
         config = AppConfig()
     config.validate_real_mode()
 
+    adapter = create_adapter(config)
+    services = create_services(config, adapter)
+
+    # 서버 종료 시 adapter.shutdown() 호출을 위해 atexit 등록
+    def _sync_shutdown_adapter():
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(adapter.shutdown())
+            else:
+                loop.run_until_complete(adapter.shutdown())
+        except Exception:
+            _shutdown_logger.debug("Adapter shutdown during atexit (best-effort)", exc_info=True)
+
+    atexit.register(_sync_shutdown_adapter)
+
     app = FastMCP("psim-mcp")
-    service = create_service(config)
 
-    # Expose the service so legacy tool code that does
-    # ``mcp._psim_service`` still works.
-    app._psim_service = service  # type: ignore[attr-defined]
+    # Expose the legacy service so code that does ``mcp._psim_service`` still works.
+    app._psim_service = services["_legacy"]  # type: ignore[attr-defined]
 
-    register_all_tools(app, service)
+    register_all_tools(app, services)
     return app
 
 

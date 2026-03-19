@@ -73,39 +73,72 @@ def register_tools(mcp, service=None):
 
         # --- Sweep loop --------------------------------------------------
         sweep_results: list[dict] = []
+        failed_steps = 0
+        consecutive_failures = 0
+        early_stopped = False
         current = start
         while current <= end + 1e-12:  # small epsilon for float rounding
-            # Set parameter
-            await svc.set_parameter(component_id, parameter_name, current)
-
-            # Run simulation
-            sim_result = await svc.run_simulation()
-
             step_data: dict = {
                 "value": round(current, 10),
-                "simulation": sim_result,
             }
 
-            # Collect specific metrics if requested
-            if metrics and isinstance(sim_result, dict):
-                # Service returns {success, data: {summary: {...}}}
-                data = sim_result.get("data", {}) or {}
-                summary = data.get("summary", {}) or {}
-                step_data["metrics"] = {
-                    m: summary.get(m) for m in metrics
-                }
+            try:
+                # Set parameter
+                await svc.set_parameter(component_id, parameter_name, current)
+
+                # Run simulation
+                sim_result = await svc.run_simulation()
+                step_data["simulation"] = sim_result
+
+                # Collect specific metrics if requested
+                if metrics and isinstance(sim_result, dict):
+                    # Service returns {success, data: {summary: {...}}}
+                    data = sim_result.get("data", {}) or {}
+                    summary = data.get("summary", {}) or {}
+                    step_data["metrics"] = {
+                        m: summary.get(m) for m in metrics
+                    }
+
+                # 성공 시 연속 실패 카운터 리셋
+                consecutive_failures = 0
+
+            except Exception as e:
+                failed_steps += 1
+                consecutive_failures += 1
+                step_data["error"] = str(e)
+                step_data["simulation"] = None
+
+                # 연속 3회 실패 시 조기 중단
+                if consecutive_failures >= 3:
+                    sweep_results.append(step_data)
+                    early_stopped = True
+                    break
 
             sweep_results.append(step_data)
             current += step
 
+        result_data = {
+            "component_id": component_id,
+            "parameter_name": parameter_name,
+            "range": {"start": start, "end": end, "step": step},
+            "total_steps": len(sweep_results),
+            "failed_steps": failed_steps,
+            "results": sweep_results,
+        }
+
+        if early_stopped:
+            result_data["early_stopped"] = True
+            result_data["early_stop_reason"] = "연속 3회 실패로 스윕을 조기 중단했습니다."
+
+        message = f"파라미터 스윕 완료: {len(sweep_results)}단계 실행"
+        if failed_steps > 0:
+            message += f" (실패 {failed_steps}건)"
+        if early_stopped:
+            message += " — 연속 실패로 조기 중단"
+        message += "."
+
         return {
             "success": True,
-            "data": {
-                "component_id": component_id,
-                "parameter_name": parameter_name,
-                "range": {"start": start, "end": end, "step": step},
-                "total_steps": len(sweep_results),
-                "results": sweep_results,
-            },
-            "message": f"파라미터 스윕 완료: {len(sweep_results)}단계 실행.",
+            "data": result_data,
+            "message": message,
         }

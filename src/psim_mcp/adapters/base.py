@@ -61,6 +61,7 @@ class BasePsimAdapter(ABC):
         output_dir: str,
         format: str = "json",
         signals: list[str] | None = None,
+        graph_file: str = "",
     ) -> dict:
         """Export simulation results to disk.
 
@@ -68,6 +69,7 @@ class BasePsimAdapter(ABC):
             output_dir: Directory where files will be written.
             format: ``"json"`` or ``"csv"``.
             signals: Specific signal names to export; *None* means all.
+            graph_file: Optional path to the simulation result file (.smv).
 
         Returns:
             Dict with list of exported files and metadata.
@@ -88,6 +90,12 @@ class BasePsimAdapter(ABC):
 
         Raises:
             RuntimeError: If no project is open.
+        """
+
+    async def shutdown(self) -> None:
+        """Gracefully shut down the adapter and release resources.
+
+        기본 구현은 아무 작업도 하지 않는다. 서브클래스에서 필요 시 오버라이드.
         """
 
     @abstractmethod

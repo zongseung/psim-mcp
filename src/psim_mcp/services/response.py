@@ -1,18 +1,6 @@
-"""Standard response envelope builders."""
+"""Backward-compatible re-export of ResponseBuilder.
 
-from typing import Any
+Canonical location: ``psim_mcp.shared.response``.
+"""
 
-
-class ResponseBuilder:
-    """Creates standardized success/error response dicts."""
-
-    @staticmethod
-    def success(data: Any, message: str) -> dict:
-        return {"success": True, "data": data, "message": message}
-
-    @staticmethod
-    def error(code: str, message: str, suggestion: str | None = None) -> dict:
-        return {
-            "success": False,
-            "error": {"code": code, "message": message, "suggestion": suggestion},
-        }
+from psim_mcp.shared.response import ResponseBuilder  # noqa: F401
