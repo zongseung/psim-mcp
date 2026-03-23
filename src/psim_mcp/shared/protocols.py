@@ -95,6 +95,7 @@ class CircuitDesignServiceProtocol(Protocol):
         self,
         circuit_type: str,
         save_path: str,
+        specs: dict | None = None,
         components: list[dict] | None = None,
         connections: list[dict] | None = None,
         simulation_settings: dict | None = None,

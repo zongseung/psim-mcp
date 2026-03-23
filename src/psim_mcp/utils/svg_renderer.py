@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from psim_mcp.data.component_library import LEFT_PINS, RIGHT_PINS, get_component, get_pin_side
+from psim_mcp.data.component_library import (
+    LEFT_PINS,
+    RIGHT_PINS,
+    build_port_pin_map,
+    get_component,
+    get_pin_side,
+)
 
 _BODY_W = 60
 _TOTAL_W = 80
@@ -180,63 +186,7 @@ _PIN_ANCHOR_MAP: dict[str, dict[str, tuple[int, int]]] = {
 
 
 def _port_pin_map(comp: dict) -> dict[str, tuple[int, int]]:
-    comp_id = comp.get("id", "")
-    comp_type = comp.get("type", "")
-    ports = comp.get("ports", [])
-    if not comp_id or not ports:
-        return {}
-
-    pin_map: dict[str, tuple[int, int]] = {}
-    if comp_type in ("MOSFET", "IGBT") and len(ports) >= 6:
-        pin_map[f"{comp_id}.drain"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.collector"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.source"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.emitter"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.gate"] = (ports[4], ports[5])
-    elif comp_type in ("Diode", "DIODE") and len(ports) >= 4:
-        pin_map[f"{comp_id}.anode"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.cathode"] = (ports[2], ports[3])
-    elif comp_type in ("DC_Source", "AC_Source", "Battery") and len(ports) >= 4:
-        pin_map[f"{comp_id}.positive"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.negative"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.pin2"] = (ports[2], ports[3])
-    elif comp_type in ("Inductor", "Resistor") and len(ports) >= 4:
-        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.input"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.pin2"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.output"] = (ports[2], ports[3])
-    elif comp_type == "Capacitor" and len(ports) >= 4:
-        pin_map[f"{comp_id}.positive"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.negative"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.pin2"] = (ports[2], ports[3])
-    elif comp_type == "Ground" and len(ports) >= 2:
-        pin_map[f"{comp_id}.pin1"] = (ports[0], ports[1])
-    elif comp_type == "PWM_Generator" and len(ports) >= 2:
-        pin_map[f"{comp_id}.output"] = (ports[0], ports[1])
-    elif comp_type == "DiodeBridge" and len(ports) >= 8:
-        pin_map[f"{comp_id}.ac_pos"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.ac_neg"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.dc_pos"] = (ports[4], ports[5])
-        pin_map[f"{comp_id}.dc_neg"] = (ports[6], ports[7])
-    elif comp_type == "Transformer" and len(ports) >= 8:
-        pin_map[f"{comp_id}.primary1"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.primary_in"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.primary2"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.primary_out"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.secondary1"] = (ports[4], ports[5])
-        pin_map[f"{comp_id}.secondary_out"] = (ports[4], ports[5])
-        pin_map[f"{comp_id}.secondary2"] = (ports[6], ports[7])
-        pin_map[f"{comp_id}.secondary_in"] = (ports[6], ports[7])
-    elif comp_type == "Center_Tap_Transformer" and len(ports) >= 12:
-        pin_map[f"{comp_id}.primary_top"] = (ports[0], ports[1])
-        pin_map[f"{comp_id}.primary_center"] = (ports[2], ports[3])
-        pin_map[f"{comp_id}.primary_bottom"] = (ports[4], ports[5])
-        pin_map[f"{comp_id}.secondary_top"] = (ports[6], ports[7])
-        pin_map[f"{comp_id}.secondary_center"] = (ports[8], ports[9])
-        pin_map[f"{comp_id}.secondary_bottom"] = (ports[10], ports[11])
-    return pin_map
+    return build_port_pin_map(comp)
 
 
 def _spread_positions(count: int, start: int, end: int) -> list[int]:
@@ -248,6 +198,19 @@ def _spread_positions(count: int, start: int, end: int) -> list[int]:
     return [round(start + gap * (i + 1)) for i in range(count)]
 
 
+def _rotate_point(dx: int, dy: int, direction: int, cx: float, cy: float) -> tuple[int, int]:
+    """direction(0/90/180/270)에 따라 (dx, dy)를 (cx, cy) 중심으로 회전."""
+    import math
+    if direction in (0, None):
+        return dx, dy
+    rad = math.radians(direction)
+    cos_a = round(math.cos(rad))
+    sin_a = round(math.sin(rad))
+    rx = cx + (dx - cx) * cos_a - (dy - cy) * sin_a
+    ry = cy + (dx - cx) * sin_a + (dy - cy) * cos_a
+    return round(rx), round(ry)
+
+
 def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
     pin_pos: dict[str, tuple[int, int]] = {}
     for comp in components:
@@ -256,24 +219,32 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
             continue
         comp_type = comp.get("type", "")
         pos = comp.get("position", {"x": 0, "y": 0})
+        direction = comp.get("direction", 0)
         port_map = _port_pin_map(comp)
         if port_map:
             pin_pos.update(port_map)
             continue
 
+        # 회전 중심 (심볼 로컬 좌표 기준)
+        cx = _TOTAL_W / 2
+        cy = _MID_Y
+
         explicit_anchors = _PIN_ANCHOR_MAP.get(comp_type)
         if explicit_anchors:
             for pin_name, (dx, dy) in explicit_anchors.items():
-                pin_pos[f"{cid}.{pin_name}"] = (pos["x"] + dx, pos["y"] + dy)
+                rdx, rdy = _rotate_point(dx, dy, direction, cx, cy)
+                pin_pos[f"{cid}.{pin_name}"] = (pos["x"] + rdx, pos["y"] + rdy)
             continue
 
         lib_comp = get_component(comp_type)
         pins = list(lib_comp.get("pins", [])) if lib_comp else []
         if not pins:
             for pin in LEFT_PINS:
-                pin_pos[f"{cid}.{pin}"] = (pos["x"], pos["y"] + _MID_Y)
+                rdx, rdy = _rotate_point(0, _MID_Y, direction, cx, cy)
+                pin_pos[f"{cid}.{pin}"] = (pos["x"] + rdx, pos["y"] + rdy)
             for pin in RIGHT_PINS:
-                pin_pos[f"{cid}.{pin}"] = (pos["x"] + _TOTAL_W, pos["y"] + _MID_Y)
+                rdx, rdy = _rotate_point(_TOTAL_W, _MID_Y, direction, cx, cy)
+                pin_pos[f"{cid}.{pin}"] = (pos["x"] + rdx, pos["y"] + rdy)
             continue
 
         left_pins = [pin for pin in pins if get_pin_side(pin) == "left"]
@@ -283,18 +254,22 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
         right_ys = _spread_positions(len(right_pins), 4, _BODY_H - 4)
 
         for pin, y in zip(left_pins, left_ys):
-            pin_pos[f"{cid}.{pin}"] = (pos["x"], pos["y"] + y)
+            rdx, rdy = _rotate_point(0, y, direction, cx, cy)
+            pin_pos[f"{cid}.{pin}"] = (pos["x"] + rdx, pos["y"] + rdy)
         for pin, y in zip(right_pins, right_ys):
-            pin_pos[f"{cid}.{pin}"] = (pos["x"] + _TOTAL_W, pos["y"] + y)
+            rdx, rdy = _rotate_point(_TOTAL_W, y, direction, cx, cy)
+            pin_pos[f"{cid}.{pin}"] = (pos["x"] + rdx, pos["y"] + rdy)
 
         bottom_pins = [pin for pin in center_pins if pin in {"gate", "control", "ground", "thermal_in", "secondary_center"}]
         top_pins = [pin for pin in center_pins if pin not in bottom_pins]
         top_xs = _spread_positions(len(top_pins), 12, _TOTAL_W - 12)
         bottom_xs = _spread_positions(len(bottom_pins), 12, _TOTAL_W - 12)
         for pin, x in zip(top_pins, top_xs):
-            pin_pos[f"{cid}.{pin}"] = (pos["x"] + x, pos["y"])
+            rdx, rdy = _rotate_point(x, 0, direction, cx, cy)
+            pin_pos[f"{cid}.{pin}"] = (pos["x"] + rdx, pos["y"] + rdy)
         for pin, x in zip(bottom_pins, bottom_xs):
-            pin_pos[f"{cid}.{pin}"] = (pos["x"] + x, pos["y"] + _BODY_H)
+            rdx, rdy = _rotate_point(x, _BODY_H, direction, cx, cy)
+            pin_pos[f"{cid}.{pin}"] = (pos["x"] + rdx, pos["y"] + rdy)
     return pin_pos
 
 
@@ -540,8 +515,23 @@ def _render_component(comp: dict) -> str:
             return _render_switch_with_ports(comp)
 
     pos = comp.get("position", {"x": 0, "y": 0})
+    direction = comp.get("direction", 0)
     renderer = _SYMBOL_MAP.get(comp_type, lambda x, y, i, p: _svg_generic(x, y, i, comp_type, p))
-    return renderer(pos["x"], pos["y"], cid, params)
+    inner_svg = renderer(0, 0, cid, params)
+
+    if direction in (0, None):
+        # direction=0: 기본 수평 방향 — 변환 없이 위치만 이동
+        return f'<g transform="translate({pos["x"]},{pos["y"]})">{inner_svg}</g>'
+
+    # direction 90/180/270: 심볼 중심 기준 회전
+    cx = _TOTAL_W / 2
+    cy = _MID_Y
+    return (
+        f'<g transform="translate({pos["x"]},{pos["y"]})">'
+        f'<g transform="rotate({direction},{cx},{cy})">'
+        f'{inner_svg}'
+        f'</g></g>'
+    )
 
 
 def render_circuit_svg(

@@ -81,12 +81,13 @@ def register_tools(mcp, service=None):
     async def create_circuit(
         circuit_type: str,
         save_path: str,
+        specs: dict | None = None,
         components: list[dict] | None = None,
         connections: list[dict] | None = None,
         simulation_settings: dict | None = None,
     ) -> str:
         return await _svc().create_circuit_direct(
-            circuit_type, save_path, components, connections, simulation_settings,
+            circuit_type, save_path, specs, components, connections, simulation_settings,
         )
 
     @mcp.tool(

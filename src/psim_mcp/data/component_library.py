@@ -123,7 +123,8 @@ COMPONENTS: dict[str, dict] = {
     # === Transformers ===
     "Transformer": {"category": "transformer", "korean": "변압기", "symbol": "XFMR",
                     "default_parameters": {"turns_ratio": 1.0, "Lm": 1e-3},
-                    "pins": ["primary_in", "primary_out", "secondary_in", "secondary_out"],
+                    "pins": ["primary_in", "primary_out", "secondary_in", "secondary_out",
+                            "primary1", "primary2", "secondary1", "secondary2"],
                     "psim_element_type": "TF_1F_1"},
     "Three_Phase_Transformer": {"category": "transformer", "korean": "3상 변압기", "symbol": "3XFMR",
                                  "default_parameters": {"turns_ratio": 1.0, "connection": "Yy"},
@@ -135,6 +136,12 @@ COMPONENTS: dict[str, dict] = {
                                 "pins": ["primary_top", "primary_center", "primary_bottom",
                                          "secondary_top", "secondary_center", "secondary_bottom"],
                                 "psim_element_type": "TRANSFORMER_CT"},
+
+    "IdealTransformer": {"category": "transformer", "korean": "이상 변압기", "symbol": "TF_ID",
+                         "default_parameters": {"turns_ratio": 1.0},
+                         "pins": ["primary1", "primary2", "secondary1", "secondary2",
+                                  "primary_in", "primary_out", "secondary_in", "secondary_out"],
+                         "psim_element_type": "TF_IDEAL"},
 
     "DiodeBridge": {"category": "rectifier", "korean": "다이오드 브릿지", "symbol": "BDIODE",
                     "default_parameters": {},
@@ -346,3 +353,81 @@ def get_pin_side(pin_name: str) -> str:
     if pin_name in RIGHT_PINS:
         return "right"
     return "center"
+
+
+# ---------------------------------------------------------------------------
+# Port-to-pin registry (centralized)
+# ---------------------------------------------------------------------------
+# Each tuple represents one terminal in the flat ``ports`` array.
+# Multiple names in the same tuple are aliases for the same physical point.
+
+PORT_PIN_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "MOSFET": (("drain", "collector"), ("source", "emitter"), ("gate",)),
+    "IGBT": (("collector", "drain"), ("emitter", "source"), ("gate",)),
+    "Thyristor": (("anode",), ("cathode",), ("gate",)),
+    "Induction_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
+    "PMSM": (("phase_a",), ("phase_b",), ("phase_c",)),
+    "BLDC_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
+    "Diode": (("anode",), ("cathode",)),
+    "DIODE": (("anode",), ("cathode",)),
+    "Schottky_Diode": (("anode",), ("cathode",)),
+    "Zener_Diode": (("anode",), ("cathode",)),
+    "DC_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "AC_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "Battery": (("positive", "pin1"), ("negative", "pin2")),
+    "DC_Current_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "AC_Current_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "Inductor": (("pin1", "input"), ("pin2", "output")),
+    "Resistor": (("pin1", "input"), ("pin2", "output")),
+    "Capacitor": (("positive", "pin1"), ("negative", "pin2")),
+    "Ground": (("pin1",),),
+    "PWM_Generator": (("output",),),
+    "Voltage_Probe": (("positive",),),
+    "Current_Probe": (("input",), ("output",)),
+    "DiodeBridge": (("ac_pos",), ("ac_neg",), ("dc_pos",), ("dc_neg",)),
+    "Transformer": (
+        ("primary1", "primary_in"),
+        ("primary2", "primary_out"),
+        ("secondary1", "secondary_out"),
+        ("secondary2", "secondary_in"),
+    ),
+    "IdealTransformer": (
+        ("primary1", "primary_in"),
+        ("primary2", "primary_out"),
+        ("secondary1", "secondary_out"),
+        ("secondary2", "secondary_in"),
+    ),
+    "Center_Tap_Transformer": (
+        ("primary_top",),
+        ("primary_center",),
+        ("primary_bottom",),
+        ("secondary_top",),
+        ("secondary_center",),
+        ("secondary_bottom",),
+    ),
+}
+
+
+def get_port_pin_groups(kind: str) -> tuple[tuple[str, ...], ...]:
+    """Return the terminal alias groups for a component type."""
+    return PORT_PIN_GROUPS.get(kind, ())
+
+
+def build_port_pin_map(component: dict) -> dict[str, tuple[int, int]]:
+    """Map a component ``ports`` array to fully-qualified pin names."""
+    comp_id = component.get("id", "")
+    comp_type = component.get("type", "")
+    ports = component.get("ports", [])
+    groups = get_port_pin_groups(comp_type)
+    if not comp_id or not ports or not groups:
+        return {}
+
+    pin_map: dict[str, tuple[int, int]] = {}
+    for idx, aliases in enumerate(groups):
+        base = idx * 2
+        if len(ports) < base + 2:
+            break
+        coord = (ports[base], ports[base + 1])
+        for alias in aliases:
+            pin_map[f"{comp_id}.{alias}"] = coord
+    return pin_map

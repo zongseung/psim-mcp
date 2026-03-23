@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import tempfile
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from psim_mcp.data.circuit_templates import TEMPLATES as _TEMPLATES, CATEGORIES as _CATEGORIES
@@ -106,16 +107,16 @@ def _try_generate(
     Returns (components, connections, nets, generation_mode, note, constraint_validation).
     """
     if components:
-        return None, [], [], "template", None, None
+        return None, [], [], "template", None, None, None
 
     try:
         generator = get_generator(circuit_type.lower())
     except (KeyError, Exception):
-        return None, [], [], "template_fallback", None, None
+        return None, [], [], "template_fallback", None, None, None
 
     req = specs or {}
     if generator.missing_fields(req):
-        return None, [], [], "template_fallback", None, None
+        return None, [], [], "template_fallback", None, None, None
 
     try:
         gen_result = generator.generate(req)
@@ -143,12 +144,14 @@ def _try_generate(
             "generator",
             None,
             constraint_validation,
+            gen_result.get("psim_template"),
         )
     except Exception as exc:
         logger.warning("Generator failed for '%s': %s", circuit_type, exc)
         return (
             None, [], [], "template_fallback",
             "Generator not available for this topology. Using template with default values.",
+            None,
             None,
         )
 
@@ -164,6 +167,7 @@ def _render_and_store(
     connections: list[dict],
     nets: list[dict],
     simulation_settings: dict | None = None,
+    psim_template: dict | None = None,
 ) -> dict:
     """Render ASCII + SVG, open browser, save to store."""
     ascii_diagram = render_circuit_ascii(
@@ -180,20 +184,23 @@ def _render_and_store(
     )
 
     svg_dir = tempfile.gettempdir()
-    svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}.svg")
+    svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}_{uuid.uuid4().hex[:8]}.svg")
     with open(svg_path, "w", encoding="utf-8") as f:
         f.write(svg_content)
 
     open_svg_in_browser(svg_path)
 
-    token = store.save({
+    store_data = {
         "circuit_type": circuit_type,
         "components": components,
         "connections": connections,
         "nets": nets,
         "simulation_settings": simulation_settings,
         "svg_path": svg_path,
-    })
+    }
+    if psim_template:
+        store_data["psim_template"] = psim_template
+    token = store.save(store_data)
 
     return {
         "ascii_diagram": ascii_diagram,
@@ -374,7 +381,7 @@ class CircuitDesignService:
         self._store.delete(session_token)
 
         # Try generator
-        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints = (
+        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template = (
             _try_generate(topology, merged_specs, None)
         )
 
@@ -454,7 +461,7 @@ class CircuitDesignService:
         generation_mode = "template"
 
         # Try generator first
-        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints = _try_generate(
+        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
             circuit_type, specs, components,
         )
         if gen_components is not None:
@@ -532,6 +539,7 @@ class CircuitDesignService:
             connections=resolved_connections,
             nets=resolved_nets,
             simulation_settings=simulation_settings,
+            psim_template=_gen_template,
         )
 
         token = preview["preview_token"]
@@ -594,6 +602,29 @@ class CircuitDesignService:
         nets = preview.get("nets", [])
         circuit_type = preview["circuit_type"]
         simulation_settings = preview.get("simulation_settings")
+        psim_template = preview.get("psim_template")
+
+        # Template mode: skip validation/wiring, pass template directly to bridge
+        if psim_template:
+            try:
+                data = await self._adapter.create_circuit(
+                    circuit_type=circuit_type,
+                    components=[],
+                    connections=[],
+                    save_path=save_path,
+                    simulation_settings=simulation_settings,
+                    psim_template=psim_template,
+                )
+                return ResponseBuilder.success(
+                    data,
+                    f"'{circuit_type}' 회로가 템플릿 기반으로 생성되었습니다.",
+                )
+            except Exception:
+                self._logger.exception("Failed to create template circuit")
+                return ResponseBuilder.error(
+                    code="TEMPLATE_CREATE_FAILED",
+                    message="템플릿 기반 회로 생성 중 오류가 발생했습니다.",
+                )
 
         if nets:
             connections = _convert_nets_to_connections(nets)
@@ -621,6 +652,7 @@ class CircuitDesignService:
         self,
         circuit_type: str,
         save_path: str,
+        specs: dict | None = None,
         components: list[dict] | None = None,
         connections: list[dict] | None = None,
         simulation_settings: dict | None = None,
@@ -628,8 +660,8 @@ class CircuitDesignService:
         """Create a circuit directly without preview."""
         circuit_spec: dict | None = None
 
-        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints = _try_generate(
-            circuit_type, simulation_settings, components,
+        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
+            circuit_type, specs, components,
         )
 
         if gen_components is not None:
@@ -734,7 +766,7 @@ class CircuitDesignService:
         self, topology: str, specs: dict, intent: dict,
     ) -> dict:
         """High-confidence auto-generation with fallback."""
-        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints = (
+        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template = (
             _try_generate(topology, specs, None)
         )
 
@@ -827,6 +859,7 @@ class CircuitDesignService:
             components=components,
             connections=connections,
             nets=nets,
+            psim_template=gen_template,
         )
 
         token = preview["preview_token"]

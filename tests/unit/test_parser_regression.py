@@ -52,11 +52,11 @@ class TestTopologySpecificRequired:
         assert r["topology"] == "flyback"
         assert len(r["questions"]) > 0
 
-    def test_pv_no_required_fields(self):
+    def test_pv_required_fields(self):
         r = parse_circuit_intent("태양광 MPPT 회로")
         assert r["topology"] == "pv_mppt_boost"
-        # PV has no strict required fields
-        assert len(r["missing_fields"]) == 0
+        # PV generator requires voc, isc, vout_target
+        assert len(r["missing_fields"]) > 0
 
     def test_pv_voc_isc_do_not_pollute_generic_slots(self):
         r = parse_circuit_intent("태양광 MPPT 회로 Voc 40V Isc 10A")

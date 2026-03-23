@@ -82,9 +82,14 @@ class FlybackGenerator(TopologyGenerator):
 
         r_load = vout / iout if iout else 10.0
 
-        # Layout (verified working — V=6.95V):
+        # Layout verified against PSIM reference
+        # (converted_Flyback_converter_with_peak_current_mode_control.py):
+        #   TF_1F_1 PORTS = [pri1_x,pri1_y, pri2_x,pri2_y, sec1_x,sec1_y, sec2_x,sec2_y]
+        #   Reference: PORTS=[430,-150, 430,-100, 480,-100, 480,-150]
+        #   Pattern:   [px,top_y, px,bot_y, sx,bot_y, sx,top_y]  sx=px+50, bot=top+50
+        #
         # VDC(80,80)-(80,130), GND at (80,230)
-        # T1: p1(200,80) p2(200,130) s1(250,130) s2(250,80)
+        # T1: pri1(200,80) pri2(200,130) sec1(250,130) sec2(250,80)
         # MOSFET_v: drain(200,130) source(200,180) gate(180,160) — at T1.primary2
         # GATING(160,160)
         # Diode_h: anode(270,80) cathode(320,80) — from T1.secondary2
@@ -95,7 +100,7 @@ class FlybackGenerator(TopologyGenerator):
             make_ground("GND1", 80, 230),
             make_transformer(
                 "T1", 200, 80, 200, 130, 250, 130, 250, 80,
-                turns_ratio=round(n, 6), magnetizing_inductance=round(lm, 9),
+                np_turns=1, ns_turns=round(n, 6), magnetizing_inductance=round(lm, 9),
             ),
             make_mosfet_v("SW1", 200, 130, switching_frequency=fsw, on_resistance=0.01),
             make_gating("G1", 160, 160, fsw, f"0,{int(duty * 360)}"),
@@ -105,13 +110,13 @@ class FlybackGenerator(TopologyGenerator):
         ]
 
         nets = [
-            {"name": "net_vin_pri1", "pins": ["V1.positive", "T1.primary_in"]},
-            {"name": "net_pri2_sw", "pins": ["T1.primary_out", "SW1.drain"]},
+            {"name": "net_vin_pri1", "pins": ["V1.positive", "T1.primary1"]},
+            {"name": "net_pri2_sw", "pins": ["T1.primary2", "SW1.drain"]},
             {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_sw_gnd", "pins": ["SW1.source", "V1.negative", "GND1.pin1"]},
-            {"name": "net_sec2_d", "pins": ["T1.secondary_out", "D1.anode"]},
+            {"name": "net_sec2_d", "pins": ["T1.secondary2", "D1.anode"]},
             {"name": "net_d_out", "pins": ["D1.cathode", "C1.positive", "R1.pin1"]},
-            {"name": "net_sec_gnd", "pins": ["T1.secondary_in", "C1.negative", "R1.pin2"]},
+            {"name": "net_sec_gnd", "pins": ["T1.secondary1", "C1.negative", "R1.pin2"]},
         ]
 
         return {
@@ -124,7 +129,7 @@ class FlybackGenerator(TopologyGenerator):
                 ),
                 "design": {
                     "duty": round(duty, 6),
-                    "turns_ratio": round(n, 6),
+                    "turns_ratio": round(n, 6), "np_turns": 1, "ns_turns": round(n, 6),
                     "magnetizing_inductance": round(lm, 9),
                     "capacitance": round(cout, 9),
                     "r_load": round(r_load, 4),

@@ -34,6 +34,7 @@ class RealPsimAdapter(BasePsimAdapter):
         self._project_open = False
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()  # 동시 호출 방지
+        self._stderr_task: asyncio.Task | None = None
 
         # Startup validation: bridge script must exist
         if not Path(self._bridge_script).is_file():
@@ -107,7 +108,23 @@ class RealPsimAdapter(BasePsimAdapter):
                 "Ensure psim_python_exe is set correctly in the configuration."
             ) from exc
 
+        # Drain stderr in the background to prevent pipe buffer deadlock
+        self._stderr_task = asyncio.create_task(self._drain_stderr(self._process))
+
         return self._process
+
+    async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        """Continuously read stderr from the bridge process and log it."""
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                msg = line.decode("utf-8", errors="replace").rstrip()
+                if msg:
+                    logger.warning("Bridge stderr: %s", msg)
+        except Exception:
+            pass
 
     async def _call_bridge(self, action: str, params: dict[str, Any] | None = None) -> dict:
         """장기 실행 Bridge 프로세스에 명령을 보내고 응답을 받는다.
@@ -133,6 +150,8 @@ class RealPsimAdapter(BasePsimAdapter):
             # Bridge 프로세스가 종료된 경우 자동 재시작
             if proc.returncode is not None:
                 logger.warning("Bridge process died (rc=%d), restarting...", proc.returncode)
+                if self._stderr_task and not self._stderr_task.done():
+                    self._stderr_task.cancel()
                 self._process = None
                 proc = await self._ensure_bridge()
 
@@ -263,17 +282,18 @@ class RealPsimAdapter(BasePsimAdapter):
         connections: list[dict],
         save_path: str,
         simulation_settings: dict | None = None,
+        psim_template: dict | None = None,
     ) -> dict:
         """Create a circuit schematic via the bridge (uses psimapipy)."""
-        result = await self._call_bridge(
-            "create_circuit",
-            {
-                "circuit_type": circuit_type,
-                "components": components,
-                "connections": connections,
-                "save_path": save_path,
-                "simulation_settings": simulation_settings,
-            },
-        )
+        params: dict = {
+            "circuit_type": circuit_type,
+            "components": components,
+            "connections": connections,
+            "save_path": save_path,
+            "simulation_settings": simulation_settings,
+        }
+        if psim_template:
+            params["psim_template"] = psim_template
+        result = await self._call_bridge("create_circuit", params)
         self._project_open = True
         return result

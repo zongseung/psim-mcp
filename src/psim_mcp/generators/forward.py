@@ -78,41 +78,43 @@ class ForwardGenerator(TopologyGenerator):
 
         r_load = vout / iout if iout else 10.0
 
-        # Layout (verified working pattern):
+        # Layout verified against PSIM TF_1F_1 reference (same base as flyback):
+        #   TF_1F_1 PORTS = [pri1_x,pri1_y, pri2_x,pri2_y, sec1_x,sec1_y, sec2_x,sec2_y]
+        #   Pattern:   [px,top_y, px,bot_y, sx,bot_y, sx,top_y]  sx=px+50, bot=top+50
+        #
         # VDC(80,80)-(80,130), GND at (80,230)
-        # T1: p1(200,80) p2(200,130) s1(250,130) s2(250,80)
+        # T1: pri1(200,80) pri2(200,130) sec1(250,130) sec2(250,80)
         # MOSFET_v: drain(200,130) source(200,180) gate(180,160) — at T1.primary2
-        # GATING(160,160)
-        # D1(rectifier): anode(270,80) cathode(320,80) — horizontal from T1.secondary2
-        # D2(freewheel): anode(270,130) cathode(270,80) — vertical
-        # L1(340,80)-(390,80) horizontal inductor
-        # C1(390,80)-(390,130) R1(440,80)-(440,130)
+        # D1(rectifier) at (270,80), D2(freewheel) at (340,130)
+        # D2 cathode at (340,80) connects to L1 input area
+        # L1(360,80), Cout(440,80), R1(490,80)
         # GND bus at y=230
         components = [
             make_vdc("V1", 80, 80, vin),
             make_ground("GND1", 80, 230),
             make_transformer(
                 "T1", 200, 80, 200, 130, 250, 130, 250, 80,
-                turns_ratio=round(n, 6),
+                np_turns=1, ns_turns=round(n, 6),
+                magnetizing_inductance=round(inductance * 10, 9),
             ),
             make_mosfet_v("SW1", 200, 130, switching_frequency=fsw, on_resistance=0.01),
             make_gating("G1", 160, 160, fsw, f"0,{int(duty * 360)}"),
             make_diode_h("D1", 270, 80, forward_voltage=0.7),
-            make_diode_v("D2", 270, 130, forward_voltage=0.7),
-            make_inductor("L1", 340, 80, inductance),
-            make_capacitor("C1", 390, 80, capacitance),
-            make_resistor("R1", 440, 80, r_load, voltage_flag=1),
+            make_diode_v("D2", 340, 130, forward_voltage=0.7),
+            make_inductor("L1", 360, 80, inductance),
+            make_capacitor("Cout", 440, 80, capacitance),
+            make_resistor("R1", 490, 80, r_load, voltage_flag=1),
         ]
 
         nets = [
-            {"name": "net_vin_pri1", "pins": ["V1.positive", "T1.primary_in"]},
-            {"name": "net_pri2_sw", "pins": ["T1.primary_out", "SW1.drain"]},
+            {"name": "net_vin_p1", "pins": ["V1.positive", "T1.primary1"]},
+            {"name": "net_p2_sw", "pins": ["T1.primary2", "SW1.drain"]},
             {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
-            {"name": "net_sw_gnd", "pins": ["SW1.source", "V1.negative", "GND1.pin1"]},
-            {"name": "net_sec2_d1", "pins": ["T1.secondary_out", "D1.anode"]},
-            {"name": "net_d1_l", "pins": ["D1.cathode", "D2.cathode", "L1.pin1"]},
-            {"name": "net_l_out", "pins": ["L1.pin2", "C1.positive", "R1.pin1"]},
-            {"name": "net_sec_gnd", "pins": ["T1.secondary_in", "D2.anode", "C1.negative", "R1.pin2"]},
+            {"name": "net_sec2_d1", "pins": ["T1.secondary2", "D1.anode"]},
+            {"name": "net_d1_d2_l", "pins": ["D1.cathode", "D2.cathode", "L1.pin1"]},
+            {"name": "net_out", "pins": ["L1.pin2", "Cout.positive", "R1.pin1"]},
+            {"name": "net_sec_gnd", "pins": ["T1.secondary1", "D2.anode", "Cout.negative", "R1.pin2"]},
+            {"name": "net_pri_gnd", "pins": ["SW1.source", "V1.negative", "GND1.pin1"]},
         ]
 
         return {
@@ -125,7 +127,7 @@ class ForwardGenerator(TopologyGenerator):
                 ),
                 "design": {
                     "duty": round(duty, 6),
-                    "turns_ratio": round(n, 6),
+                    "turns_ratio": round(n, 6), "np_turns": 1, "ns_turns": round(n, 6),
                     "inductance": round(inductance, 9),
                     "capacitance": round(capacitance, 9),
                     "r_load": round(r_load, 4),

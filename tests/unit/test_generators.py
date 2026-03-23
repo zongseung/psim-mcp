@@ -1,5 +1,6 @@
 """Tests for topology generators."""
 from psim_mcp.generators import get_generator, list_generators
+from psim_mcp.generators.layout import make_mosfet_h
 import pytest
 from psim_mcp.validators import validate_circuit
 
@@ -94,3 +95,10 @@ def test_generated_circuits_validate(topology: str, requirements: dict):
     assert validation.is_valid is True, [
         (issue.code, issue.message) for issue in validation.errors
     ]
+
+
+def test_layout_factories_follow_port_contract_lengths():
+    comp = make_mosfet_h("SW1", 100, 120, switching_frequency=50000)
+
+    assert comp["type"] == "MOSFET"
+    assert len(comp["ports"]) == 6

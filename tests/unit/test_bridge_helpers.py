@@ -10,10 +10,12 @@ import pytest
 
 from psim_mcp.bridge.bridge_script import (
     _calculate_simcontrol_position,
+    _resolve_pin_positions,
     _get_simulation_defaults,
     _GLOBAL_DEFAULT,
     _SIMULATION_DEFAULTS,
 )
+from psim_mcp.generators.layout import make_transformer
 
 
 class TestCalculateSimcontrolPosition:
@@ -79,3 +81,17 @@ class TestGetSimulationDefaults:
     def test_case_insensitive(self):
         result = _get_simulation_defaults("BUCK")
         assert result == _SIMULATION_DEFAULTS["buck"]
+
+
+class TestResolvePinPositions:
+    def test_uses_shared_transformer_alias_contract(self):
+        components = [
+            make_transformer("T1", 100, 80, 100, 130, 150, 130, 150, 80, turns_ratio=0.25)
+        ]
+
+        pin_map = _resolve_pin_positions(components)
+
+        assert pin_map["T1.primary1"] == (100, 80)
+        assert pin_map["T1.primary_in"] == (100, 80)
+        assert pin_map["T1.secondary1"] == (150, 130)
+        assert pin_map["T1.secondary_out"] == (150, 130)

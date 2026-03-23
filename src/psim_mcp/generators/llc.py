@@ -3,6 +3,12 @@
 Half-bridge LLC resonant converter with series resonant inductor (Lr),
 resonant capacitor (Cr), and transformer magnetizing inductance (Lm).
 Achieves soft-switching (ZVS) for high efficiency at high frequencies.
+
+Layout verified against PSIM reference:
+  converted_ResonantLLC_CurrentAndVoltageLoop.py
+  - TF_IDEAL with PORTS=[860,170, 860,220, 910,170, 910,220], DIR=0
+  - Lm as separate vertical inductor in parallel with TF primary
+  - BDIODE1 full-bridge rectifier on secondary side
 """
 
 from __future__ import annotations
@@ -12,13 +18,15 @@ import math
 from .base import TopologyGenerator
 from .layout import (
     make_capacitor,
-    make_diode_h,
+    make_capacitor_h,
+    make_diode_bridge,
     make_gating,
     make_ground,
+    make_ideal_transformer,
     make_inductor,
+    make_inductor_v,
     make_mosfet_v,
     make_resistor,
-    make_transformer,
     make_vdc,
 )
 
@@ -98,63 +106,75 @@ class LLCGenerator(TopologyGenerator):
         cout = iout / (2 * 2 * fsw * vripple) if (fsw and vripple) else 100e-6
         cout = max(cout, 1e-12)
 
-        # Layout (verified stacked MOSFET pattern):
-        # VDC(80,80)-(80,130), GND at (80,230)
-        # Stacked MOSFETs: SW1 drain(200,80) source(200,130),
-        #   30px gap, SW2 drain(200,160) source(200,210)
-        # G1(160,110) G2(160,190) — near gates, NOT overlapping GND bus
-        # Cr: horizontal capacitor at (260,130)-(310,130)
-        # Lr: inductor at (330,130)-(380,130)
-        # T1: p1(380,80) p2(380,130) s1(430,130) s2(430,80)
-        # D1: anode(450,80) cathode(500,80), D2: anode(450,130) cathode(500,130)
-        # Cout(500,80)-(500,130), R1(550,80)-(550,130)
-        # GND bus at y=230
-
-        # Cr is placed horizontally — inline dict since make_capacitor is vertical.
-        cr_cap = {
-            "id": "Cr", "type": "Capacitor",
-            "parameters": {"capacitance": round(cr, 9)},
-            "position": {"x": 260, "y": 130},
-            "position2": {"x": 310, "y": 130},
-            "direction": 0,
-            "ports": [260, 130, 310, 130],
-        }
-
+        # Layout based on PSIM reference (converted_ResonantLLC_CurrentAndVoltageLoop.py):
+        #
+        # Key insight: PSIM LLC uses TF_IDEAL (not TF_1F_1) + separate Lm inductor
+        # in PARALLEL with transformer primary. Lm is NOT a transformer parameter.
+        #
+        # Reference components and their PORTS from the converted file:
+        #   VDC "VDC1": PORTS=[350,200, 350,250], Amplitude="Vin"
+        #   TF_IDEAL "TI2": PORTS=[860,170, 860,220, 910,170, 910,220], DIR=0
+        #   MULTI_INDUCTOR "Ls": PORTS=[720,170, 770,170], DIR=0  (series resonant)
+        #   MULTI_INDUCTOR "Lm": PORTS=[810,180, 810,230], DIR=90 (magnetizing, vertical shunt)
+        #   MULTI_CAPACITOR "Cs": PORTS=[660,170, 710,170], DIR=0  (series resonant)
+        #   BDIODE1 "BD11": PORTS=[940,170, 940,230, 1020,170, 1020,230], DIR=0
+        #   MULTI_CAPACITOR "Co": PORTS=[1200,180, 1200,230], DIR=90
+        #   MULTI_RESISTOR "R6": PORTS=[1620,170, 1620,220], DIR=270
+        #
+        # Our simplified layout (same topology, no control loop):
+        #   Half-bridge: stacked MOSFETs (verified pattern from half_bridge.py)
+        #   Resonant tank: Cr → Lr → node → Lm(shunt) + TF_IDEAL
+        #   Rectifier: BDIODE1 full-bridge on secondary side
+        #
+        # VDC(80,80)-(80,130), GND bus at y=230
+        # SW1(200,80-130), SW2(200,160-210), G1(160,110), G2(160,190)
+        # Cr(260,130)-(310,130) horizontal → Lr(330,130)-(380,130) horizontal
+        # → node at (400,130): Lm(400,130)-(400,180) vertical shunt
+        #   TF_IDEAL p1(420,130) p2(420,180) s1(470,130) s2(470,180)
+        # BDIODE1: ac+(490,130) ac-(490,190) dc+(570,130) dc-(570,190)
+        # Cout(600,130)-(600,180), R1(650,130)-(650,180)
         components = [
             make_vdc("V1", 80, 80, vin),
             make_ground("GND1", 80, 230),
+            make_ground("GND2", 490, 230),  # secondary-side GND hub
             make_mosfet_v("SW1", 200, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW2", 200, 160, switching_frequency=fsw, on_resistance=0.01),
             make_gating("G1", 160, 110, fsw, "0,175"),
             make_gating("G2", 160, 190, fsw, "180,355"),
-            cr_cap,
+            make_capacitor_h("Cr", 260, 130, cr),  # resonant capacitor, horizontal
             make_inductor("Lr", 330, 130, lr),
-            make_transformer(
-                "T1", 380, 80, 380, 130, 430, 130, 430, 80,
-                turns_ratio=round(n, 6), magnetizing_inductance=round(lm, 9),
+            make_inductor_v("Lm", 400, 130, lm),
+            make_ideal_transformer(
+                "T1",
+                420, 130, 420, 180,  # primary1, primary2
+                470, 130, 470, 180,  # secondary1, secondary2
+                np_turns=round(n, 6), ns_turns=1,
             ),
-            make_diode_h("D1", 450, 80, forward_voltage=0.7),
-            make_diode_h("D2", 450, 130, forward_voltage=0.7),
-            make_capacitor("Cout", 500, 80, cout),
-            make_resistor("R1", 550, 80, r_load, voltage_flag=1),
+            make_diode_bridge("BD1", 490, 130),
+            make_capacitor("Cout", 600, 130, cout),
+            make_resistor("R1", 650, 130, r_load, voltage_flag=1),
         ]
 
-        # Half-bridge LLC with stacked vertical MOSFETs:
-        # SW1.drain = V+, SW1.source = SW2.drain = half-bridge midpoint
-        # SW2.source = V- (gnd path via y=230)
-        # midpoint -> Cr -> Lr -> T1.primary_in, T1.primary_out -> gnd
-        # T1.secondary_out -> D1, T1.secondary_in -> D2
-        # D1.cathode + D2.cathode -> Cout -> R1
+        # LLC net connections:
+        # Half-bridge: V+ → SW1.drain, SW1.source/SW2.drain = midpoint
+        # Resonant chain: midpoint → Cr → Lr → node(400,130)
+        # At node: Lm shunts down, TF_IDEAL primary1 connects
+        # TF primary2 and Lm bottom both go to GND bus
+        # Secondary: TF_IDEAL sec → BDIODE1 ac inputs → dc outputs → Cout/R1
         nets = [
             {"name": "net_vdc_pos", "pins": ["V1.positive", "SW1.drain"]},
-            {"name": "net_hb_mid", "pins": ["SW1.source", "SW2.drain", "Cr.positive"]},
+            {"name": "net_hb_mid", "pins": ["Cr.positive", "SW1.source", "SW2.drain"]},
             {"name": "net_cr_lr", "pins": ["Cr.negative", "Lr.pin1"]},
-            {"name": "net_lr_pri", "pins": ["Lr.pin2", "T1.primary_in"]},
-            {"name": "net_pri_gnd", "pins": ["T1.primary_out", "V1.negative", "GND1.pin1", "SW2.source"]},
-            {"name": "net_sec2_d1", "pins": ["T1.secondary_out", "D1.anode"]},
-            {"name": "net_sec1_d2", "pins": ["T1.secondary_in", "D2.anode"]},
-            {"name": "net_rect_out", "pins": ["D1.cathode", "D2.cathode", "Cout.positive", "R1.pin1"]},
-            {"name": "net_sec_gnd", "pins": ["Cout.negative", "R1.pin2"]},
+            {"name": "net_resonant_node", "pins": ["Lr.pin2", "Lm.pin1", "T1.primary1"]},
+            {"name": "net_tf_sec1_bd_ac_pos", "pins": ["T1.secondary1", "BD1.ac_pos"]},
+            {"name": "net_tf_sec2_bd_ac_neg", "pins": ["T1.secondary2", "BD1.ac_neg"]},
+            {"name": "net_rect_out", "pins": ["BD1.dc_pos", "Cout.positive", "R1.pin1"]},
+            # GND: two Ground symbols to avoid long wires crossing gate area
+            {"name": "net_gnd_pri", "pins": ["V1.negative", "GND1.pin1", "SW2.source"]},
+            {"name": "net_gnd_sec", "pins": [
+                "Lm.pin2", "T1.primary2", "GND2.pin1",
+                "BD1.dc_neg", "Cout.negative", "R1.pin2",
+            ]},
             {"name": "net_gate1", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_gate2", "pins": ["G2.output", "SW2.gate"]},
         ]

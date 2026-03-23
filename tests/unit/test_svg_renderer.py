@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from psim_mcp.data.component_library import build_port_pin_map
 from psim_mcp.utils.svg_renderer import _build_pin_positions, render_circuit_svg
 
 
@@ -106,6 +107,22 @@ def test_build_pin_positions_uses_transformer_ports():
     assert pin_positions["T1.primary_out"] == (200, 130)
     assert pin_positions["T1.secondary_out"] == (250, 130)
     assert pin_positions["T1.secondary_in"] == (250, 80)
+
+
+def test_build_port_pin_map_centralizes_aliases():
+    pin_map = build_port_pin_map(
+        {
+            "id": "SW1",
+            "type": "IGBT",
+            "ports": [10, 20, 40, 20, 25, 45],
+        }
+    )
+
+    assert pin_map["SW1.collector"] == (10, 20)
+    assert pin_map["SW1.drain"] == (10, 20)
+    assert pin_map["SW1.emitter"] == (40, 20)
+    assert pin_map["SW1.source"] == (40, 20)
+    assert pin_map["SW1.gate"] == (25, 45)
 
 
 def test_render_circuit_svg_uses_special_symbols_for_transformer_and_ground():

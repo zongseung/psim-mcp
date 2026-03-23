@@ -33,6 +33,11 @@ import sys
 import time
 import traceback
 
+try:
+    from psim_mcp.data.component_library import build_port_pin_map as _shared_build_port_pin_map
+except Exception:  # pragma: no cover - bridge must still run in PSIM's isolated Python
+    _shared_build_port_pin_map = None
+
 
 # ---------------------------------------------------------------------------
 # 토폴로지별 기본 시뮬레이션 파라미터
@@ -73,6 +78,71 @@ _SIMULATION_DEFAULTS = {
 _GLOBAL_DEFAULT = {"time_step": "1E-006", "total_time": "0.05"}
 
 
+_FALLBACK_PORT_PIN_GROUPS = {
+    "MOSFET": (("drain", "collector"), ("source", "emitter"), ("gate",)),
+    "IGBT": (("collector", "drain"), ("emitter", "source"), ("gate",)),
+    "Diode": (("anode",), ("cathode",)),
+    "DIODE": (("anode",), ("cathode",)),
+    "Schottky_Diode": (("anode",), ("cathode",)),
+    "Zener_Diode": (("anode",), ("cathode",)),
+    "DC_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "AC_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "Battery": (("positive", "pin1"), ("negative", "pin2")),
+    "DC_Current_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "AC_Current_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "Inductor": (("pin1", "input"), ("pin2", "output")),
+    "Resistor": (("pin1", "input"), ("pin2", "output")),
+    "Capacitor": (("positive", "pin1"), ("negative", "pin2")),
+    "Ground": (("pin1",),),
+    "PWM_Generator": (("output",),),
+    "Voltage_Probe": (("positive",),),
+    "Current_Probe": (("input",), ("output",)),
+    "DiodeBridge": (("ac_pos",), ("ac_neg",), ("dc_pos",), ("dc_neg",)),
+    "Transformer": (
+        ("primary1", "primary_in"),
+        ("primary2", "primary_out"),
+        ("secondary1", "secondary_out"),
+        ("secondary2", "secondary_in"),
+    ),
+    "IdealTransformer": (
+        ("primary1", "primary_in"),
+        ("primary2", "primary_out"),
+        ("secondary1", "secondary_out"),
+        ("secondary2", "secondary_in"),
+    ),
+    "Center_Tap_Transformer": (
+        ("primary_top",),
+        ("primary_center",),
+        ("primary_bottom",),
+        ("secondary_top",),
+        ("secondary_center",),
+        ("secondary_bottom",),
+    ),
+}
+
+
+def _build_port_pin_map(component):
+    if _shared_build_port_pin_map is not None:
+        return _shared_build_port_pin_map(component)
+
+    comp_id = component.get("id", "")
+    comp_type = component.get("type", "")
+    ports = component.get("ports", [])
+    groups = _FALLBACK_PORT_PIN_GROUPS.get(comp_type, ())
+    if not comp_id or not ports or not groups:
+        return {}
+
+    pin_map = {}
+    for idx, aliases in enumerate(groups):
+        base = idx * 2
+        if len(ports) < base + 2:
+            break
+        coord = (ports[base], ports[base + 1])
+        for alias in aliases:
+            pin_map["%s.%s" % (comp_id, alias)] = coord
+    return pin_map
+
+
 # ---------------------------------------------------------------------------
 # PSIM element type mapping
 # ---------------------------------------------------------------------------
@@ -102,7 +172,9 @@ _PSIM_TYPE_MAP = {
     "SIMCONTROL": "SIMCONTROL",
     "ONCTRL": "ONCTRL",
     "TF_1F_1": "TF_1F_1",
+    "TF_IDEAL": "TF_IDEAL",
     "Transformer": "TF_1F_1",
+    "IdealTransformer": "TF_IDEAL",
     "DiodeBridge": "BDIODE1",
     "AC_Source": "VSIN",
     "VAC": "VSIN",
@@ -134,10 +206,12 @@ _PARAM_NAME_MAP = {
     "Frequency": "Frequency",
     "NoOfPoints": "No__of_Points",
     "Switching_Points": "Switching_Points",
-    # Transformer
-    "turns_ratio": "Ratio",
+    # Transformer — PSIM uses Np/Ns (not Ratio)
+    "turns_ratio": None,             # skip — use np_turns/ns_turns instead
+    "np_turns": "Np__primary_",      # primary turns count
+    "ns_turns": "Ns__secondary_",    # secondary turns count
+    "magnetizing_inductance": "Lm__magnetizing_",
     "primary_inductance": "Inductance",
-    "magnetizing_inductance": None,  # skip — internal design param, not a PSIM TF_1F_1 param
     # Series impedance (sources)
     "Lseries": "Lseries",
     "Rseries": "Rseries",
@@ -338,7 +412,7 @@ def handle_run_simulation(params):
             output_path = base + "_result.smv"
 
         # 시뮬레이션 옵션을 kwargs로 전달
-        sim_kwargs = {"Simview": options.get("simview", 0)}
+        sim_kwargs = {"Simview": options.get("simview", 1)}
         if "total_time" in options:
             sim_kwargs["TotalTime"] = options["total_time"]
         if "time_step" in options:
@@ -534,94 +608,13 @@ def _resolve_pin_positions(components):
             else:
                 ports = [x, y]
 
-        # ------------------------------------------------------------------
-        # Map ports to named pins based on component type.
-        # ------------------------------------------------------------------
-        if comp_type in ("MOSFET", "IGBT"):
-            # 6 values: drain/collector_x, y, source/emitter_x, y, gate_x, y
-            if len(ports) >= 6:
-                pin_map["%s.drain" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.collector" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.source" % comp_id] = (ports[2], ports[3])
-                pin_map["%s.emitter" % comp_id] = (ports[2], ports[3])
-                pin_map["%s.gate" % comp_id] = (ports[4], ports[5])
-            elif len(ports) >= 2:
-                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
+        mapped = _build_port_pin_map({"id": comp_id, "type": comp_type, "ports": ports})
+        if mapped:
+            pin_map.update(mapped)
+            continue
 
-        elif comp_type in ("Diode", "DIODE"):
-            # 4 values: anode_x, y, cathode_x, y
+        if comp_type in ("Transformer", "IdealTransformer"):
             if len(ports) >= 4:
-                pin_map["%s.anode" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.cathode" % comp_id] = (ports[2], ports[3])
-            elif len(ports) >= 2:
-                pin_map["%s.anode" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type in ("DC_Source", "AC_Source", "Battery"):
-            # 4 values: positive_x, y, negative_x, y
-            if len(ports) >= 4:
-                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.negative" % comp_id] = (ports[2], ports[3])
-            elif len(ports) >= 2:
-                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type in ("Inductor", "Resistor"):
-            # 4 values: pin1_x, y, pin2_x, y
-            if len(ports) >= 4:
-                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
-            elif len(ports) >= 2:
-                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type in ("Capacitor",):
-            # 4 values: positive/pin1_x, y, negative/pin2_x, y
-            if len(ports) >= 4:
-                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.negative" % comp_id] = (ports[2], ports[3])
-                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
-            elif len(ports) >= 2:
-                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type == "Ground":
-            if len(ports) >= 2:
-                pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type == "PWM_Generator":
-            if len(ports) >= 2:
-                pin_map["%s.output" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type == "Voltage_Probe":
-            if len(ports) >= 2:
-                pin_map["%s.positive" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type == "Current_Probe":
-            if len(ports) >= 4:
-                pin_map["%s.input" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.output" % comp_id] = (ports[2], ports[3])
-            elif len(ports) >= 2:
-                pin_map["%s.input" % comp_id] = (ports[0], ports[1])
-
-        elif comp_type == "DiodeBridge":
-            # 8 values: ac+_x,y, ac-_x,y, dc+_x,y, dc-_x,y
-            if len(ports) >= 8:
-                pin_map["%s.ac_pos" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.ac_neg" % comp_id] = (ports[2], ports[3])
-                pin_map["%s.dc_pos" % comp_id] = (ports[4], ports[5])
-                pin_map["%s.dc_neg" % comp_id] = (ports[6], ports[7])
-
-        elif comp_type == "Transformer":
-            # 8 values: primary1, primary2, secondary1, secondary2
-            if len(ports) >= 8:
-                pin_map["%s.primary1" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.primary_in" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.primary2" % comp_id] = (ports[2], ports[3])
-                pin_map["%s.primary_out" % comp_id] = (ports[2], ports[3])
-                pin_map["%s.secondary1" % comp_id] = (ports[4], ports[5])
-                pin_map["%s.secondary_out" % comp_id] = (ports[4], ports[5])
-                pin_map["%s.secondary2" % comp_id] = (ports[6], ports[7])
-                pin_map["%s.secondary_in" % comp_id] = (ports[6], ports[7])
-            elif len(ports) >= 4:
                 pin_map["%s.pin1" % comp_id] = (ports[0], ports[1])
                 pin_map["%s.pin2" % comp_id] = (ports[2], ports[3])
             else:
@@ -631,25 +624,15 @@ def _resolve_pin_positions(components):
                 pin_map["%s.primary_out" % comp_id] = (x, y + 22)
                 pin_map["%s.secondary_out" % comp_id] = (x + 80, y + 8)
                 pin_map["%s.secondary_in" % comp_id] = (x + 80, y + 22)
-
         elif comp_type == "Center_Tap_Transformer":
-            if len(ports) >= 12:
-                pin_map["%s.primary_top" % comp_id] = (ports[0], ports[1])
-                pin_map["%s.primary_center" % comp_id] = (ports[2], ports[3])
-                pin_map["%s.primary_bottom" % comp_id] = (ports[4], ports[5])
-                pin_map["%s.secondary_top" % comp_id] = (ports[6], ports[7])
-                pin_map["%s.secondary_center" % comp_id] = (ports[8], ports[9])
-                pin_map["%s.secondary_bottom" % comp_id] = (ports[10], ports[11])
-            else:
-                x = comp.get("position", {}).get("x", 0)
-                y = comp.get("position", {}).get("y", 0)
-                pin_map["%s.primary_top" % comp_id] = (x, y + 6)
-                pin_map["%s.primary_center" % comp_id] = (x, y + 15)
-                pin_map["%s.primary_bottom" % comp_id] = (x, y + 24)
-                pin_map["%s.secondary_top" % comp_id] = (x + 80, y + 6)
-                pin_map["%s.secondary_center" % comp_id] = (x + 80, y + 15)
-                pin_map["%s.secondary_bottom" % comp_id] = (x + 80, y + 24)
-
+            x = comp.get("position", {}).get("x", 0)
+            y = comp.get("position", {}).get("y", 0)
+            pin_map["%s.primary_top" % comp_id] = (x, y + 6)
+            pin_map["%s.primary_center" % comp_id] = (x, y + 15)
+            pin_map["%s.primary_bottom" % comp_id] = (x, y + 24)
+            pin_map["%s.secondary_top" % comp_id] = (x + 80, y + 6)
+            pin_map["%s.secondary_center" % comp_id] = (x + 80, y + 15)
+            pin_map["%s.secondary_bottom" % comp_id] = (x + 80, y + 24)
         else:
             # Generic fallback: first pair = pin1/positive, second = pin2/negative
             if len(ports) >= 2:
@@ -685,6 +668,60 @@ def _route_wire(p, sch, x1, y1, x2, y2):
         )
 
 
+def _handle_template_circuit(psim_template, save_path):
+    """PSIM 예제 파일을 복사하고 파라미터만 변경하여 회로를 생성한다."""
+    import shutil
+    global _current_sch, _current_path
+
+    psim_path = os.environ.get("PSIM_PATH", "")
+    source_rel = psim_template.get("source", "")
+    source_path = os.path.join(psim_path, source_rel)
+
+    if not os.path.isfile(source_path):
+        return _error("TEMPLATE_NOT_FOUND",
+                       "PSIM template not found: %s" % source_path)
+    try:
+        save_dir = os.path.dirname(save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+        shutil.copy2(source_path, save_path)
+
+        p = _get_psim()
+        sch = p.PsimFileOpen(save_path)
+        if not sch:
+            return _error("PSIM_API_ERROR", "Failed to open template file.")
+
+        applied = 0
+        for ov in psim_template.get("parameter_overrides", []):
+            try:
+                p.PsimSetElmValue2(sch, ov["type"], ov["name"],
+                                   ov["param"], str(ov["value"]))
+                applied += 1
+            except Exception:
+                pass
+
+        for key, val in psim_template.get("simulation_overrides", {}).items():
+            try:
+                p.PsimSetElmValue(sch, None, key, str(val))
+            except Exception:
+                pass
+
+        p.PsimFileSave(sch, save_path)
+        _current_sch = sch
+        _current_path = save_path
+
+        return _success({
+            "file_path": save_path,
+            "mode": "template",
+            "template_source": source_rel,
+            "parameters_applied": applied,
+            "status": "created",
+        })
+    except Exception as e:
+        return _error("TEMPLATE_ERROR",
+                       "Template circuit creation failed: %s" % str(e))
+
+
 def handle_create_circuit(params):
     """psimapipy를 사용하여 새 PSIM 회로를 생성한다.
 
@@ -704,6 +741,11 @@ def handle_create_circuit(params):
 
     if not save_path:
         return _error("INVALID_INPUT", "save_path가 지정되지 않았습니다.")
+
+    # --- Template mode: copy PSIM example and modify parameters ---
+    psim_template = params.get("psim_template")
+    if psim_template:
+        return _handle_template_circuit(psim_template, save_path)
 
     try:
         p = _get_psim()

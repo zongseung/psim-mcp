@@ -15,7 +15,13 @@ class AppConfig(BaseSettings):
     All values can be overridden via environment variables or a `.env` file.
     """
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": [
+            ".env",  # current working directory
+            str(Path(__file__).resolve().parent.parent.parent / ".env"),  # project root
+        ],
+        "env_file_encoding": "utf-8",
+    }
 
     # --- PSIM integration ---
     psim_mode: Literal["mock", "real"] = "mock"
@@ -25,7 +31,7 @@ class AppConfig(BaseSettings):
     psim_output_dir: Path | None = None
 
     # --- Logging ---
-    log_dir: Path = Path("./logs")
+    log_dir: Path = Path(__file__).resolve().parent.parent.parent / "logs"
     log_level: str = "INFO"
 
     # --- Server ---
@@ -46,6 +52,16 @@ class AppConfig(BaseSettings):
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
+
+    @field_validator("log_dir", mode="before")
+    @classmethod
+    def _resolve_log_dir(cls, v: str | Path) -> Path:
+        """상대 경로를 프로젝트 루트 기준 절대 경로로 변환."""
+        p = Path(v)
+        if not p.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent.parent
+            return project_root / p
+        return p
 
     @field_validator("log_level")
     @classmethod

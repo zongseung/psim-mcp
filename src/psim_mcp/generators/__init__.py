@@ -23,6 +23,23 @@ from .half_bridge import HalfBridgeInverterGenerator
 from .llc import LLCGenerator
 from .boost_pfc import BoostPFCGenerator
 from .bidirectional_buck_boost import BidirectionalBuckBoostGenerator
+from .lc_filter import LCFilterGenerator
+from .lcl_filter import LCLFilterGenerator
+from .diode_bridge_rectifier import DiodeBridgeRectifierGenerator
+from .pv_mppt_boost import PVMPPTBoostGenerator
+from .cc_cv_charger import CCCVChargerGenerator
+from .three_phase_inverter import ThreePhaseInverterGenerator
+from .push_pull import PushPullGenerator
+from .phase_shifted_full_bridge import PhaseShiftedFullBridgeGenerator
+from .three_level_npc import ThreeLevelNPCGenerator
+from .thyristor_rectifier import ThyristorRectifierGenerator
+from .induction_motor_vf import InductionMotorVfGenerator
+from .dab import DABGenerator
+from .totem_pole_pfc import TotemPolePFCGenerator
+from .bldc_drive import BLDCDriveGenerator
+from .pmsm_foc_drive import PMSMFOCDriveGenerator
+from .pv_grid_tied import PVGridTiedGenerator
+from .ev_obc import EVOBCGenerator
 from .constraints import validate_design_constraints, ConstraintResult
 
 _REGISTRY: dict[str, TopologyGenerator] = {}
@@ -59,6 +76,23 @@ register(HalfBridgeInverterGenerator())
 register(LLCGenerator())
 register(BoostPFCGenerator())
 register(BidirectionalBuckBoostGenerator())
+register(LCFilterGenerator())
+register(LCLFilterGenerator())
+register(DiodeBridgeRectifierGenerator())
+register(PVMPPTBoostGenerator())
+register(CCCVChargerGenerator())
+register(ThreePhaseInverterGenerator())
+register(PushPullGenerator())
+register(PhaseShiftedFullBridgeGenerator())
+register(ThreeLevelNPCGenerator())
+register(ThyristorRectifierGenerator())
+register(InductionMotorVfGenerator())
+register(DABGenerator())
+register(TotemPolePFCGenerator())
+register(BLDCDriveGenerator())
+register(PMSMFOCDriveGenerator())
+register(PVGridTiedGenerator())
+register(EVOBCGenerator())
 
 __all__ = [
     "TopologyGenerator",
@@ -79,4 +113,21 @@ __all__ = [
     "LLCGenerator",
     "BoostPFCGenerator",
     "BidirectionalBuckBoostGenerator",
+    "LCFilterGenerator",
+    "LCLFilterGenerator",
+    "DiodeBridgeRectifierGenerator",
+    "PVMPPTBoostGenerator",
+    "CCCVChargerGenerator",
+    "ThreePhaseInverterGenerator",
+    "PushPullGenerator",
+    "PhaseShiftedFullBridgeGenerator",
+    "ThreeLevelNPCGenerator",
+    "ThyristorRectifierGenerator",
+    "InductionMotorVfGenerator",
+    "DABGenerator",
+    "TotemPolePFCGenerator",
+    "BLDCDriveGenerator",
+    "PMSMFOCDriveGenerator",
+    "PVGridTiedGenerator",
+    "EVOBCGenerator",
 ]
