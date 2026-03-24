@@ -227,6 +227,7 @@ class MockPsimAdapter(BasePsimAdapter):
         components: list[dict],
         connections: list[dict],
         save_path: str,
+        wire_segments: list[dict] | None = None,
         simulation_settings: dict | None = None,
         psim_template: dict | None = None,
     ) -> dict:
@@ -244,9 +245,10 @@ class MockPsimAdapter(BasePsimAdapter):
             "file_path": save_path,
             "circuit_type": circuit_type,
             "component_count": len(components),
-            "connection_count": len(connections),
+            "connection_count": len(wire_segments or connections),
             "components": components,
             "connections": connections,
+            "wire_segments": wire_segments or [],
             "simulation_settings": simulation_settings or {
                 "time_step": 1e-5,
                 "total_time": 0.1,

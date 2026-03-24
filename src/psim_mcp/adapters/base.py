@@ -105,6 +105,7 @@ class BasePsimAdapter(ABC):
         components: list[dict],
         connections: list[dict],
         save_path: str,
+        wire_segments: list[dict] | None = None,
         simulation_settings: dict | None = None,
         psim_template: dict | None = None,
     ) -> dict:

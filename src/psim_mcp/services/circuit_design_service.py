@@ -57,6 +57,11 @@ except ImportError:
 _LAYOUT_ENGINE_AVAILABLE = _SYNTHESIS_PIPELINE_AVAILABLE
 _ROUTING_ENGINE_AVAILABLE = _SYNTHESIS_PIPELINE_AVAILABLE
 
+_PREVIEW_PAYLOAD_KIND = "preview_payload"
+_PREVIEW_PAYLOAD_VERSION = "v1"
+_DESIGN_SESSION_KIND = "design_session"
+_DESIGN_SESSION_VERSION = "v2"
+
 try:
     from psim_mcp.intent import (
         extract_intent,
@@ -131,11 +136,23 @@ def _try_synthesize_and_layout(
 
 def _normalize_preview_payload(preview: dict) -> dict:
     """Ensure preview payload has expected keys regardless of version."""
+    preview.setdefault("payload_kind", _PREVIEW_PAYLOAD_KIND)
+    preview.setdefault("payload_version", _PREVIEW_PAYLOAD_VERSION)
     preview.setdefault("connections", [])
     preview.setdefault("nets", [])
     preview.setdefault("simulation_settings", None)
     preview.setdefault("wire_segments", [])
     return preview
+
+
+def _normalize_design_session_payload(session: dict) -> dict:
+    """Ensure design session payload is readable across v1/v2 formats."""
+    session.setdefault("type", _DESIGN_SESSION_KIND)
+    session.setdefault("payload_kind", _DESIGN_SESSION_KIND)
+    session.setdefault("payload_version", "v1")
+    session.setdefault("specs", {})
+    session.setdefault("missing_fields", [])
+    return session
 
 
 def _load_graph_layout_routing(preview: dict) -> tuple:
@@ -182,7 +199,9 @@ def _make_design_session_payload(
 ) -> dict:
     """Build a design session payload for the state store."""
     return {
-        "type": "design_session",
+        "type": _DESIGN_SESSION_KIND,
+        "payload_kind": _DESIGN_SESSION_KIND,
+        "payload_version": _DESIGN_SESSION_VERSION,
         "topology": topology,
         "specs": specs,
         "missing_fields": missing_fields,
@@ -340,6 +359,8 @@ def _render_and_store(
         components=components,
         connections=connections,
         nets=nets,
+        wire_segments=wire_segments,
+        layout=layout,
     )
 
     svg_dir = tempfile.gettempdir()
@@ -350,8 +371,8 @@ def _render_and_store(
     open_svg_in_browser(svg_path)
 
     store_data: dict[str, Any] = {
-        "payload_kind": "preview_payload",
-        "payload_version": "v1",
+        "payload_kind": _PREVIEW_PAYLOAD_KIND,
+        "payload_version": _PREVIEW_PAYLOAD_VERSION,
         "circuit_type": circuit_type,
         "components": components,
         "connections": connections,
@@ -513,12 +534,9 @@ class CircuitDesignService:
 
         # Case 1b: Medium confidence — show intent, ask for confirmation
         if topology and confidence == "medium":
-            session_token = self._store.save({
-                "type": "design_session",
-                "topology": topology,
-                "specs": specs,
-                "missing_fields": missing,
-            })
+            session_token = self._store.save(
+                _make_design_session_payload(topology, specs, missing),
+            )
             return {
                 "success": True,
                 "data": {
@@ -552,12 +570,9 @@ class CircuitDesignService:
 
         # Case 2: Topology found but missing specs
         if topology and missing:
-            session_token = self._store.save({
-                "type": "design_session",
-                "topology": topology,
-                "specs": specs,
-                "missing_fields": missing,
-            })
+            session_token = self._store.save(
+                _make_design_session_payload(topology, specs, missing),
+            )
             return {
                 "success": True,
                 "data": {
@@ -619,8 +634,10 @@ class CircuitDesignService:
     ) -> dict:
         """Continue a design session with additional specifications."""
         session = self._store.get(session_token)
+        if session:
+            session = _normalize_design_session_payload(session)
 
-        if not session or session.get("type") != "design_session":
+        if not session or session.get("type") != _DESIGN_SESSION_KIND:
             return {
                 "success": False,
                 "error": {
@@ -919,6 +936,19 @@ class CircuitDesignService:
                     message="템플릿 기반 회로 생성 중 오류가 발생했습니다.",
                 )
 
+        if graph is not None and layout is not None:
+            try:
+                components, nets = materialize_to_legacy(graph, layout)
+                connections = []
+            except Exception:
+                logger.debug("Failed to materialize graph/layout during confirm", exc_info=True)
+
+        if routing is not None and not preview.get("wire_segments"):
+            try:
+                preview["wire_segments"] = routing.to_legacy_segments()
+            except Exception:
+                logger.debug("Failed to derive wire segments from routing during confirm", exc_info=True)
+
         if nets:
             connections = _convert_nets_to_connections(nets)
 
@@ -933,7 +963,14 @@ class CircuitDesignService:
             connections=connections,
             save_path=save_path,
             simulation_settings=simulation_settings,
-            circuit_spec={"components": components, "nets": nets} if nets else None,
+            circuit_spec={
+                "components": components,
+                "nets": nets,
+                "wire_segments": preview.get("wire_segments", []),
+                "graph": preview.get("graph"),
+                "layout": preview.get("layout"),
+                "routing": preview.get("routing"),
+            } if nets or preview.get("wire_segments") or preview.get("graph") or preview.get("layout") else None,
         )
 
         if isinstance(result, dict) and result.get("success"):
@@ -952,28 +989,48 @@ class CircuitDesignService:
     ) -> dict:
         """Create a circuit directly without preview."""
         circuit_spec: dict | None = None
+        gen_mode = "template"
 
-        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
-            circuit_type, specs, components,
-        )
+        synth_result = None
+        if not components and specs:
+            synth_result = _try_synthesize_and_layout(circuit_type, specs)
 
-        if gen_components is not None:
-            components = gen_components
-            connections = gen_connections
+        if synth_result is not None:
+            components = synth_result["components"]
+            connections = []
             circuit_spec = {
                 "topology": circuit_type,
                 "components": components,
-                "nets": gen_nets,
+                "nets": synth_result["nets"],
+                "wire_segments": synth_result.get("wire_segments", []),
+                "graph": synth_result["graph"].to_dict() if hasattr(synth_result["graph"], "to_dict") else synth_result["graph"],
+                "layout": synth_result["layout"].to_dict() if hasattr(synth_result["layout"], "to_dict") else synth_result["layout"],
+                "routing": synth_result["wire_routing"].to_dict() if synth_result.get("wire_routing") and hasattr(synth_result["wire_routing"], "to_dict") else synth_result.get("wire_routing"),
                 "simulation": {},
             }
+            gen_mode = "generator"
         else:
-            template = _TEMPLATES.get(circuit_type.lower())
-            if template and not components:
-                components = template["components"]
-                connections = connections or template["connections"]
-            elif not components:
-                components = []
-                connections = connections or []
+            gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
+                circuit_type, specs, components,
+            )
+
+            if gen_components is not None:
+                components = gen_components
+                connections = gen_connections
+                circuit_spec = {
+                    "topology": circuit_type,
+                    "components": components,
+                    "nets": gen_nets,
+                    "simulation": {},
+                }
+            else:
+                template = _TEMPLATES.get(circuit_type.lower())
+                if template and not components:
+                    components = template["components"]
+                    connections = connections or template["connections"]
+                elif not components:
+                    components = []
+                    connections = connections or []
 
         if connections is None:
             connections = []
@@ -1059,6 +1116,23 @@ class CircuitDesignService:
         self, topology: str, specs: dict, intent: dict,
     ) -> dict:
         """High-confidence auto-generation with fallback."""
+        synth_result = _try_synthesize_and_layout(topology, specs)
+        if synth_result is not None:
+            return self._validate_and_render(
+                topology=topology,
+                components=synth_result["components"],
+                connections=[],
+                nets=synth_result["nets"],
+                specs=specs,
+                intent=intent,
+                generation_mode="generator",
+                confidence="high",
+                graph=synth_result["graph"],
+                layout=synth_result["layout"],
+                wire_routing=synth_result.get("wire_routing"),
+                wire_segments=synth_result.get("wire_segments"),
+            )
+
         gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template = (
             _try_generate(topology, specs, None)
         )
@@ -1124,6 +1198,10 @@ class CircuitDesignService:
         generation_note: str | None = None,
         constraint_validation: dict | None = None,
         psim_template: dict | None = None,
+        graph: object | None = None,
+        layout: object | None = None,
+        wire_routing: object | None = None,
+        wire_segments: list[dict] | None = None,
     ) -> dict:
         """Validate circuit, render preview if valid."""
         if nets and not connections:
@@ -1155,6 +1233,10 @@ class CircuitDesignService:
             connections=connections,
             nets=nets,
             psim_template=psim_template,
+            wire_segments=wire_segments,
+            graph=graph,
+            layout=layout,
+            wire_routing=wire_routing,
         )
 
         token = preview["preview_token"]
@@ -1322,6 +1404,7 @@ class CircuitDesignService:
 
         async def _handler():
             nonlocal components, connections
+            wire_segments = []
 
             if not circuit_type or not isinstance(circuit_type, str):
                 return ResponseBuilder.error(
@@ -1332,8 +1415,12 @@ class CircuitDesignService:
             if circuit_spec is not None:
                 components = circuit_spec.get("components", components)
                 nets = circuit_spec.get("nets", [])
+                wire_segments = circuit_spec.get("wire_segments", [])
                 if nets:
-                    connections = _nets_to_connections_simple(nets)
+                    try:
+                        connections = _convert_nets_to_connections(nets)
+                    except Exception:
+                        connections = _nets_to_connections_simple(nets)
 
             if not components or not isinstance(components, list):
                 return ResponseBuilder.error(
@@ -1372,6 +1459,7 @@ class CircuitDesignService:
                     circuit_type=circuit_type,
                     components=bridge_components,
                     connections=connections or [],
+                    wire_segments=wire_segments or None,
                     save_path=save_path,
                     simulation_settings=simulation_settings,
                 )

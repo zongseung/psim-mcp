@@ -289,6 +289,19 @@ def _render_connections(components: list[dict], connections: list[dict]) -> str:
     )
 
 
+def _render_wire_segments(wire_segments: list[dict]) -> str:
+    return "".join(
+        _draw_segment(
+            int(segment["x1"]),
+            int(segment["y1"]),
+            int(segment["x2"]),
+            int(segment["y2"]),
+        )
+        for segment in wire_segments
+        if all(key in segment for key in ("x1", "y1", "x2", "y2"))
+    )
+
+
 def _render_nets(components: list[dict], nets: list[dict]) -> tuple[str, str]:
     pin_pos = _build_pin_positions(components)
     lines = ""
@@ -534,13 +547,51 @@ def _render_component(comp: dict) -> str:
     )
 
 
+def _apply_layout_to_components(components: list[dict], layout: dict | object | None) -> list[dict]:
+    if layout is None:
+        return components
+
+    layout_components = layout.get("components", []) if isinstance(layout, dict) else getattr(layout, "components", [])
+    by_id: dict[str, dict] = {}
+    for item in layout_components:
+        if isinstance(item, dict):
+            by_id[item.get("id", "")] = item
+        else:
+            by_id[getattr(item, "id", "")] = {
+                "x": getattr(item, "x", 0),
+                "y": getattr(item, "y", 0),
+                "direction": getattr(item, "direction", 0),
+            }
+
+    normalized: list[dict] = []
+    for comp in components:
+        cid = comp.get("id", "")
+        layout_item = by_id.get(cid)
+        if not layout_item:
+            normalized.append(comp)
+            continue
+
+        merged = dict(comp)
+        merged["position"] = {
+            "x": int(layout_item.get("x", comp.get("position", {}).get("x", 0))),
+            "y": int(layout_item.get("y", comp.get("position", {}).get("y", 0))),
+        }
+        merged["direction"] = int(layout_item.get("direction", comp.get("direction", 0) or 0))
+        normalized.append(merged)
+
+    return normalized
+
+
 def render_circuit_svg(
     circuit_type: str,
     components: list[dict],
     connections: list[dict],
     nets: list[dict] | None = None,
+    wire_segments: list[dict] | None = None,
+    layout: dict | object | None = None,
     title: str | None = None,
 ) -> str:
+    components = _apply_layout_to_components(components, layout)
     max_x = max((max(c.get("ports", [c.get("position", {}).get("x", 0)])) if c.get("ports") else c.get("position", {}).get("x", 0) for c in components), default=0) + 80
     max_y = max((max(c.get("ports", [c.get("position", {}).get("y", 0)])) if c.get("ports") else c.get("position", {}).get("y", 0) for c in components), default=0) + 80
     width = max(max_x, 500)
@@ -551,7 +602,9 @@ def render_circuit_svg(
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" style="background:#fafafa; border:1px solid #ddd; border-radius:8px;">',
         f'<text x="{width // 2}" y="25" text-anchor="middle" font-size="16" font-weight="bold" font-family="sans-serif" fill="#2c3e50">{display_title}</text>',
     ]
-    if nets:
+    if wire_segments:
+        parts.append(_render_wire_segments(wire_segments))
+    elif nets:
         net_lines, net_dots = _render_nets(components, nets)
         parts.extend([net_lines, net_dots])
     else:

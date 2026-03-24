@@ -735,7 +735,8 @@ def handle_create_circuit(params):
     global _current_sch, _current_path
 
     components = params.get("components", [])
-    connections = params.get("connections", [])
+    wire_segments = params.get("wire_segments", [])
+    connections = wire_segments or params.get("connections", [])
     save_path = params.get("save_path")
     simulation_settings = params.get("simulation_settings") or {}
 

@@ -44,9 +44,9 @@ class SimulationService:
     For backward compatibility it also retains delegate methods that forward
     to the appropriate domain service when called via legacy code paths.
 
-    Phase 1-5 boundary: This service is a legacy consumer of circuit data.
-    It does NOT use the synthesis/layout/routing pipeline directly.
-    Circuit creation is delegated to CircuitDesignService.
+    Phase 1-5 boundary: This service remains a compatibility layer, but it can
+    now consume enriched circuit payloads that include graph/layout/routing
+    projections in addition to legacy component/connection data.
     """
 
     def __init__(
@@ -266,8 +266,10 @@ class SimulationService:
         save_path: str,
         simulation_settings: dict | None = None,
         circuit_spec: dict | None = None,
+        wire_segments: list[dict] | None = None,
     ) -> dict:
         """Backward compat: circuit creation (will be removed)."""
+        from psim_mcp.bridge.wiring import nets_to_connections
         from psim_mcp.data.component_library import resolve_psim_element_type
         from psim_mcp.validators import validate_circuit as validate_circuit_spec
 
@@ -288,7 +290,7 @@ class SimulationService:
             return enriched
 
         async def _handler():
-            nonlocal components, connections
+            nonlocal components, connections, wire_segments
 
             if not circuit_type or not isinstance(circuit_type, str):
                 return ResponseBuilder.error(
@@ -297,10 +299,41 @@ class SimulationService:
                 )
 
             if circuit_spec is not None:
-                components = circuit_spec.get("components", components)
-                nets = circuit_spec.get("nets", [])
+                graph_data = circuit_spec.get("graph")
+                layout_data = circuit_spec.get("layout")
+                routing_data = circuit_spec.get("routing") or circuit_spec.get("wire_routing")
+
+                if graph_data is not None and layout_data is not None:
+                    try:
+                        from psim_mcp.layout.materialize import materialize_to_legacy
+                        from psim_mcp.layout.models import SchematicLayout
+                        from psim_mcp.synthesis.graph import CircuitGraph
+
+                        graph = CircuitGraph.from_dict(graph_data) if isinstance(graph_data, dict) else graph_data
+                        layout = SchematicLayout.from_dict(layout_data) if isinstance(layout_data, dict) else layout_data
+                        components, nets = materialize_to_legacy(graph, layout)
+                    except Exception:
+                        components = circuit_spec.get("components", components)
+                        nets = circuit_spec.get("nets", [])
+                else:
+                    components = circuit_spec.get("components", components)
+                    nets = circuit_spec.get("nets", [])
+
+                wire_segments = circuit_spec.get("wire_segments", wire_segments)
+                if not wire_segments and routing_data is not None:
+                    try:
+                        from psim_mcp.routing.models import WireRouting
+
+                        routing = WireRouting.from_dict(routing_data) if isinstance(routing_data, dict) else routing_data
+                        wire_segments = routing.to_legacy_segments()
+                    except Exception:
+                        pass
+
                 if nets:
-                    connections = _nets_to_connections(nets)
+                    try:
+                        connections = nets_to_connections(nets)
+                    except Exception:
+                        connections = _nets_to_connections(nets)
 
             if not components or not isinstance(components, list):
                 return ResponseBuilder.error(
@@ -339,6 +372,7 @@ class SimulationService:
                     circuit_type=circuit_type,
                     components=bridge_components,
                     connections=connections or [],
+                    wire_segments=wire_segments,
                     save_path=save_path,
                     simulation_settings=simulation_settings,
                 )

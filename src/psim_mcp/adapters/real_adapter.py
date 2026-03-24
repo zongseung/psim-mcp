@@ -281,6 +281,7 @@ class RealPsimAdapter(BasePsimAdapter):
         components: list[dict],
         connections: list[dict],
         save_path: str,
+        wire_segments: list[dict] | None = None,
         simulation_settings: dict | None = None,
         psim_template: dict | None = None,
     ) -> dict:
@@ -289,6 +290,7 @@ class RealPsimAdapter(BasePsimAdapter):
             "circuit_type": circuit_type,
             "components": components,
             "connections": connections,
+            "wire_segments": wire_segments,
             "save_path": save_path,
             "simulation_settings": simulation_settings,
         }
