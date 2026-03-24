@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import glob
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from psim_mcp.config import AppConfig
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _cleanup_preview_svgs():
+    """Clean up preview SVG files generated during tests.
+
+    Runs once at the end of the full test session.
+    Prevents accumulation of psim_preview_*.svg in the temp directory.
+    """
+    yield
+    pattern = os.path.join(tempfile.gettempdir(), "psim_preview_*.svg")
+    for svg_file in glob.glob(pattern):
+        try:
+            os.remove(svg_file)
+        except OSError:
+            pass
 
 
 @pytest.fixture
