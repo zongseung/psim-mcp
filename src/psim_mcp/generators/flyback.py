@@ -7,6 +7,8 @@ power applications requiring galvanic isolation.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
 from .layout import (
     make_capacitor,
@@ -18,6 +20,10 @@ from .layout import (
     make_transformer,
     make_vdc,
 )
+
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class FlybackGenerator(TopologyGenerator):
@@ -34,6 +40,12 @@ class FlybackGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "n_ratio", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> CircuitGraph:
+        """Synthesize a CircuitGraph (no positions) from requirements."""
+        from psim_mcp.synthesis.topologies.flyback import synthesize_flyback
+
+        return synthesize_flyback(requirements)
 
     # ------------------------------------------------------------------
     # Design

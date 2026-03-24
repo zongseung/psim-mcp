@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
 from .layout import auto_layout
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class BuckGenerator(TopologyGenerator):
@@ -20,6 +25,12 @@ class BuckGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> CircuitGraph:
+        """Synthesize a CircuitGraph (no positions) from requirements."""
+        from psim_mcp.synthesis.topologies.buck import synthesize_buck
+
+        return synthesize_buck(requirements)
 
     # ------------------------------------------------------------------
     # Design

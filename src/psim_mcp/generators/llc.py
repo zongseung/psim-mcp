@@ -14,6 +14,7 @@ Layout verified against PSIM reference:
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
 from .layout import (
@@ -31,6 +32,10 @@ from .layout import (
 )
 
 
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
+
+
 class LLCGenerator(TopologyGenerator):
     """Generate an LLC resonant converter circuit from high-level requirements."""
 
@@ -45,6 +50,12 @@ class LLCGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "power", "quality_factor"]
+
+    def synthesize(self, requirements: dict) -> CircuitGraph:
+        """Synthesize a CircuitGraph (no positions) from requirements."""
+        from psim_mcp.synthesis.topologies.llc import synthesize_llc
+
+        return synthesize_llc(requirements)
 
     # ------------------------------------------------------------------
     # Design

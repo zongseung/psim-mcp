@@ -63,6 +63,16 @@ def list_generators() -> list[str]:
     return sorted(_REGISTRY)
 
 
+def synthesize_topology(name: str, requirements: dict):
+    """Synthesize a CircuitGraph for the named topology.
+
+    Delegates to the generator's synthesize() method if available.
+    Raises NotImplementedError if the generator does not support synthesis.
+    """
+    gen = get_generator(name)
+    return gen.synthesize(requirements)
+
+
 # Auto-register built-in generators
 register(BuckGenerator())
 register(BoostGenerator())
@@ -99,6 +109,7 @@ __all__ = [
     "register",
     "get_generator",
     "list_generators",
+    "synthesize_topology",
     "validate_design_constraints",
     "ConstraintResult",
     "BuckGenerator",
