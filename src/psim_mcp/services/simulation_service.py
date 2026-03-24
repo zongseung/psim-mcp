@@ -43,6 +43,10 @@ class SimulationService:
 
     For backward compatibility it also retains delegate methods that forward
     to the appropriate domain service when called via legacy code paths.
+
+    Phase 1-5 boundary: This service is a legacy consumer of circuit data.
+    It does NOT use the synthesis/layout/routing pipeline directly.
+    Circuit creation is delegated to CircuitDesignService.
     """
 
     def __init__(

@@ -39,6 +39,157 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Synthesis pipeline feature flags (Phase 1-5)
+# ---------------------------------------------------------------------------
+try:
+    from psim_mcp.synthesis.graph import CircuitGraph
+    from psim_mcp.validators.graph import validate_graph
+    from psim_mcp.layout.engine import generate_layout
+    from psim_mcp.layout.materialize import materialize_to_legacy
+    from psim_mcp.routing.engine import generate_routing
+    from psim_mcp.routing.models import WireRouting as _WireRouting  # noqa: F401
+
+    _SYNTHESIS_PIPELINE_AVAILABLE = True
+except ImportError:
+    _SYNTHESIS_PIPELINE_AVAILABLE = False
+
+# Backward compatibility aliases for tests
+_LAYOUT_ENGINE_AVAILABLE = _SYNTHESIS_PIPELINE_AVAILABLE
+_ROUTING_ENGINE_AVAILABLE = _SYNTHESIS_PIPELINE_AVAILABLE
+
+try:
+    from psim_mcp.intent import (
+        extract_intent,
+        rank_topologies,
+        analyze_clarification_needs,
+        build_canonical_spec,
+    )
+
+    _INTENT_V2_AVAILABLE = True
+except ImportError:
+    _INTENT_V2_AVAILABLE = False
+
+
+def _try_synthesize_and_layout(
+    circuit_type: str,
+    specs: dict | None,
+) -> dict | None:
+    """Graph -> layout -> routing -> legacy materialization. Returns None on failure."""
+    if not _SYNTHESIS_PIPELINE_AVAILABLE:
+        return None
+    if not specs:
+        return None
+    try:
+        generator = get_generator(circuit_type.lower())
+    except (KeyError, Exception):
+        return None
+
+    if generator.missing_fields(specs or {}):
+        return None
+
+    try:
+        graph = generator.synthesize(specs)
+    except (AttributeError, NotImplementedError):
+        return None
+    except Exception:
+        return None
+
+    try:
+        issues = validate_graph(graph)
+        if any(i.severity == "error" for i in issues):
+            return None
+    except Exception:
+        return None
+
+    try:
+        layout = generate_layout(graph)
+    except (NotImplementedError, Exception):
+        return None
+
+    wire_routing = None
+    try:
+        wire_routing = generate_routing(graph, layout)
+    except Exception:
+        pass  # routing failure is non-fatal
+
+    try:
+        legacy_components, legacy_nets = materialize_to_legacy(graph, layout)
+    except Exception:
+        return None
+
+    wire_segments = wire_routing.to_legacy_segments() if wire_routing else []
+
+    return {
+        "graph": graph,
+        "layout": layout,
+        "wire_routing": wire_routing,
+        "components": legacy_components,
+        "nets": legacy_nets,
+        "wire_segments": wire_segments,
+    }
+
+
+def _normalize_preview_payload(preview: dict) -> dict:
+    """Ensure preview payload has expected keys regardless of version."""
+    preview.setdefault("connections", [])
+    preview.setdefault("nets", [])
+    preview.setdefault("simulation_settings", None)
+    preview.setdefault("wire_segments", [])
+    return preview
+
+
+def _load_graph_layout_routing(preview: dict) -> tuple:
+    """Extract graph, layout, routing from preview data if present.
+
+    Reconstructs typed objects from serialized dicts when possible.
+    Returns (graph_or_None, layout_or_None, routing_or_None).
+    """
+    graph_data = preview.get("graph")
+    layout_data = preview.get("layout")
+    routing_data = preview.get("wire_routing")
+
+    graph = None
+    layout = None
+    routing = None
+
+    if graph_data is not None and _SYNTHESIS_PIPELINE_AVAILABLE:
+        try:
+            graph = CircuitGraph.from_dict(graph_data) if isinstance(graph_data, dict) else graph_data
+        except Exception:
+            pass
+
+    if layout_data is not None:
+        try:
+            from psim_mcp.layout.models import SchematicLayout
+            layout = SchematicLayout.from_dict(layout_data) if isinstance(layout_data, dict) else layout_data
+        except Exception:
+            pass
+
+    if routing_data is not None:
+        try:
+            from psim_mcp.routing.models import WireRouting as WR
+            routing = WR.from_dict(routing_data) if isinstance(routing_data, dict) else routing_data
+        except Exception:
+            pass
+
+    return graph, layout, routing
+
+
+def _make_design_session_payload(
+    topology: str,
+    specs: dict,
+    missing_fields: list[str],
+) -> dict:
+    """Build a design session payload for the state store."""
+    return {
+        "type": "design_session",
+        "topology": topology,
+        "specs": specs,
+        "missing_fields": missing_fields,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Validation helpers (from _preview_helpers)
 # ---------------------------------------------------------------------------
 
@@ -168,8 +319,16 @@ def _render_and_store(
     nets: list[dict],
     simulation_settings: dict | None = None,
     psim_template: dict | None = None,
+    wire_segments: list[dict] | None = None,
+    graph: object | None = None,
+    layout: object | None = None,
+    wire_routing: object | None = None,
 ) -> dict:
-    """Render ASCII + SVG, open browser, save to store."""
+    """Render ASCII + SVG, open browser, save to store.
+
+    Accepts optional graph/layout/routing from the synthesis pipeline
+    so they can be persisted in the preview payload for confirm_circuit.
+    """
     ascii_diagram = render_circuit_ascii(
         circuit_type=circuit_type,
         components=components,
@@ -190,7 +349,9 @@ def _render_and_store(
 
     open_svg_in_browser(svg_path)
 
-    store_data = {
+    store_data: dict[str, Any] = {
+        "payload_kind": "preview_payload",
+        "payload_version": "v1",
         "circuit_type": circuit_type,
         "components": components,
         "connections": connections,
@@ -200,6 +361,16 @@ def _render_and_store(
     }
     if psim_template:
         store_data["psim_template"] = psim_template
+    if wire_segments:
+        store_data["wire_segments"] = wire_segments
+    if graph is not None:
+        store_data["graph"] = graph.to_dict() if hasattr(graph, "to_dict") else graph
+    if layout is not None:
+        store_data["layout"] = layout.to_dict() if hasattr(layout, "to_dict") else layout
+    if wire_routing is not None:
+        serialized_routing = wire_routing.to_dict() if hasattr(wire_routing, "to_dict") else wire_routing
+        store_data["wire_routing"] = serialized_routing
+        store_data["routing"] = serialized_routing
     token = store.save(store_data)
 
     return {
@@ -239,9 +410,94 @@ class CircuitDesignService:
     # NLP → Design
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _determine_confidence_v2(
+        intent: object,
+        top: object,
+        spec: object,
+        clarification_needs: list,
+    ) -> str:
+        """Determine confidence level for V2 pipeline result."""
+        missing = getattr(spec, "missing_fields", [])
+        score = getattr(top, "score", 0)
+        mapping_conf = getattr(intent, "mapping_confidence", "high")
+
+        if not missing and score >= 8:
+            confidence = "high"
+        elif not missing:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        if mapping_conf == "low":
+            confidence = "low"
+        elif mapping_conf == "medium" and confidence == "high":
+            confidence = "medium"
+
+        return confidence
+
+    def _resolve_intent_v2(self, description: str) -> dict | None:
+        """V2 intent pipeline. Returns legacy-compatible parsed dict, or None."""
+        if not _INTENT_V2_AVAILABLE:
+            return None
+        try:
+            intent_model = extract_intent(description)
+            candidates = rank_topologies(intent_model)
+            if not candidates:
+                return {
+                    "topology": None,
+                    "topology_candidates": [],
+                    "specs": dict(intent_model.values),
+                    "normalized_specs": dict(intent_model.values),
+                    "missing_fields": [],
+                    "questions": [],
+                    "confidence": "low",
+                    "use_case": intent_model.use_case,
+                    "constraints": intent_model.constraints,
+                    "candidate_scores": [],
+                    "decision_trace": [],
+                    "resolution_version": "v2",
+                }
+            top = candidates[0]
+            spec = build_canonical_spec(intent_model, top)
+            clarifications = analyze_clarification_needs(intent_model, candidates)
+            confidence = self._determine_confidence_v2(
+                intent_model, top, spec, clarifications,
+            )
+            return {
+                "topology": top.topology,
+                "topology_candidates": [c.topology for c in candidates[:5]],
+                "specs": dict(intent_model.values),
+                "normalized_specs": dict(spec.requirements),
+                "missing_fields": spec.missing_fields,
+                "questions": [],
+                "confidence": confidence,
+                "use_case": intent_model.use_case,
+                "constraints": intent_model.constraints,
+                "candidate_scores": [
+                    {"topology": c.topology, "score": c.score, "reasons": c.reasons}
+                    for c in candidates[:5]
+                ],
+                "decision_trace": spec.decision_trace,
+                "resolution_version": "v2",
+            }
+        except Exception:
+            logger.debug("V2 intent resolution failed, falling back to legacy", exc_info=True)
+            return None
+
     async def design_circuit(self, description: str) -> dict:
-        """Parse natural language and suggest/create a circuit."""
-        intent = parse_circuit_intent(description)
+        """Parse natural language and suggest/create a circuit.
+
+        Tries V2 intent pipeline first, falls back to legacy on failure.
+        """
+        # Try V2 intent pipeline first, fall back to legacy on failure
+        try:
+            intent = self._resolve_intent_v2(description)
+        except Exception:
+            logger.debug("V2 intent resolution raised, falling back to legacy", exc_info=True)
+            intent = None
+        if intent is None:
+            intent = parse_circuit_intent(description)
 
         topology = intent["topology"]
         specs = intent.get("normalized_specs", intent["specs"])
@@ -250,6 +506,10 @@ class CircuitDesignService:
         questions = intent["questions"]
         confidence = intent["confidence"]
         use_case = intent["use_case"]
+
+        # V2-specific enrichment fields
+        candidate_scores = intent.get("candidate_scores")
+        decision_trace = intent.get("decision_trace")
 
         # Case 1b: Medium confidence — show intent, ask for confirmation
         if topology and confidence == "medium":
@@ -270,6 +530,8 @@ class CircuitDesignService:
                     "confidence": confidence,
                     "generation_mode": "pending_confirmation",
                     "design_session_token": session_token,
+                    **({"candidate_scores": candidate_scores} if candidate_scores is not None else {}),
+                    **({"decision_trace": decision_trace} if decision_trace is not None else {}),
                 },
                 "message": (
                     f"'{topology}' 토폴로지로 해석했습니다.\n"
@@ -307,6 +569,8 @@ class CircuitDesignService:
                     "confidence": confidence,
                     "generation_mode": "awaiting_specs",
                     "design_session_token": session_token,
+                    **({"candidate_scores": candidate_scores} if candidate_scores is not None else {}),
+                    **({"decision_trace": decision_trace} if decision_trace is not None else {}),
                 },
                 "message": (
                     f"'{topology}' 토폴로지가 선택되었습니다.\n"
@@ -442,6 +706,7 @@ class CircuitDesignService:
             generation_mode=generation_mode,
             confidence="high",
             constraint_validation=gen_constraints,
+            psim_template=gen_template,
         )
 
     # ------------------------------------------------------------------
@@ -459,6 +724,15 @@ class CircuitDesignService:
         """Generate an SVG preview of the circuit diagram."""
         resolved_nets: list[dict] = []
         generation_mode = "template"
+        wire_segments: list[dict] = []
+        synth_graph = None
+        synth_layout = None
+        synth_routing = None
+
+        # Phase 2-4: Try full synthesis pipeline first
+        synth_result = None
+        if not components and specs:
+            synth_result = _try_synthesize_and_layout(circuit_type, specs)
 
         # Try generator first
         gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
@@ -508,6 +782,18 @@ class CircuitDesignService:
                     },
                 }
 
+        # Phase 2-4: Override with synthesis result if available
+        if synth_result is not None:
+            resolved_components = synth_result["components"]
+            resolved_connections = []
+            resolved_nets = synth_result["nets"]
+            generation_mode = "generator"
+            synth_graph = synth_result["graph"]
+            synth_layout = synth_result["layout"]
+            synth_routing = synth_result.get("wire_routing")
+            if synth_routing is not None:
+                wire_segments = synth_routing.to_legacy_segments()
+
         if resolved_connections is None:
             resolved_connections = []
 
@@ -538,8 +824,12 @@ class CircuitDesignService:
             components=resolved_components,
             connections=resolved_connections,
             nets=resolved_nets,
+            wire_segments=wire_segments,
             simulation_settings=simulation_settings,
             psim_template=_gen_template,
+            graph=synth_graph,
+            layout=synth_layout,
+            wire_routing=synth_routing,
         )
 
         token = preview["preview_token"]
@@ -596,6 +886,9 @@ class CircuitDesignService:
                     ),
                 },
             }
+
+        preview = _normalize_preview_payload(preview)
+        graph, layout, routing = _load_graph_layout_routing(preview)
 
         components = copy.deepcopy(preview["components"])
         connections = preview.get("connections", [])
@@ -813,6 +1106,7 @@ class CircuitDesignService:
                 confidence="high",
                 generation_note=generation_note,
                 constraint_validation=gen_constraints,
+                psim_template=gen_template,
             )
 
         return self._no_match_response(specs)
@@ -829,6 +1123,7 @@ class CircuitDesignService:
         confidence: str,
         generation_note: str | None = None,
         constraint_validation: dict | None = None,
+        psim_template: dict | None = None,
     ) -> dict:
         """Validate circuit, render preview if valid."""
         if nets and not connections:
@@ -859,7 +1154,7 @@ class CircuitDesignService:
             components=components,
             connections=connections,
             nets=nets,
-            psim_template=gen_template,
+            psim_template=psim_template,
         )
 
         token = preview["preview_token"]
