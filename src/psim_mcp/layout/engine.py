@@ -32,11 +32,15 @@ def generate_layout(
     graph: CircuitGraph,
     preferences: dict[str, object] | None = None,
 ) -> SchematicLayout:
-    """Main entry point. Dispatches to topology strategy."""
+    """Main entry point. Dispatches to topology strategy.
+
+    Falls back to algorithmic auto-layout when no dedicated strategy
+    is registered for the given topology.
+    """
     strategy = _STRATEGIES.get(graph.topology)
-    if strategy is None:
-        raise NotImplementedError(
-            f"No layout strategy registered for topology '{graph.topology}'. "
-            f"Available: {sorted(_STRATEGIES.keys())}"
-        )
-    return strategy.build_layout(graph, preferences)
+    if strategy is not None:
+        return strategy.build_layout(graph, preferences)
+    # Generic fallback: algorithmic auto-layout
+    from .auto_placer import auto_place
+
+    return auto_place(graph, preferences)
