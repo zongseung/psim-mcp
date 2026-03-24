@@ -1,63 +1,80 @@
-# PSIM-MCP Server
+# psim-mcp
 
-> Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSIM 시뮬레이션을 제어하는 MCP 서버
+Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSIM으로 시뮬레이션하는 MCP 서버.
 
-**15개 Tool** | **288개 테스트** | **51개 소스 파일** | **29개 회로 템플릿** | **40+ 부품 라이브러리**
+**15개 Tool** | **821개 테스트** | **130개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리**
+
+```
+"buck converter 48V to 12V 5A"
+  → Intent 추출 → Topology 선택 → CircuitGraph → Auto Layout → Routing → SVG Preview → .psimsch
+```
 
 ---
 
 ## 주요 기능
 
-- **자연어 회로 설계**: "절연형 5V 보조전원 설계해줘" → flyback 토폴로지 추천 + 사양 질문
-- **LLM-as-Designer**: Claude가 직접 회로를 설계하고 `preview_circuit`에 전달
-- **대화형 설계 루프**: `design_circuit` → 질문 → `continue_design` → 미리보기 → `confirm_circuit`
-- **SVG + ASCII 미리보기**: 브라우저 자동 열기로 회로 구조 즉시 확인
-- **29개 회로 템플릿**: DC-DC, 인버터, 정류기, PFC, 태양광, 모터, 배터리, 필터 (9 카테고리)
-- **3개 자동 계산 Generator**: Buck, Boost, Buck-Boost — 설계 공식 기반 파라미터 자동 산출
-- **40+ 부품 라이브러리**: 핀 정의, 기본값, 카테고리별 분류
-- **Constraint 기반 토폴로지 추천**: keyword 없이도 "고전압→저전압" 의미 해석
-- **CircuitSpec 중심 파이프라인**: 설계 → 검증 → 미리보기 → 생성 전 과정 통합
-- **4단계 검증**: structural, electrical, parameter, connection 검증
-- **Mac mock 모드 + Windows real 모드**: PSIM 없이 개발/테스트 가능
+- **자연어 회로 설계** — 한국어/영어로 회로를 설명하면 topology 자동 선택, 파라미터 계산, 회로도 생성
+- **29개 전력전자 topology** — Buck, Boost, Flyback, LLC, Full-Bridge, 3-Phase Inverter, BLDC Drive 등
+- **알고리즘 기반 자동 배치** — 좌표 하드코딩 없이 CircuitGraph에서 schematic layout 자동 생성
+- **SVG + ASCII 미리보기** — 생성 전 회로도 확인, 수정, 확정 (브라우저 자동 열기)
+- **PSIM 연동** — 확정된 회로를 `.psimsch` 파일로 생성, 시뮬레이션 실행, 결과 분석
+- **대화형 설계 루프** — `design_circuit` → 질문 → `continue_design` → 미리보기 → `confirm_circuit`
+- **Mock 모드** — PSIM 없이 개발/테스트 가능 (macOS, Linux 포함)
 
 ---
 
-## 빠른 시작 (Mac mock 모드)
+## 설치
 
 ```bash
-# 1. 클론 및 설치
-git clone <repository-url>
+git clone https://github.com/zongseung/psim-mcp.git
 cd psim-mcp
 uv sync --all-extras
-
-# 2. 환경 설정
-cp .env.example .env
-# PSIM_MODE=mock (기본값)
-
-# 3. 서버 실행
-uv run python -m psim_mcp.server
-
-# 4. 테스트
-uv run pytest tests/unit/ -v
 ```
+
+### 요구 사항
+
+| 항목 | 필수 | 비고 |
+|------|------|------|
+| Python 3.12+ | 필수 | MCP 서버 런타임 |
+| [uv](https://docs.astral.sh/uv/) | 필수 | 패키지 관리 |
+| Claude Desktop | 필수 | MCP 클라이언트 |
+| Altair PSIM 2026 | 선택 | 실제 회로 생성/시뮬레이션 시 필요 |
 
 ---
 
-## Claude Desktop 연동
+## Claude Desktop 설정
 
-### 설정
+`claude_desktop_config.json` 편집:
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-`~/Library/Application Support/Claude/claude_desktop_config.json` 편집:
+### PSIM 있을 때 (Real 모드)
 
 ```json
 {
   "mcpServers": {
-    "psim": {
-      "command": "/opt/homebrew/bin/uv",
-      "args": [
-        "--directory", "/Users/yourname/psim-mcp",
-        "run", "python", "-m", "psim_mcp.server"
-      ],
+    "psim-mcp": {
+      "command": "C:\\Users\\{사용자}\\psim-mcp\\.venv\\Scripts\\psim-mcp.exe",
+      "env": {
+        "PSIM_MODE": "real",
+        "PSIM_PATH": "C:\\Altair\\Altair_PSIM_2026",
+        "PSIM_PYTHON_EXE": "C:\\Users\\{사용자}\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
+        "PSIM_PROJECT_DIR": "C:\\Users\\{사용자}\\psim-projects",
+        "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output"
+      }
+    }
+  }
+}
+```
+
+### PSIM 없을 때 (Mock 모드)
+
+```json
+{
+  "mcpServers": {
+    "psim-mcp": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/psim-mcp", "psim-mcp"],
       "env": {
         "PSIM_MODE": "mock"
       }
@@ -66,355 +83,271 @@ uv run pytest tests/unit/ -v
 }
 ```
 
-> `uv` 경로는 `which uv`로 확인. `--directory`는 실제 프로젝트 경로로 변경.
-
-Claude Desktop을 **Cmd+Q로 완전 종료** 후 재실행하면 15개 tool이 표시됩니다.
-
-### 트러블슈팅
-
-| 증상 | 해결 |
-|------|------|
-| Tool이 안 보임 | Cmd+Q로 완전 종료 후 재시작 (Dock 닫기만으로는 반영 안 됨) |
-| 서버 시작 실패 | `which uv`로 경로 확인, `--directory` 경로 확인 |
-| 에러 로그 확인 | `tail -f ~/Library/Logs/Claude/mcp-server-psim.log` |
-| `ModuleNotFoundError` | `uv sync --all-extras` 실행 |
+Claude Desktop을 **완전 종료** 후 재실행하면 15개 tool이 표시됩니다.
 
 ---
 
-## 사용 예시
+## 사용법
 
-### 시뮬레이션
-
-```
-"Buck 컨버터 프로젝트를 열고, 스위칭 주파수를 100kHz로 변경한 다음 시뮬레이션 돌려서 결과 보여줘"
-→ open_project → set_parameter → run_simulation → export_results
-
-"인덕턴스를 10uH에서 100uH까지 10단계로 스윕하고 출력 리플 비교해줘"
-→ open_project → sweep_parameter → compare_results
-```
-
-### 회로 설계 (자연어)
+Claude Desktop에서 자연어로 요청:
 
 ```
-"절연형 5V 보조전원 설계해줘"
-→ design_circuit: flyback 추천, "입력 전압 범위?" 질문
-→ continue_design: "AC 85-265V" 응답
-→ preview_circuit: SVG 미리보기 → 브라우저 열림
-→ confirm_circuit: .psimsch 파일 생성
+buck converter 48V 입력 12V 출력 5A
 
-"3상 인버터 회로 만들어줘"
-→ list_circuit_templates → create_circuit 또는 preview_circuit → confirm_circuit
+flyback 310V 입력 5V 출력 2A 어댑터
 
-"BLDC 모터 드라이브 템플릿 보여줘"
-→ list_circuit_templates (motor 카테고리) → preview_circuit
+LLC 공진 컨버터 400V에서 24V 1kW
+
+충전기 48V 배터리 10A
+
+양방향 DC-DC 48V to 400V
+
+절연형 보조전원 설계해줘
+
+3상 인버터 회로 만들어줘
 ```
 
 ### 설계 흐름
 
 ```
-[자연어 요청] → design_circuit (토폴로지 추천 + 질문)
-                    ↓
-              continue_design (사양 보완, 반복 가능)
-                    ↓
-              preview_circuit (SVG + ASCII 미리보기)
-                    ↓
-              confirm_circuit (.psimsch 생성)
+1. design_circuit("buck 48V to 12V 5A")
+   → topology 선택, 파라미터 계산, SVG 미리보기 자동 생성
+   → preview_token 반환
+
+2. confirm_circuit(preview_token, save_path="./buck.psimsch")
+   → PSIM .psimsch 파일 생성
+
+3. run_simulation(project_path="./buck.psimsch")
+   → 시뮬레이션 실행, 파형 데이터 반환
 ```
 
 ---
 
-## Tools Reference
+## MCP 도구 (15개)
 
-### 프로젝트 / 시뮬레이션 (8개)
+### 회로 설계
 
-| # | Tool | 설명 |
-|---|------|------|
-| 1 | `open_project` | PSIM 프로젝트 파일(.psimsch) 열기 |
-| 2 | `get_project_info` | 열린 프로젝트의 상세 구조 반환 |
-| 3 | `set_parameter` | 컴포넌트 파라미터 변경 |
-| 4 | `sweep_parameter` | 파라미터 범위 스윕 + 반복 시뮬레이션 |
-| 5 | `run_simulation` | 시뮬레이션 실행 |
-| 6 | `export_results` | 결과를 JSON/CSV로 내보내기 |
-| 7 | `compare_results` | 두 시뮬레이션 결과 비교 |
-| 8 | `get_status` | 서버/PSIM 상태 조회 |
+| 도구 | 설명 |
+|------|------|
+| `design_circuit` | 자연어 → 회로 설계 (topology 선택 + auto preview) |
+| `continue_design` | 추가 정보 입력하여 설계 계속 (세션 토큰 기반) |
+| `preview_circuit` | 회로 미리보기 (SVG + ASCII) |
+| `confirm_circuit` | 미리보기 확정 → .psimsch 생성 |
+| `create_circuit` | 미리보기 없이 직접 생성 |
+| `get_component_library` | 부품 라이브러리 조회 (40+ 부품) |
+| `list_circuit_templates` | 회로 템플릿 목록 (29개, 9 카테고리) |
 
-### 회로 설계 (7개)
+### 시뮬레이션
 
-| # | Tool | 설명 |
-|---|------|------|
-| 9 | `get_component_library` | 부품 라이브러리 조회 (부품/핀 확인) |
-| 10 | `preview_circuit` | 회로 SVG + ASCII 미리보기 (브라우저 자동 열기) |
-| 11 | `confirm_circuit` | 미리보기 확정 → .psimsch 파일 생성 |
-| 12 | `create_circuit` | 미리보기 없이 직접 .psimsch 생성 |
-| 13 | `list_circuit_templates` | 29개 템플릿 목록 (9 카테고리) |
-| 14 | `design_circuit` | 자연어 회로 설계 (constraint 기반 토폴로지 추천) |
-| 15 | `continue_design` | 대화형 보완 루프 (세션 토큰 기반) |
+| 도구 | 설명 |
+|------|------|
+| `open_project` | 기존 .psimsch 파일 열기 |
+| `get_project_info` | 프로젝트 구조 조회 |
+| `set_parameter` | 컴포넌트 파라미터 변경 |
+| `sweep_parameter` | 파라미터 스윕 시뮬레이션 |
+| `run_simulation` | 시뮬레이션 실행 |
+| `export_results` | 결과 내보내기 (JSON/CSV) |
+| `compare_results` | 시뮬레이션 결과 비교 |
+| `get_status` | 서버/PSIM 상태 확인 |
 
 ---
 
-## 회로 템플릿 (29개, 9 카테고리)
+## 지원 topology (29개)
 
-| 카테고리 | 템플릿 |
-|----------|--------|
-| **DC-DC (비절연)** | buck, boost, buck_boost, cuk, sepic, bidirectional_buck_boost |
-| **DC-DC (절연)** | flyback, forward, push_pull, llc, dab, phase_shifted_full_bridge |
-| **인버터** | half_bridge, full_bridge, three_phase_inverter, three_level_npc |
-| **정류기** | diode_bridge_rectifier, thyristor_rectifier |
-| **PFC** | boost_pfc, totem_pole_pfc |
-| **태양광** | pv_mppt_boost, pv_grid_tied |
-| **모터 드라이브** | bldc_drive, pmsm_foc_drive, induction_motor_vf |
-| **배터리** | cc_cv_charger, ev_obc |
-| **필터** | lc_filter, lcl_filter |
+| 카테고리 | topology |
+|----------|----------|
+| DC-DC 비절연 | buck, boost, buck_boost, cuk, sepic |
+| DC-DC 절연 | flyback, forward, push_pull, llc, dab, phase_shifted_full_bridge |
+| DC-AC 인버터 | half_bridge, full_bridge, three_phase_inverter, three_level_npc |
+| AC-DC 정류 | diode_bridge_rectifier, thyristor_rectifier |
+| PFC | boost_pfc, totem_pole_pfc |
+| 재생 에너지 | pv_mppt_boost, pv_grid_tied |
+| 모터 드라이브 | bldc_drive, pmsm_foc_drive, induction_motor_vf |
+| 배터리 | cc_cv_charger, ev_obc, bidirectional_buck_boost |
+| 필터 | lc_filter, lcl_filter |
 
 ---
 
 ## 아키텍처
 
-```
-사용자 (자연어)
-    ↓
-Claude Desktop (MCP Client + LLM 추론)
-    ↓  MCP Protocol (stdio)
-PSIM-MCP Server
-    ↓
-┌─────────────────────────────────────────────┐
-│  Tool Layer (@tool_handler 데코레이터)       │
-│  - 15개 tool 정의                           │
-│  - 예외 처리, 직렬화, sanitize 자동화        │
-├─────────────────────────────────────────────┤
-│  Service Layer                              │
-│  - 입력 검증 + 경로 보안                     │
-│  - ResponseBuilder 표준 응답                 │
-│  - _execute_with_audit 감사 로깅             │
-├─────────────────────────────────────────────┤
-│  Circuit Pipeline                           │
-│  - Parsers: intent_parser, unit_parser      │
-│  - Generators: buck, boost, buck_boost      │
-│  - Validators: structural, electrical,      │
-│    parameter, connection                    │
-│  - Data: templates, components, topology    │
-├─────────────────────────────────────────────┤
-│  Adapter Layer (DI)                         │
-│  - MockAdapter (Mac 개발)                    │
-│  - RealAdapter (Windows PSIM)               │
-│       ↓ subprocess + JSON IPC               │
-│    Bridge Script (Python 3.8)               │
-│       ↓ PSIM Python API                     │
-│    Altair PSIM (.psimsch → .smv)            │
-└─────────────────────────────────────────────┘
-```
-
-### 이중 Python 환경
-
-PSIM Python API는 번들 Python 3.8에서만 동작하고, MCP SDK는 Python 3.12+를 요구합니다. `RealAdapter`가 subprocess로 `bridge_script.py`를 호출하여 JSON IPC로 통신합니다.
+### Canonical Synthesis Pipeline
 
 ```
-MCP Server (Python 3.12+)  ──stdin/stdout JSON──>  bridge_script.py (Python 3.8)  ──>  PSIM API
+자연어
+  → extract_intent()         # 도메인 제약/값 추출 (intent/)
+  → rank_topologies()        # topology 후보 점수화
+  → build_canonical_spec()   # canonical spec 생성
+  → generator.synthesize()   # CircuitGraph 합성 (synthesis/)
+  → validate_graph()         # 구조 검증 (validators/)
+  → generate_layout()        # SchematicLayout 자동 배치 (layout/)
+  → generate_routing()       # WireRouting trunk/branch (routing/)
+  → materialize_to_legacy()  # legacy 포맷 변환
+  → SVG renderer / PSIM bridge
+```
+
+Legacy 경로 (generator/template)는 fallback으로 유지됩니다. Canonical pipeline이 실패하면 자동으로 legacy 경로를 사용합니다.
+
+### Dual Python 환경
+
+```
+Claude Desktop ─stdio─→ MCP Server (Python 3.12+)
+                              │
+                       CircuitDesignService
+                              │
+                       RealPsimAdapter
+                              │ stdin/stdout JSON lines
+                       bridge_script.py (Python 3.8/3.9)
+                              │
+                       psimapipy → PSIM engine
+```
+
+PSIM API(`psimapipy`)는 별도 Python 프로세스에서 실행됩니다. 두 프로세스 사이는 JSON IPC로 통신합니다.
+
+### 프로젝트 구조
+
+```
+src/psim_mcp/
+├── intent/              # 자연어 → IntentModel → CanonicalSpec
+│   ├── extractors.py    #   도메인 제약 추출
+│   ├── ranker.py        #   topology 후보 점수화
+│   ├── clarification.py #   추가 정보 필요 여부 판단
+│   └── spec_builder.py  #   canonical spec 조립
+│
+├── synthesis/           # CircuitGraph 합성
+│   ├── graph.py         #   CircuitGraph, GraphComponent, GraphNet, FunctionalBlock
+│   ├── graph_builders.py#   make_component(), make_net(), make_block()
+│   ├── sizing.py        #   topology별 파라미터 계산 (duty, L, C, ...)
+│   └── topologies/      #   buck, flyback, llc graph synthesizer
+│
+├── layout/              # 알고리즘 기반 자동 배치
+│   ├── auto_placer.py   #   block 할당 → role 배치 → force-directed → grid snap
+│   ├── force_directed.py#   스프링 기반 위치 미세 조정
+│   ├── constraint_solver.py # 범용 constraint dispatcher (7개 kind)
+│   ├── engine.py        #   generate_layout() 디스패처
+│   └── materialize.py   #   SchematicLayout → legacy 포맷 변환
+│
+├── routing/             # trunk/branch 라우팅
+│   ├── engine.py        #   generate_routing() 디스패처
+│   ├── trunk_branch.py  #   net role 기반 trunk/branch 알고리즘
+│   ├── anchors.py       #   핀 좌표 해석
+│   ├── metrics.py       #   crossing/duplicate/wire_length 측정
+│   └── strategies/      #   topology별 라우팅 전략
+│
+├── generators/          # 29개 topology generator (generate + synthesize)
+├── validators/          # 구조/전기/파라미터/graph 검증
+├── services/            # CircuitDesignService, SimulationService
+├── adapters/            # Mock/Real PSIM 어댑터
+├── bridge/              # PSIM Python 3.8 IPC bridge
+├── data/                # 메타데이터 레지스트리 (8개)
+│   ├── topology_metadata.py        # topology 속성 (29개)
+│   ├── component_library.py        # 부품 핀/파라미터 (40+)
+│   ├── symbol_registry.py          # 심볼 variant/앵커
+│   ├── layout_strategy_registry.py # 배치 규칙/role 분류 (선언적)
+│   ├── routing_policy_registry.py  # 라우팅 정책
+│   ├── design_rule_registry.py     # 설계 규칙/default값
+│   ├── bridge_mapping_registry.py  # PSIM 타입 매핑
+│   └── capability_matrix.py        # topology × feature 지원 상태
+├── parsers/             # intent_parser (legacy), keyword_map, unit_parser
+├── tools/               # 15개 MCP 도구 핸들러
+├── utils/               # SVG renderer, ASCII renderer
+└── shared/              # state_store, audit, response builder
 ```
 
 ---
 
-## 프로젝트 구조
+## 설정
 
-```
-psim-mcp/
-├── src/psim_mcp/
-│   ├── server.py                 # App factory (create_app, create_service, create_adapter)
-│   ├── config.py                 # 환경 변수 기반 설정 (Pydantic)
-│   ├── tools/                    # MCP Tool 정의 (15개)
-│   │   ├── project.py            #   open_project, get_project_info
-│   │   ├── parameter.py          #   set_parameter, sweep_parameter
-│   │   ├── simulation.py         #   run_simulation
-│   │   ├── results.py            #   export_results, compare_results, get_status
-│   │   ├── circuit.py            #   get_component_library, preview/confirm/create_circuit, list_templates
-│   │   └── design.py             #   design_circuit, continue_design
-│   ├── services/                 # 비즈니스 로직
-│   │   ├── simulation_service.py #   오케스트레이션 + 감사 로깅
-│   │   ├── preview_store.py      #   Preview token 관리
-│   │   ├── response.py           #   ResponseBuilder
-│   │   └── validators.py         #   입력 검증
-│   ├── adapters/                 # PSIM 실행 환경 추상화
-│   │   ├── base.py               #   BasePsimAdapter (ABC)
-│   │   ├── mock_adapter.py       #   Mac 개발용 mock
-│   │   └── real_adapter.py       #   Windows PSIM 연동
-│   ├── bridge/                   # PSIM Python 3.8 브릿지
-│   │   ├── bridge_script.py      #   JSON IPC
-│   │   └── wiring.py             #   배선 유틸리티
-│   ├── models/                   # 데이터 모델
-│   │   ├── schemas.py            #   Pydantic 모델 (시뮬레이션)
-│   │   └── circuit_spec.py       #   CircuitSpec (회로 설계)
-│   ├── data/                     # 정적 데이터
-│   │   ├── circuit_templates.py  #   29개 회로 템플릿
-│   │   ├── component_library.py  #   40+ 부품 정의 (핀, 파라미터)
-│   │   ├── topology_metadata.py  #   토폴로지 메타데이터 + constraint
-│   │   └── spec_mapping.py       #   스펙 매핑
-│   ├── generators/               # 회로 자동 생성
-│   │   ├── base.py               #   BaseGenerator
-│   │   ├── buck.py               #   Buck 설계 공식
-│   │   ├── boost.py              #   Boost 설계 공식
-│   │   ├── buck_boost.py         #   Buck-Boost 설계 공식
-│   │   └── layout.py             #   레이아웃 배치
-│   ├── parsers/                  # 입력 해석
-│   │   ├── intent_parser.py      #   자연어 의도 분석
-│   │   ├── keyword_map.py        #   키워드 매핑
-│   │   └── unit_parser.py        #   단위 파싱 (10uH → 10e-6)
-│   ├── validators/               # 회로 검증
-│   │   ├── structural.py         #   구조 검증
-│   │   ├── electrical.py         #   전기적 검증
-│   │   ├── parameter.py          #   파라미터 범위 검증
-│   │   └── models.py             #   검증 모델
-│   └── utils/                    # 유틸리티
-│       ├── logging.py            #   구조화 로깅 + SecurityAuditLogger
-│       ├── paths.py              #   경로 보안
-│       ├── sanitize.py           #   출력 sanitization
-│       ├── ascii_renderer.py     #   ASCII 회로 렌더러
-│       └── svg_renderer.py       #   SVG 회로 렌더러
-├── tests/
-│   ├── unit/                     # 288개 단위 테스트
-│   └── integration/              # Windows + PSIM 통합 테스트
-├── docs/
-├── main.py                       # psim_mcp.server.main() 위임
-├── pyproject.toml
-└── .env.example
-```
-
-**10개 패키지**: adapters, bridge, data, generators, models, parsers, services, tools, utils, validators
-
----
-
-## 환경 변수
+환경 변수 또는 `.env` 파일:
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `PSIM_MODE` | `mock` | 동작 모드 (`mock` / `real`) |
+| `PSIM_MODE` | `mock` | `mock` (개발) 또는 `real` (PSIM 연동) |
 | `PSIM_PATH` | — | PSIM 설치 경로 (real 모드 필수) |
-| `PSIM_PYTHON_EXE` | — | PSIM 번들 Python 3.8 경로 |
-| `PSIM_PROJECT_DIR` | — | PSIM 프로젝트 디렉터리 |
-| `PSIM_OUTPUT_DIR` | — | 결과 출력 디렉터리 |
-| `LOG_DIR` | `./logs` | 로그 저장 디렉터리 |
+| `PSIM_PYTHON_EXE` | — | PSIM Python 실행 파일 경로 |
+| `PSIM_PROJECT_DIR` | — | .psimsch 저장 디렉터리 |
+| `PSIM_OUTPUT_DIR` | — | 시뮬레이션 결과 디렉터리 |
 | `LOG_LEVEL` | `INFO` | 로그 레벨 |
 | `SIMULATION_TIMEOUT` | `300` | 시뮬레이션 타임아웃 (초) |
-| `MAX_SWEEP_STEPS` | `100` | 스윕 최대 단계 수 |
 | `PREVIEW_TTL` | `3600` | 미리보기 토큰 유효시간 (초) |
-| `ALLOWED_PROJECT_DIRS` | — | 허용 디렉터리 (쉼표 구분) |
-
-### Windows (real 모드) 설정 예시
-
-```env
-PSIM_MODE=real
-PSIM_PATH=C:\Altair\Altair_PSIM_2025
-PSIM_PYTHON_EXE=C:\Program Files\Altair\2025\common\python\python3.8\win64\python.exe
-PSIM_PROJECT_DIR=C:\work\psim-projects
-PSIM_OUTPUT_DIR=C:\work\psim-output
-```
+| `PSIM_SYNTHESIS_ENABLED_TOPOLOGIES` | (빈값=전체) | canonical pipeline 허용 topology (쉼표 구분) |
+| `PSIM_INTENT_PIPELINE_V2` | `true` | V2 intent pipeline 활성화 |
 
 ---
 
 ## 개발
 
-### App Factory 패턴
-
-```python
-from psim_mcp.server import create_app, create_service
-from psim_mcp.config import AppConfig
-
-# 독립 인스턴스로 테스트 — 전역 상태 없음
-config = AppConfig(psim_mode="mock")
-service = create_service(config)
-
-result = await service.get_status()
-assert result["success"] is True
-```
-
-### 새 Tool 추가
-
-```python
-# src/psim_mcp/tools/my_tool.py
-from psim_mcp.tools import tool_handler
-
-def register_tools(mcp, service=None):
-    @mcp.tool(description="새 도구 설명")
-    @tool_handler("my_new_tool")
-    async def my_new_tool(param: str) -> str:
-        svc = service or _get_service()
-        return await svc.some_method(param)
-        # 예외 처리, JSON 직렬화, sanitize, truncate는 데코레이터가 처리
-```
-
-### MCP Inspector (Claude Desktop 없이 테스트)
-
 ```bash
+# 테스트 (821개)
+uv run pytest tests/unit -q
+
+# 단일 파일
+uv run pytest tests/unit/test_circuit_design_service.py -v
+
+# 키워드 매칭
+uv run pytest tests/unit -k "test_buck" -v
+
+# 린트 + 포맷
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+
+# MCP Inspector (Claude Desktop 없이 디버그)
 uv run mcp dev src/psim_mcp/server.py
 ```
 
+### 새 topology 추가
+
+1. `generators/my_topology.py` — `TopologyGenerator` 구현 (`generate()` + `synthesize()`)
+2. `synthesis/topologies/my_topology.py` — `synthesize_my_topology()` → CircuitGraph (roles, blocks, nets)
+3. `data/topology_metadata.py` — 메타데이터 항목 추가 (required_fields, block_order, layout_family 등)
+4. `generators/__init__.py` — registry 등록
+
+**Layout과 routing은 자동 처리됩니다:**
+- `auto_placer.py`가 block/role 기반으로 배치 자동 생성
+- Role 이름 규칙만 따르면 placement/direction 분류 자동
+- 규칙: `layout_strategy_registry.py` 상단 주석 참조
+
+### Role 네이밍 규칙
+
+| 키워드 | placement | direction |
+|--------|-----------|-----------|
+| `ground`, `gnd` | ground (rail) | 0 |
+| `gate`, `drive`, `pwm`, `controller` | control (하단) | 0 |
+| `capacitor`, `cap` | shunt (전력 경로 아래) | 90 (수직) |
+| `switch`, `source`, `inductor`, `transformer`, `rectifier` | power_path (상단) | 0 (기본) |
+| `high_side`, `low_side` | power_path | 0 (수직 스위치) |
+| `load` | shunt | 90 |
+
+예외는 `_PLACEMENT_OVERRIDES` / `_DIRECTION_OVERRIDES`에 등록. 자세한 규칙은 `layout_strategy_registry.py` 참조.
+
 ---
 
-## 테스트
+## 설계 문서
 
-```bash
-# 전체 단위 테스트 (288개)
-uv run pytest tests/unit/ -v
+`docs/ver5/`에 전체 설계 문서가 있습니다:
 
-# 통합 테스트 (Windows + PSIM)
-PSIM_MODE=real uv run pytest tests/integration/ -v
-
-# 커버리지 리포트
-uv run pytest tests/unit/ --cov=psim_mcp --cov-report=html
-```
-
-### 테스트 구성
-
-| 카테고리 | 대상 |
-|----------|------|
-| validators | 입력 검증 함수 |
-| schemas | Pydantic 모델 |
-| path_security | 경로 보안 |
-| mock_adapter | MockAdapter |
-| simulation_service | Service Layer |
-| error_responses | 에러 응답 일관성 |
-| sanitize | 출력 sanitization |
-| security_validation | 보안 검증 |
-| security_audit | 감사 로깅 |
-| error_sanitization | 에러 정보 누출 방지 |
-| app_factory | 앱 팩토리 |
-| tool_wrapper | tool_handler 데코레이터 |
-| response_builder | ResponseBuilder |
-| tool_integration | Tool E2E 워크플로우 |
-| startup_validation | 설정 검증 |
-| circuit_spec | CircuitSpec 모델 |
-| circuit_validators | 회로 검증 (structural, electrical) |
-| generators | 자동 계산 Generator |
-| preview_store | Preview token 관리 |
-| unit_parser | 단위 파싱 |
-| parser_regression | 파서 회귀 테스트 |
+| 문서 | 내용 |
+|------|------|
+| `prd-and-architecture-*.md` | 최상위 PRD + 아키텍처 |
+| `phase-execution-plan.md` | Phase 1~5 실행 계획 |
+| `phase-1~5-*.md` | 각 Phase 상세 설계 |
+| `algorithmic-layout-plan.md` | 알고리즘 레이아웃 설계 + 업계 조사 |
+| `implementation-status.md` | 구현 현황 감사 |
+| `circuit-metadata-schema.md` | 메타데이터 스키마 |
+| `metadata-to-code-ownership-map.md` | 메타데이터 ownership |
 
 ---
 
 ## 보안
 
 - **경로 보안**: `Path.resolve()` + `is_relative_to()`로 path traversal 방지
-- **입력 검증**: Pydantic Field 제약 + 정규식 + 시뮬레이션 옵션 범위 검증
-- **출력 보안**: LLM 컨텍스트 sanitization, 50KB 응답 크기 제한, 에러 메시지 보호
-- **subprocess 보안**: `shell=False`, JSON stdin 전달, 환경 격리 (`_get_sanitized_env`)
-- **감사 로깅**: SecurityAuditLogger, 입력 SHA-256 해싱, 4개 로그 파일 분리
-
----
-
-## 기술 스택
-
-| 항목 | 기술 |
-|------|------|
-| 언어 | Python 3.12+ |
-| MCP | FastMCP (`mcp>=1.26`) |
-| 데이터 검증 | Pydantic v2 |
-| 설정 관리 | pydantic-settings + python-dotenv |
-| 테스트 | pytest + pytest-asyncio (288개) |
-| 린터 | ruff |
-| 패키지 관리 | uv |
-| 빌드 | hatchling |
+- **입력 검증**: Pydantic 제약 + 시뮬레이션 옵션 범위 검증
+- **출력 보안**: LLM 컨텍스트 sanitization, 50KB 응답 크기 제한
+- **subprocess 보안**: `shell=False`, JSON stdin 전달, 환경 격리
+- **감사 로깅**: SHA-256 입력 해싱, 4개 로그 파일 분리 (server, psim, security, tools)
+- **Bridge stdout 보호**: PSIM API stdout 오염 차단 (`_suppress_stdout`)
 
 ---
 
 ## 라이선스
 
-TBD
+MIT
