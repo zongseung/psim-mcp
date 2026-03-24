@@ -86,6 +86,33 @@ except ImportError:
     _INTENT_V2_AVAILABLE = False
 
 
+def _open_in_psim(file_path: str) -> None:
+    """Open a .psimsch file in PSIM GUI if available.
+
+    Non-blocking: launches PSIM as a detached subprocess.
+    Silently does nothing if PSIM is not installed or path is invalid.
+    """
+    import subprocess
+
+    psim_path = os.environ.get("PSIM_PATH", "")
+    if not psim_path:
+        return
+    psim_exe = os.path.join(psim_path, "PSIM.exe")
+    if not os.path.isfile(psim_exe):
+        return
+    if not file_path or not os.path.isfile(file_path):
+        return
+    try:
+        subprocess.Popen(
+            [psim_exe, file_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+        )
+    except Exception:
+        logger.debug("Failed to open PSIM GUI for %s", file_path, exc_info=True)
+
+
 def _try_synthesize_and_layout(
     circuit_type: str,
     specs: dict | None,
@@ -1085,6 +1112,8 @@ class CircuitDesignService:
                 except OSError:
                     pass
             self._store.delete(preview_token)
+            # Auto-open in PSIM GUI if available
+            _open_in_psim(save_path)
 
         return result
 
@@ -1161,6 +1190,10 @@ class CircuitDesignService:
             result["data"]["generation_mode"] = gen_mode
         elif isinstance(result, dict):
             result.setdefault("data", {})["generation_mode"] = gen_mode
+
+        # Auto-open in PSIM GUI if creation succeeded
+        if isinstance(result, dict) and result.get("success"):
+            _open_in_psim(save_path)
 
         return result
 
