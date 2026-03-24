@@ -7,6 +7,37 @@ policies for a topology without importing the actual strategy classes.
 
 from __future__ import annotations
 
+LAYOUT_DEFAULTS: dict[str, int] = {
+    "component_spacing": 80,
+    "vertical_spacing": 80,
+    "ground_rail_y_offset": 150,
+}
+
+
+PLACEMENT_ROWS: dict[str, dict[str, object]] = {
+    "power_path": {
+        "cursor": "power_x",
+        "y_offset": 0,
+    },
+    "shunt": {
+        "cursor": "shunt_x",
+        "y_offset_key": "vertical_spacing",
+    },
+    "control": {
+        "cursor": "control_x",
+        "y_offset_multiplier": 2,
+        "y_offset_key": "vertical_spacing",
+    },
+    "ground": {
+        "cursor": "ground_x",
+        "y_offset_key": "ground_rail_y_offset",
+    },
+    "misc": {
+        "cursor": "misc_x",
+        "y_offset": 0,
+    },
+}
+
 LAYOUT_STRATEGIES: dict[str, dict] = {
     # ---- DC-DC non-isolated (ground_rail family) ---------------------------
     "buck": {
@@ -373,6 +404,29 @@ def get_role_placement(role: str) -> str:
 def get_role_direction(role: str) -> int | None:
     """Return preferred direction for a component role, or None if unknown."""
     return ROLE_DIRECTION.get(role)
+
+
+def get_layout_defaults() -> dict[str, int]:
+    """Return default spacing/offset settings for algorithmic layout."""
+    return dict(LAYOUT_DEFAULTS)
+
+
+def get_placement_rows() -> dict[str, dict[str, object]]:
+    """Return declarative placement row definitions."""
+    return {name: dict(value) for name, value in PLACEMENT_ROWS.items()}
+
+
+def get_role_row(role: str) -> dict[str, object]:
+    """Return row configuration for a component role.
+
+    The row is derived from the role's placement category. Falls back to
+    the ``misc`` row when unknown.
+    """
+    category = get_role_placement(role)
+    row = PLACEMENT_ROWS.get(category)
+    if row is None:
+        row = PLACEMENT_ROWS["misc"]
+    return dict(row)
 
 
 def get_layout_strategy(topology: str) -> dict | None:

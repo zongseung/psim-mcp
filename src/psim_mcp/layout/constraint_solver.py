@@ -6,9 +6,11 @@ enforcement functions for rail alignment, region bounds, and flow ordering.
 Supported LayoutConstraint kinds:
 - ``align_to_rail`` — snap components matching rail roles to a fixed Y
 - ``inside_region`` — clamp component positions within region bounds
-- ``left_of`` — ensure region ordering along X axis
+- ``left_of`` — ensure subject_ids[0] is left of subject_ids[1]
+- ``right_of`` — ensure subject_ids[0] is right of subject_ids[1]
 - ``same_row`` — align a set of components to the same Y
 - ``same_column`` — align a set of components to the same X
+- ``symmetric_about`` — mirror a pair of components about an axis
 """
 
 from __future__ import annotations
@@ -52,11 +54,23 @@ def enforce_all(
                     components, constraint.subject_ids, regions,
                 )
 
+        elif kind == "right_of":
+            if len(constraint.subject_ids) >= 2:
+                # subject_ids[0] must be RIGHT of subject_ids[1]
+                enforce_flow_order(
+                    components,
+                    [constraint.subject_ids[1], constraint.subject_ids[0]],
+                    regions,
+                )
+
         elif kind == "same_row":
             _enforce_same_row(constraint.subject_ids, comp_map)
 
         elif kind == "same_column":
             _enforce_same_column(constraint.subject_ids, comp_map)
+
+        elif kind == "symmetric_about":
+            _enforce_symmetric(constraint.subject_ids, constraint.value, comp_map)
 
 
 def _enforce_same_row(
@@ -83,6 +97,61 @@ def _enforce_same_column(
     median_x = sorted(c.x for c in comps)[len(comps) // 2]
     for c in comps:
         c.x = median_x
+
+
+def _enforce_symmetric(
+    subject_ids: list[str],
+    value: object,
+    comp_map: dict[str, LayoutComponent],
+) -> None:
+    """Mirror a pair of components about an axis.
+
+    ``value`` should be a dict with ``"axis"`` ("x" or "y") and ``"center"``
+    (the axis coordinate).  The two subject components are placed equidistant
+    from the center on opposite sides.
+
+    Example constraint::
+
+        LayoutConstraint(
+            kind="symmetric_about",
+            subject_ids=["SW1", "SW2"],
+            value={"axis": "y", "center": 150},
+        )
+    """
+    if len(subject_ids) < 2:
+        return
+    a = comp_map.get(subject_ids[0])
+    b = comp_map.get(subject_ids[1])
+    if a is None or b is None:
+        return
+
+    info = value if isinstance(value, dict) else {}
+    axis = info.get("axis", "y")
+    center = info.get("center")
+
+    if center is None:
+        # Infer center from midpoint
+        if axis == "y":
+            center = (a.y + b.y) // 2
+        else:
+            center = (a.x + b.x) // 2
+
+    # Place symmetrically around center
+    if axis == "y":
+        half = abs(a.y - b.y) // 2 or 25
+        a.y = center - half
+        b.y = center + half
+        # Align X to match
+        mid_x = (a.x + b.x) // 2
+        a.x = mid_x
+        b.x = mid_x
+    else:
+        half = abs(a.x - b.x) // 2 or 25
+        a.x = center - half
+        b.x = center + half
+        mid_y = (a.y + b.y) // 2
+        a.y = mid_y
+        b.y = mid_y
 
 
 def enforce_rail_alignment(

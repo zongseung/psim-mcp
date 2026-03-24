@@ -9,9 +9,9 @@ from __future__ import annotations
 import pytest
 
 from psim_mcp.layout.auto_placer import auto_place
-from psim_mcp.layout.strategies.buck import BuckLayoutStrategy
-from psim_mcp.layout.strategies.flyback import FlybackLayoutStrategy
-from psim_mcp.layout.strategies.llc import LlcLayoutStrategy
+from psim_mcp.layout.strategies._reference.buck import BuckLayoutStrategy
+from psim_mcp.layout.strategies._reference.flyback import FlybackLayoutStrategy
+from psim_mcp.layout.strategies._reference.llc import LlcLayoutStrategy
 from psim_mcp.synthesis.topologies.buck import synthesize_buck
 from psim_mcp.synthesis.topologies.flyback import synthesize_flyback
 from psim_mcp.synthesis.topologies.llc import synthesize_llc

@@ -107,7 +107,8 @@
       "Bash(\"C:/Users/new92/AppData/Local/Programs/Python/Python39/python.exe\" src/psim_mcp/bridge/bridge_script.py)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:arxiv.org)",
-      "WebFetch(domain:jzus.zju.edu.cn)"
+      "WebFetch(domain:jzus.zju.edu.cn)",
+      "Bash(cd:*)"
     ]
   }
 }

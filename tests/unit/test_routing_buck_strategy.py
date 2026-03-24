@@ -1,6 +1,6 @@
 """Unit tests for BuckRoutingStrategy."""
 
-from psim_mcp.layout.strategies.buck import BuckLayoutStrategy
+from psim_mcp.layout.auto_placer import auto_place
 from psim_mcp.routing.engine import generate_routing
 from psim_mcp.routing.metrics import count_duplicates, routing_quality_report
 from psim_mcp.routing.strategies.buck import BuckRoutingStrategy
@@ -10,7 +10,7 @@ from psim_mcp.synthesis.topologies.buck import synthesize_buck
 def _make_buck_graph_and_layout():
     """Create a buck CircuitGraph and SchematicLayout for testing."""
     graph = synthesize_buck({"vin": 48, "vout_target": 12, "iout": 2})
-    layout = BuckLayoutStrategy().build_layout(graph)
+    layout = auto_place(graph)
     return graph, layout
 
 

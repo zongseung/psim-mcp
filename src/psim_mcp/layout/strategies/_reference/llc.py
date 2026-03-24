@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from psim_mcp.synthesis.graph import CircuitGraph
 
-from ..models import (
+from psim_mcp.layout.models import (
     LayoutComponent,
     LayoutConstraint,
     LayoutRegion,

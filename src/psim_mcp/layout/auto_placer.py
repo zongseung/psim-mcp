@@ -23,14 +23,11 @@ from psim_mcp.layout.common import PIN_SPACING
 
 # Grid and spacing constants
 GRID = PIN_SPACING  # 50px PSIM grid
-COMPONENT_SPACING = 80  # min horizontal spacing between components
-VERTICAL_SPACING = 80  # min vertical spacing for branch components
 MIN_REGION_WIDTH = 120
 REGION_GAP = 20
 REGION_HEIGHT = 200
 START_X = 80
 START_Y = 80
-GROUND_RAIL_Y_OFFSET = 150  # ground rail relative offset
 ISOLATION_GAP = 100  # extra gap for isolated topologies
 
 # ---------------------------------------------------------------------------
@@ -39,9 +36,10 @@ ISOLATION_GAP = 100  # extra gap for isolated topologies
 # ---------------------------------------------------------------------------
 from psim_mcp.data.layout_strategy_registry import (
     ROLE_PLACEMENT,
-    ROLE_DIRECTION,
-    get_role_placement,
+    get_layout_defaults,
+    get_placement_rows,
     get_role_direction,
+    get_role_row,
 )
 
 # Derived sets for fast membership checks (built from registry, not hardcoded)
@@ -82,12 +80,13 @@ def auto_place(
     """Generate SchematicLayout from CircuitGraph algorithmically."""
     prefs = preferences or {}
     strategy = _load_strategy(graph.topology)
+    layout_defaults = get_layout_defaults()
 
     # 1. Allocate regions from blocks
-    regions = _allocate_regions(graph.blocks, strategy)
+    regions = _allocate_regions(graph.blocks, strategy, layout_defaults)
 
     # 2. Place components in regions
-    components = _place_components(graph, regions, strategy)
+    components = _place_components(graph, regions, strategy, layout_defaults)
 
     # 2b. Force-directed fine-tuning (reduce wire length, prevent overlap)
     from psim_mcp.layout.force_directed import force_adjust
@@ -148,10 +147,12 @@ def _load_strategy(topology: str) -> dict:
 def _allocate_regions(
     blocks: list[FunctionalBlock],
     strategy: dict,
+    layout_defaults: dict[str, int],
 ) -> dict[str, LayoutRegion]:
     """Allocate rectangular regions for each block, left-to-right."""
     block_order = strategy.get("block_order", [b.id for b in blocks])
     is_isolated = strategy.get("primary_secondary_split", False)
+    component_spacing = int(strategy.get("component_spacing", layout_defaults["component_spacing"]))
 
     # Build a mapping of block_id -> block for quick lookup
     block_map = {b.id: b for b in blocks}
@@ -165,7 +166,7 @@ def _allocate_regions(
     for i, block_id in enumerate(block_order):
         block = block_map.get(block_id)
         component_count = len(block.component_ids) if block else 1
-        region_width = max(component_count * COMPONENT_SPACING, MIN_REGION_WIDTH)
+        region_width = max(component_count * component_spacing, MIN_REGION_WIDTH)
 
         # Derive region role from block
         if block is not None:
@@ -195,7 +196,7 @@ def _allocate_regions(
             role="main",
             x=START_X,
             y=START_Y,
-            width=max(total_components * COMPONENT_SPACING, MIN_REGION_WIDTH),
+            width=max(total_components * component_spacing, MIN_REGION_WIDTH),
             height=REGION_HEIGHT,
         )
 
@@ -236,6 +237,7 @@ def _place_components(
     graph: CircuitGraph,
     regions: dict[str, LayoutRegion],
     strategy: dict,
+    layout_defaults: dict[str, int],
 ) -> list[LayoutComponent]:
     """Place each component within its assigned region based on role."""
     # Map component_id -> block_id
@@ -249,15 +251,10 @@ def _place_components(
     components: list[LayoutComponent] = []
 
     # Track placement cursors per region for each row type
+    placement_rows = get_placement_rows()
     region_cursors: dict[str, dict[str, int]] = {}
     for rid in regions:
-        region_cursors[rid] = {
-            "power_x": 0,
-            "shunt_x": 0,
-            "control_x": 0,
-            "ground_x": 0,
-            "misc_x": 0,
-        }
+        region_cursors[rid] = {row["cursor"]: 0 for row in placement_rows.values()}
 
     # Misc region for unassigned components
     misc_region_id = _get_misc_region_id(regions)
@@ -275,7 +272,12 @@ def _place_components(
 
         direction = _get_direction_for_role(role, gc.type)
         x, y = _compute_position_in_region(
-            region, role, gc.type, region_cursors[region_id]
+            region,
+            role,
+            gc.type,
+            region_cursors[region_id],
+            strategy,
+            layout_defaults,
         )
 
         components.append(
@@ -322,6 +324,8 @@ def _compute_position_in_region(
     role: str,
     component_type: str,
     cursors: dict[str, int],
+    strategy: dict,
+    layout_defaults: dict[str, int],
 ) -> tuple[int, int]:
     """Compute (x, y) for a component within its region.
 
@@ -331,34 +335,18 @@ def _compute_position_in_region(
       - Control: lower section (y = region.y + 2*VERTICAL_SPACING)
       - Ground: at ground rail (y = region.y + GROUND_RAIL_Y_OFFSET)
     """
-    if role in GROUND_ROLES:
-        x = region.x + cursors["ground_x"]
-        y = region.y + GROUND_RAIL_Y_OFFSET
-        cursors["ground_x"] += COMPONENT_SPACING
-        return x, y
-
-    if role in POWER_PATH_ROLES:
-        x = region.x + cursors["power_x"]
-        y = region.y
-        cursors["power_x"] += COMPONENT_SPACING
-        return x, y
-
-    if role in SHUNT_ROLES:
-        x = region.x + cursors["shunt_x"]
-        y = region.y + VERTICAL_SPACING
-        cursors["shunt_x"] += COMPONENT_SPACING
-        return x, y
-
-    if role in CONTROL_ROLES:
-        x = region.x + cursors["control_x"]
-        y = region.y + 2 * VERTICAL_SPACING
-        cursors["control_x"] += COMPONENT_SPACING
-        return x, y
-
-    # Default: treat as power path
-    x = region.x + cursors["misc_x"]
-    y = region.y
-    cursors["misc_x"] += COMPONENT_SPACING
+    _ = component_type
+    component_spacing = int(strategy.get("component_spacing", layout_defaults["component_spacing"]))
+    role_row = get_role_row(role)
+    cursor_key = str(role_row.get("cursor", "misc_x"))
+    base_offset = int(role_row.get("y_offset", 0))
+    offset_key = role_row.get("y_offset_key")
+    if isinstance(offset_key, str):
+        base_offset = int(strategy.get(offset_key, layout_defaults.get(offset_key, base_offset)))
+    multiplier = int(role_row.get("y_offset_multiplier", 1))
+    y = region.y + base_offset * multiplier
+    x = region.x + cursors[cursor_key]
+    cursors[cursor_key] += component_spacing
     return x, y
 
 
@@ -388,7 +376,7 @@ def _build_constraints(
 
     # Rail alignment constraints from rail_policy
     rail_policy = strategy.get("rail_policy", {})
-    ground_rail_y = strategy.get("ground_rail_y", START_Y + GROUND_RAIL_Y_OFFSET)
+    ground_rail_y = strategy.get("ground_rail_y", START_Y + get_layout_defaults()["ground_rail_y_offset"])
 
     for rail_name, _rail_type in rail_policy.items():
         constraints.append(
@@ -409,22 +397,24 @@ def _enforce_constraints(
     strategy: dict,
     component_roles: dict[str, str] | None = None,
 ) -> None:
-    """Enforce placement constraints on components."""
+    """Enforce placement constraints via the general-purpose dispatcher.
+
+    All constraint enforcement goes through enforce_all() which dispatches
+    by constraint.kind. Additional structural constraints (region bounds,
+    flow order) are applied afterwards.
+    """
     from psim_mcp.layout.constraint_solver import (
-        enforce_rail_alignment,
+        enforce_all,
         enforce_region_bounds,
         enforce_flow_order,
     )
 
-    ground_rail_y = strategy.get("ground_rail_y", START_Y + GROUND_RAIL_Y_OFFSET)
+    # 1. General-purpose dispatch for all LayoutConstraint objects
+    enforce_all(components, constraints, regions, component_roles)
 
-    # Enforce ground rail alignment (with role info for exact matching)
-    enforce_rail_alignment(components, GROUND_ROLES, ground_rail_y, component_roles)
-
-    # Enforce region bounds
+    # 2. Structural enforcement (always applied regardless of constraints list)
     enforce_region_bounds(components, regions)
 
-    # Enforce flow ordering
     block_order = strategy.get("block_order", [])
     enforce_flow_order(components, block_order, regions)
 
