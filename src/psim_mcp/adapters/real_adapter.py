@@ -267,6 +267,44 @@ class RealPsimAdapter(BasePsimAdapter):
             },
         )
 
+    async def extract_signals(
+        self,
+        graph_file: str = "",
+        signals: list[str] | None = None,
+        skip_ratio: float = 0.0,
+        max_points: int = 2000,
+    ) -> dict:
+        """Extract waveform samples via the bridge."""
+        result = await self._call_bridge(
+            "extract_signals",
+            {
+                "graph_file": graph_file,
+                "signals": signals,
+                "skip_ratio": skip_ratio,
+                "max_points": max_points,
+            },
+        )
+        return result.get("data", result)
+
+    async def compute_metrics(
+        self,
+        metrics_spec: list[dict],
+        graph_file: str = "",
+        skip_ratio: float = 0.5,
+        time_step: float = 1e-6,
+    ) -> dict:
+        """Compute simulation metrics via the bridge."""
+        result = await self._call_bridge(
+            "compute_metrics",
+            {
+                "graph_file": graph_file,
+                "metrics": metrics_spec,
+                "skip_ratio": skip_ratio,
+                "time_step": time_step,
+            },
+        )
+        return result.get("data", result)
+
     async def get_status(self) -> dict:
         """Query PSIM status via the bridge."""
         return await self._call_bridge("get_status")

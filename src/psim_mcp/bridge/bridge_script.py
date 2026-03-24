@@ -1011,6 +1011,188 @@ def handle_create_circuit(params):
 
 
 # ---------------------------------------------------------------------------
+# Simulation metric extraction functions
+# ---------------------------------------------------------------------------
+
+def _steady_state_slice(values, skip_ratio=0.5):
+    """Skip transient startup, return steady-state portion."""
+    start = int(len(values) * skip_ratio)
+    return values[start:] if start < len(values) else values
+
+
+def _metric_mean(values, skip_ratio=0.5):
+    ss = _steady_state_slice(values, skip_ratio)
+    return sum(ss) / len(ss) if ss else 0.0
+
+
+def _metric_ripple_pp(values, skip_ratio=0.5):
+    ss = _steady_state_slice(values, skip_ratio)
+    return (max(ss) - min(ss)) if ss else 0.0
+
+
+def _metric_ripple_percent(values, skip_ratio=0.5):
+    ss = _steady_state_slice(values, skip_ratio)
+    if not ss:
+        return 0.0
+    avg = sum(ss) / len(ss)
+    return ((max(ss) - min(ss)) / abs(avg) * 100.0) if avg != 0 else 0.0
+
+
+def _metric_rms(values, skip_ratio=0.5):
+    ss = _steady_state_slice(values, skip_ratio)
+    return (sum(v * v for v in ss) / len(ss)) ** 0.5 if ss else 0.0
+
+
+def _metric_max_value(values, skip_ratio=0.5):
+    ss = _steady_state_slice(values, skip_ratio)
+    return max(ss) if ss else 0.0
+
+
+def _metric_min_value(values, skip_ratio=0.5):
+    ss = _steady_state_slice(values, skip_ratio)
+    return min(ss) if ss else 0.0
+
+
+def _metric_overshoot_percent(values, target, skip_ratio=0.0):
+    if not values or target == 0:
+        return 0.0
+    peak = max(values)
+    return max(0.0, (peak - target) / abs(target) * 100.0)
+
+
+def _metric_settling_time(values, time_step, target, band=0.02, skip_ratio=0.0):
+    if not values or target == 0:
+        return 0.0
+    threshold = abs(target * band)
+    for i in range(len(values) - 1, -1, -1):
+        if abs(values[i] - target) > threshold:
+            return (i + 1) * time_step
+    return 0.0
+
+
+_METRIC_FUNCTIONS = {
+    "mean": _metric_mean,
+    "ripple_pp": _metric_ripple_pp,
+    "ripple_percent": _metric_ripple_percent,
+    "rms": _metric_rms,
+    "max": _metric_max_value,
+    "min": _metric_min_value,
+    "overshoot_percent": _metric_overshoot_percent,
+    "settling_time": _metric_settling_time,
+}
+
+
+# ---------------------------------------------------------------------------
+# Signal extraction and metric computation handlers
+# ---------------------------------------------------------------------------
+
+def handle_extract_signals(params):
+    """Extract raw signal data from the last simulation or a graph file."""
+    graph_file = params.get("graph_file", "")
+    signal_names = params.get("signals")  # None = all
+    skip_ratio = float(params.get("skip_ratio", 0.0))
+    max_points = int(params.get("max_points", 2000))
+
+    p = _get_psim()
+
+    if not graph_file and _current_path:
+        base = os.path.splitext(_current_path)[0]
+        graph_file = base + "_result.smv"
+
+    if not graph_file or not os.path.isfile(graph_file):
+        return _error("NO_GRAPH_FILE", "결과 파일을 찾을 수 없습니다: %s" % graph_file)
+
+    with _suppress_stdout():
+        res = p.PsimReadGraphFile(graph_file)
+
+    if res.Result == 0:
+        return _error("READ_FAILED", "그래프 파일 읽기 실패")
+
+    output = {}
+    for curve in res.Graph:
+        if signal_names and curve.Name not in signal_names:
+            continue
+        values = list(curve.Values[:curve.Rows])
+        start = int(len(values) * skip_ratio)
+        values = values[start:]
+        if len(values) > max_points:
+            step = max(1, len(values) // max_points)
+            values = values[::step]
+        output[curve.Name] = [round(v, 9) for v in values]
+
+    return _success({
+        "signals": output,
+        "signal_names": list(output.keys()),
+        "point_count": len(next(iter(output.values()), [])),
+        "graph_file": graph_file,
+    })
+
+
+def handle_compute_metrics(params):
+    """Compute metrics from simulation results."""
+    graph_file = params.get("graph_file", "")
+    metrics_spec = params.get("metrics", [])
+    skip_ratio = float(params.get("skip_ratio", 0.5))
+    time_step = float(params.get("time_step", 1e-6))
+
+    p = _get_psim()
+
+    if not graph_file and _current_path:
+        base = os.path.splitext(_current_path)[0]
+        graph_file = base + "_result.smv"
+
+    if not graph_file or not os.path.isfile(graph_file):
+        return _error("NO_GRAPH_FILE", "결과 파일이 없습니다: %s" % graph_file)
+
+    with _suppress_stdout():
+        res = p.PsimReadGraphFile(graph_file)
+
+    if res.Result == 0:
+        return _error("READ_FAILED", "그래프 파일 읽기 실패")
+
+    signal_data = {}
+    for curve in res.Graph:
+        signal_data[curve.Name] = list(curve.Values[:curve.Rows])
+
+    results = {}
+    for spec in metrics_spec:
+        name = spec.get("name", "")
+        sig_name = spec.get("signal", "")
+        fn_name = spec.get("function", "")
+        kwargs = spec.get("kwargs", {})
+
+        if sig_name not in signal_data:
+            results[name] = {"error": "signal '%s' not found" % sig_name}
+            continue
+
+        fn = _METRIC_FUNCTIONS.get(fn_name)
+        if fn is None:
+            results[name] = {"error": "unknown function '%s'" % fn_name}
+            continue
+
+        values = signal_data[sig_name]
+        try:
+            if fn_name in ("overshoot_percent",):
+                target = float(kwargs.get("target", 0))
+                result = fn(values, target, skip_ratio)
+            elif fn_name in ("settling_time",):
+                target = float(kwargs.get("target", 0))
+                band = float(kwargs.get("band", 0.02))
+                result = fn(values, time_step, target, band, skip_ratio)
+            else:
+                result = fn(values, skip_ratio)
+            results[name] = round(result, 6)
+        except Exception as e:
+            results[name] = {"error": str(e)}
+
+    return _success({
+        "metrics": results,
+        "available_signals": list(signal_data.keys()),
+        "graph_file": graph_file,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Response Helpers
 # ---------------------------------------------------------------------------
 
@@ -1036,6 +1218,8 @@ _ACTION_HANDLERS = {
     "get_status": handle_get_status,
     "get_project_info": handle_get_project_info,
     "create_circuit": handle_create_circuit,
+    "extract_signals": handle_extract_signals,
+    "compute_metrics": handle_compute_metrics,
 }
 
 

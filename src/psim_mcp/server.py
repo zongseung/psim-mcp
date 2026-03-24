@@ -67,6 +67,7 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
         "parameter": parameter_svc,
         "simulation": simulation_svc,
         "circuit_design": circuit_design_svc,
+        "_adapter": adapter,
         # Legacy: combined service for backward compat
         "_legacy": simulation_svc,
     }
@@ -85,7 +86,7 @@ def create_service(config: AppConfig):
 
 def register_all_tools(mcp: FastMCP, services: dict) -> None:
     """Register every tool module on *mcp* using domain services."""
-    from psim_mcp.tools import circuit, design, parameter, project, results, simulation
+    from psim_mcp.tools import analysis, circuit, design, parameter, project, results, simulation
 
     # Use dedicated services for each tool module
     project.register_tools(mcp, services["project"])
@@ -94,6 +95,7 @@ def register_all_tools(mcp: FastMCP, services: dict) -> None:
     results.register_tools(mcp, services["_legacy"])
     circuit.register_tools(mcp, services["circuit_design"])
     design.register_tools(mcp, services["circuit_design"])
+    analysis.register_tools(mcp, services["simulation"], services["_adapter"])
 
 
 def create_app(config: AppConfig | None = None) -> FastMCP:
@@ -134,6 +136,7 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
 
     # Expose the legacy service so code that does ``mcp._psim_service`` still works.
     app._psim_service = services["_legacy"]  # type: ignore[attr-defined]
+    app._adapter = adapter  # type: ignore[attr-defined]
 
     register_all_tools(app, services)
     return app

@@ -76,6 +76,47 @@ class BasePsimAdapter(ABC):
         """
 
     @abstractmethod
+    async def extract_signals(
+        self,
+        graph_file: str = "",
+        signals: list[str] | None = None,
+        skip_ratio: float = 0.0,
+        max_points: int = 2000,
+    ) -> dict:
+        """Extract signal waveforms from the latest simulation result.
+
+        Args:
+            graph_file: Optional path to the simulation result file (``.smv``).
+            signals: Specific signal names to return; *None* means all.
+            skip_ratio: Fraction of the waveform to skip from the start.
+            max_points: Maximum number of samples per signal.
+
+        Returns:
+            Dict with ``signals``, ``signal_names``, and metadata.
+        """
+
+    @abstractmethod
+    async def compute_metrics(
+        self,
+        metrics_spec: list[dict],
+        graph_file: str = "",
+        skip_ratio: float = 0.5,
+        time_step: float = 1e-6,
+    ) -> dict:
+        """Compute simulation metrics from the latest simulation result.
+
+        Args:
+            metrics_spec: Metric definitions containing ``name``, ``signal``,
+                and ``function`` fields.
+            graph_file: Optional path to the simulation result file (``.smv``).
+            skip_ratio: Fraction of initial samples to ignore.
+            time_step: Simulation time step used for time-domain metrics.
+
+        Returns:
+            Dict with computed metric values and available signals.
+        """
+
+    @abstractmethod
     async def get_status(self) -> dict:
         """Return the current adapter / PSIM status."""
 

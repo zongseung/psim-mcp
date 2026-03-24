@@ -88,6 +88,37 @@ class TestExportResults:
             await mock_adapter.export_results("/tmp/output")
 
 
+class TestAnalysisHelpers:
+    async def test_extract_signals_returns_waveforms(self, mock_adapter: MockPsimAdapter):
+        await mock_adapter.open_project("/tmp/demo.psimsch")
+        await mock_adapter.run_simulation()
+
+        result = await mock_adapter.extract_signals(signals=["V(Vout)", "I(L1)"], max_points=200)
+
+        assert set(result["signal_names"]) == {"V(Vout)", "I(L1)"}
+        assert result["point_count"] > 0
+        assert "V(Vout)" in result["signals"]
+        assert len(result["signals"]["V(Vout)"]) <= 200
+
+    async def test_compute_metrics_returns_requested_metrics(self, mock_adapter: MockPsimAdapter):
+        await mock_adapter.open_project("/tmp/demo.psimsch")
+        await mock_adapter.run_simulation()
+
+        result = await mock_adapter.compute_metrics(
+            metrics_spec=[
+                {"name": "vout_mean", "signal": "V(Vout)", "function": "mean"},
+                {"name": "vout_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+                {"name": "il1_rms", "signal": "I(L1)", "function": "rms"},
+            ],
+        )
+
+        assert "vout_mean" in result["metrics"]
+        assert "vout_ripple_pct" in result["metrics"]
+        assert "il1_rms" in result["metrics"]
+        assert result["metrics"]["vout_mean"] > 0
+        assert "V(Vout)" in result["available_signals"]
+
+
 class TestGetStatus:
     async def test_returns_status_dict(self, mock_adapter: MockPsimAdapter):
         result = await mock_adapter.get_status()
