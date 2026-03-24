@@ -38,6 +38,17 @@ try:
 except Exception:  # pragma: no cover - bridge must still run in PSIM's isolated Python
     _shared_build_port_pin_map = None
 
+try:
+    from psim_mcp.data.bridge_mapping_registry import (
+        get_parameter_mapping as _registry_get_parameter_mapping,
+        get_port_pin_groups as _registry_get_port_pin_groups,
+        get_psim_element_type as _registry_get_psim_element_type,
+    )
+except Exception:  # pragma: no cover - bridge must still run in PSIM's isolated Python
+    _registry_get_parameter_mapping = None
+    _registry_get_port_pin_groups = None
+    _registry_get_psim_element_type = None
+
 
 # ---------------------------------------------------------------------------
 # 토폴로지별 기본 시뮬레이션 파라미터
@@ -128,7 +139,11 @@ def _build_port_pin_map(component):
     comp_id = component.get("id", "")
     comp_type = component.get("type", "")
     ports = component.get("ports", [])
-    groups = _FALLBACK_PORT_PIN_GROUPS.get(comp_type, ())
+    groups = (
+        _registry_get_port_pin_groups(comp_type)
+        if _registry_get_port_pin_groups is not None
+        else _FALLBACK_PORT_PIN_GROUPS.get(comp_type, ())
+    )
     if not comp_id or not ports or not groups:
         return {}
 
@@ -263,6 +278,29 @@ def _build_element_cache():
             _element_cache = {elem.Name: elem.Type for elem in elm_list}
     except Exception:
         pass  # 캐시 빌드 실패해도 치명적이지 않음
+
+
+class _suppress_stdout(object):
+    """PSIM API가 stdout으로 에러/상태 메시지를 print하는 것을 차단한다.
+
+    stdout은 JSON IPC 채널이므로 PSIM API의 print가 섞이면
+    MCP 서버 측 JSON 파싱이 깨진다. 모든 PSIM API 호출을 이 컨텍스트
+    매니저로 감싸야 한다.
+
+    사용법::
+
+        with _suppress_stdout():
+            p.PsimFileSave(sch, path)
+    """
+
+    def __enter__(self):
+        self._real = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+        return self
+
+    def __exit__(self, *_):
+        sys.stdout.close()
+        sys.stdout = self._real
 
 
 def _get_psim():
@@ -650,22 +688,23 @@ def _route_wire(p, sch, x1, y1, x2, y2):
     # Skip zero-length wires (pins at same location are already connected)
     if x1 == x2 and y1 == y2:
         return
-    if x1 == x2 or y1 == y2:
-        # Straight line
-        p.PsimCreateNewElement(
-            sch, "WIRE", "",
-            X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y2),
-        )
-    else:
-        # L-shaped: go horizontal first, then vertical
-        p.PsimCreateNewElement(
-            sch, "WIRE", "",
-            X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y1),
-        )
-        p.PsimCreateNewElement(
-            sch, "WIRE", "",
-            X1=str(x2), Y1=str(y1), X2=str(x2), Y2=str(y2),
-        )
+    with _suppress_stdout():
+        if x1 == x2 or y1 == y2:
+            # Straight line
+            p.PsimCreateNewElement(
+                sch, "WIRE", "",
+                X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y2),
+            )
+        else:
+            # L-shaped: go horizontal first, then vertical
+            p.PsimCreateNewElement(
+                sch, "WIRE", "",
+                X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y1),
+            )
+            p.PsimCreateNewElement(
+                sch, "WIRE", "",
+                X1=str(x2), Y1=str(y1), X2=str(x2), Y2=str(y2),
+            )
 
 
 def _handle_template_circuit(psim_template, save_path):
@@ -749,7 +788,10 @@ def handle_create_circuit(params):
 
     try:
         p = _get_psim()
-        sch = p.PsimFileNew()
+
+        with _suppress_stdout():
+            sch = p.PsimFileNew()
+
         if not sch:
             return _error("PSIM_API_ERROR", "새 스키매틱을 생성할 수 없습니다.")
 
@@ -761,12 +803,13 @@ def handle_create_circuit(params):
 
         # SIMCONTROL 위치를 컴포넌트 bounding box 바깥에 배치
         simcontrol_point = _calculate_simcontrol_position(components)
-        p.PsimCreateNewElement(
-            sch, "SIMCONTROL", "",
-            POINT=simcontrol_point,
-            TIMESTEP=str(ts),
-            TOTALTIME=str(tt),
-        )
+        with _suppress_stdout():
+            p.PsimCreateNewElement(
+                sch, "SIMCONTROL", "",
+                POINT=simcontrol_point,
+                TIMESTEP=str(ts),
+                TOTALTIME=str(tt),
+            )
 
         # 컴포넌트 배치
         element_map = {}
@@ -782,7 +825,11 @@ def handle_create_circuit(params):
             # Resolve the actual PSIM element type via the mapping table.
             # Priority: explicit psim_element_type > _PSIM_TYPE_MAP > raw type
             raw_psim_type = comp.get("psim_element_type") or comp_type
-            psim_type = _PSIM_TYPE_MAP.get(raw_psim_type, raw_psim_type)
+            psim_type = (
+                _registry_get_psim_element_type(raw_psim_type)
+                if _registry_get_psim_element_type is not None
+                else _PSIM_TYPE_MAP.get(raw_psim_type, raw_psim_type)
+            )
 
             try:
                 # ----------------------------------------------------------
@@ -816,14 +863,20 @@ def handle_create_circuit(params):
                     kwargs["SubType"] = "Ideal"
 
                 # Map and add parameters (내부 이름 → PSIM API 이름)
+                parameter_map = (
+                    _registry_get_parameter_mapping(comp_type)
+                    if _registry_get_parameter_mapping is not None
+                    else _PARAM_NAME_MAP
+                )
                 for param_name, param_value in comp_params.items():
-                    psim_name = _PARAM_NAME_MAP.get(param_name, param_name)
+                    psim_name = parameter_map.get(param_name, param_name)
                     if psim_name is not None:
                         kwargs[psim_name] = str(param_value)
 
-                elem = p.PsimCreateNewElement(
-                    sch, psim_type, comp_name, **kwargs
-                )
+                with _suppress_stdout():
+                    elem = p.PsimCreateNewElement(
+                        sch, psim_type, comp_name, **kwargs
+                    )
 
                 element_map[comp_id] = {
                     "elem": elem,
@@ -849,11 +902,12 @@ def handle_create_circuit(params):
             for seg in wire_segments:
                 try:
                     if all(k in seg for k in ("x1", "y1", "x2", "y2")):
-                        p.PsimCreateNewElement(
-                            sch, "WIRE", "",
-                            X1=str(int(seg["x1"])), Y1=str(int(seg["y1"])),
-                            X2=str(int(seg["x2"])), Y2=str(int(seg["y2"])),
-                        )
+                        with _suppress_stdout():
+                            p.PsimCreateNewElement(
+                                sch, "WIRE", "",
+                                X1=str(int(seg["x1"])), Y1=str(int(seg["y1"])),
+                                X2=str(int(seg["x2"])), Y2=str(int(seg["y2"])),
+                            )
                         connected += 1
                     else:
                         failed_connections.append({
@@ -918,7 +972,13 @@ def handle_create_circuit(params):
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
 
-        p.PsimFileSave(sch, save_path)
+        with _suppress_stdout():
+            p.PsimFileSave(sch, save_path)
+
+        # 저장 결과 검증
+        if not os.path.isfile(save_path):
+            return _error("SAVE_FAILED",
+                          "PSIM 파일 저장에 실패했습니다: %s" % save_path)
 
         _current_sch = sch
         _current_path = save_path

@@ -17,9 +17,20 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from psim_mcp.data.circuit_templates import TEMPLATES as _TEMPLATES, CATEGORIES as _CATEGORIES
+from psim_mcp.data.capability_matrix import is_supported as _capability_is_supported
 from psim_mcp.data.component_library import COMPONENTS as _COMPONENTS, CATEGORIES as _COMP_CATEGORIES
 from psim_mcp.data.component_library import resolve_psim_element_type
+from psim_mcp.data.layout_strategy_registry import get_layout_strategy as _get_layout_strategy
+from psim_mcp.data.routing_policy_registry import get_routing_policy as _get_routing_policy
 from psim_mcp.data.spec_mapping import apply_specs as _apply_specs
+from psim_mcp.data.topology_metadata import (
+    get_bridge_constraints as _get_bridge_constraints,
+    get_layout_family as _get_layout_family,
+    get_required_blocks as _get_required_blocks,
+    get_required_component_roles as _get_required_component_roles,
+    get_required_net_roles as _get_required_net_roles,
+    get_routing_family as _get_routing_family,
+)
 from psim_mcp.generators import get_generator
 from psim_mcp.generators.constraints import validate_design_constraints
 from psim_mcp.parsers import parse_circuit_intent
@@ -85,13 +96,18 @@ def _try_synthesize_and_layout(
         return None
     if not specs:
         return None
+    topology = circuit_type.lower()
+    if not _capability_is_supported(topology, "synthesize"):
+        return None
+    if not _capability_is_supported(topology, "graph"):
+        return None
     # Check per-stage feature flags when config is available
     if config:
         graph_enabled = [t.lower() for t in config.psim_graph_enabled_topologies]
-        if graph_enabled and circuit_type.lower() not in graph_enabled:
+        if graph_enabled and topology not in graph_enabled:
             return None
     try:
-        generator = get_generator(circuit_type.lower())
+        generator = get_generator(topology)
     except (KeyError, Exception):
         return None
 
@@ -111,29 +127,60 @@ def _try_synthesize_and_layout(
             return None
     except Exception:
         return None
+    graph_component_roles = {component.role for component in graph.components if component.role}
+    graph_net_roles = {net.role for net in graph.nets if net.role}
+    graph_block_ids = {block.id for block in graph.blocks}
+    required_component_roles = set(_get_required_component_roles(topology))
+    required_net_roles = set(_get_required_net_roles(topology))
+    required_blocks = set(_get_required_blocks(topology))
+    if required_component_roles and not required_component_roles.issubset(graph_component_roles):
+        return None
+    if required_net_roles and not required_net_roles.issubset(graph_net_roles):
+        return None
+    if required_blocks and not required_blocks.issubset(graph_block_ids):
+        return None
 
     # Check layout feature flag
+    if not _capability_is_supported(topology, "layout"):
+        return None
     if config:
         layout_enabled = [t.lower() for t in config.psim_layout_engine_enabled_topologies]
-        if layout_enabled and circuit_type.lower() not in layout_enabled:
+        if layout_enabled and topology not in layout_enabled:
             return None
 
+    layout_preferences = dict(_get_layout_strategy(topology) or {})
+    layout_family = _get_layout_family(topology)
+    if layout_family:
+        layout_preferences.setdefault("layout_family", layout_family)
+    if required_blocks:
+        layout_preferences.setdefault("required_blocks", sorted(required_blocks))
     try:
-        layout = generate_layout(graph)
+        layout = generate_layout(graph, preferences=layout_preferences or None)
     except (NotImplementedError, Exception):
         return None
 
     wire_routing = None
     # Check routing feature flag
-    routing_blocked = False
+    routing_blocked = not _capability_is_supported(topology, "routing")
     if config:
         routing_enabled = [t.lower() for t in config.psim_routing_enabled_topologies]
-        if routing_enabled and circuit_type.lower() not in routing_enabled:
+        if routing_enabled and topology not in routing_enabled:
             routing_blocked = True
 
     if not routing_blocked:
         try:
-            wire_routing = generate_routing(graph, layout)
+            from psim_mcp.routing.models import RoutingPreference
+
+            routing_policy = dict(_get_routing_policy(topology) or {})
+            routing_family = _get_routing_family(topology)
+            routing_preferences = RoutingPreference(
+                use_ground_rail=routing_policy.get("ground_policy") in {"bottom_rail", "dual_rail"},
+                minimize_crossings=routing_policy.get("crossing_policy") == "minimize",
+                ground_rail_y=layout_preferences.get("ground_rail_y"),
+            )
+            wire_routing = generate_routing(graph, layout, routing_preferences)
+            wire_routing.metadata.setdefault("routing_family", routing_family)
+            wire_routing.metadata.setdefault("routing_policy", routing_policy)
         except Exception:
             pass  # routing failure is non-fatal
 
@@ -143,6 +190,11 @@ def _try_synthesize_and_layout(
         return None
 
     wire_segments = wire_routing.to_legacy_segments() if wire_routing else []
+    graph.metadata.setdefault("layout_family", layout_family)
+    graph.metadata.setdefault("routing_family", _get_routing_family(topology))
+    graph.metadata.setdefault("bridge_constraints", _get_bridge_constraints(topology))
+    layout.metadata.setdefault("layout_family", layout_family)
+    layout.metadata.setdefault("layout_strategy", layout_preferences)
 
     return {
         "graph": graph,
@@ -450,8 +502,14 @@ class CircuitDesignService:
     def _is_intent_v2_enabled(self) -> bool:
         return _INTENT_V2_AVAILABLE and bool(self._config.psim_intent_pipeline_v2)
 
-    def _is_synthesis_enabled_for_topology(self, topology: str) -> bool:
+    def _is_synthesis_enabled_for_topology(
+        self,
+        topology: str,
+        stage: str = "synthesize",
+    ) -> bool:
         if not _SYNTHESIS_PIPELINE_AVAILABLE:
+            return False
+        if not _capability_is_supported(topology, stage):
             return False
         enabled = [item.lower() for item in self._config.psim_synthesis_enabled_topologies]
         if not enabled or "*" in enabled or "all" in enabled:
@@ -462,8 +520,9 @@ class CircuitDesignService:
         self,
         topology: str,
         specs: dict | None,
+        stage: str = "synthesize",
     ) -> dict | None:
-        if not self._is_synthesis_enabled_for_topology(topology):
+        if not self._is_synthesis_enabled_for_topology(topology, stage=stage):
             return None
         return _try_synthesize_and_layout(topology, specs, config=self._config)
 
@@ -789,7 +848,7 @@ class CircuitDesignService:
         # Phase 2-4: Try full synthesis pipeline first
         synth_result = None
         if not components and specs:
-            synth_result = self._try_synthesis_for_topology(circuit_type, specs)
+            synth_result = self._try_synthesis_for_topology(circuit_type, specs, stage="preview_generator")
 
         # Try generator first
         gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
@@ -1033,7 +1092,7 @@ class CircuitDesignService:
 
         synth_result = None
         if not components and specs:
-            synth_result = self._try_synthesis_for_topology(circuit_type, specs)
+            synth_result = self._try_synthesis_for_topology(circuit_type, specs, stage="create_direct")
 
         if synth_result is not None:
             components = synth_result["components"]
@@ -1156,7 +1215,7 @@ class CircuitDesignService:
         self, topology: str, specs: dict, intent: dict,
     ) -> dict:
         """High-confidence auto-generation with fallback."""
-        synth_result = self._try_synthesis_for_topology(topology, specs)
+        synth_result = self._try_synthesis_for_topology(topology, specs, stage="design_circuit")
         if synth_result is not None:
             return self._validate_and_render(
                 topology=topology,

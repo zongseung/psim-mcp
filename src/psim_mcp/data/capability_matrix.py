@@ -413,5 +413,10 @@ def get_supported_topologies(feature: str) -> list[str]:
 
 
 def is_supported(topology: str, feature: str) -> bool:
-    """Return True if *topology* has 'new' status for *feature*."""
-    return get_capability(topology, feature) == "new"
+    """Return True if *topology* supports *feature* ('new' or 'legacy').
+
+    Only 'none' means unsupported. Both 'new' (canonical pipeline) and
+    'legacy' (generator-based) are valid execution paths.
+    """
+    status = get_capability(topology, feature)
+    return status in ("new", "legacy")
