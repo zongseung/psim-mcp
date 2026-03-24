@@ -110,6 +110,12 @@ class AppConfig(BaseSettings):
             "PSIM_OUTPUT_DIR": r"C:\Users\user\psim-output",
         }
 
+        # Attempt to infer PSIM_PYTHON_EXE from PSIM_PATH if not set
+        if self.psim_python_exe is None and self.psim_path is not None:
+            candidate = self.psim_path / "python38" / "python.exe"
+            if candidate.is_file():
+                self.psim_python_exe = candidate
+
         missing: list[str] = []
         if self.psim_path is None:
             missing.append("PSIM_PATH")

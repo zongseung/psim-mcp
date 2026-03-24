@@ -93,8 +93,10 @@ def test_create_service_returns_simulation_service():
 # ------------------------------------------------------------------
 
 
-def test_create_app_real_mode_missing_fields_raises():
+def test_create_app_real_mode_missing_fields_raises(monkeypatch):
     """create_app with psim_mode='real' but missing paths must raise ValueError."""
-    cfg = AppConfig(psim_mode="real")
+    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_PROJECT_DIR", "PSIM_OUTPUT_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = AppConfig(psim_mode="real", _env_file=None)
     with pytest.raises(ValueError, match="PSIM_MODE=real"):
         create_app(cfg)

@@ -162,9 +162,11 @@ async def test_export_no_output_dir_no_config(tmp_path: Path):
 # ------------------------------------------------------------------
 
 
-def test_real_mode_startup_fails_without_config():
+def test_real_mode_startup_fails_without_config(monkeypatch):
     """create_app with real mode but missing paths must raise ValueError."""
-    cfg = AppConfig(psim_mode="real")
+    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_PROJECT_DIR", "PSIM_OUTPUT_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = AppConfig(psim_mode="real", _env_file=None)
     with pytest.raises(ValueError, match="PSIM_MODE=real"):
         create_app(cfg)
 

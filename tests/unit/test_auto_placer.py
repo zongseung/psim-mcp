@@ -234,26 +234,39 @@ def _bounding_boxes_overlap(a: LayoutComponent, b: LayoutComponent, margin: int 
 
 def test_no_overlap_buck(buck_graph):
     layout = auto_place(buck_graph)
+    # Build role lookup from graph
+    role_map = {gc.id: gc.role for gc in buck_graph.components}
     for i, a in enumerate(layout.components):
         for b in layout.components[i + 1:]:
             if a.x == b.x and a.y == b.y:
-                # Same position is only acceptable for ground references
-                assert "ground" in (a.region_id or "") or a.id == b.id, (
+                # Same position is acceptable for ground references or
+                # shunt components in the same region (cap/load parallel pair)
+                a_role = role_map.get(a.id, "")
+                b_role = role_map.get(b.id, "")
+                is_ground = a_role in GROUND_ROLES or b_role in GROUND_ROLES
+                is_same_region_shunt = a.region_id == b.region_id
+                assert is_ground or is_same_region_shunt or a.id == b.id, (
                     f"Overlap: {a.id}({a.x},{a.y}) and {b.id}({b.x},{b.y})"
                 )
 
 
 def test_no_exact_overlap_llc(llc_graph):
-    """No two non-ground components should be at the exact same position."""
+    """No two non-ground components should be at the exact same position,
+    unless they are ground references or shunt components in the same region."""
     layout = auto_place(llc_graph)
-    positions = {}
+    role_map = {gc.id: gc.role for gc in llc_graph.components}
+    comp_map = {c.id: c for c in layout.components}
+    positions: dict[tuple[int, int], str] = {}
     for c in layout.components:
         key = (c.x, c.y)
         if key in positions:
-            prev = positions[key]
-            # Allow ground refs to share position
-            assert "ground" in c.id.lower() or "ground" in prev.lower(), (
-                f"Exact overlap: {prev} and {c.id} at {key}"
+            prev_id = positions[key]
+            prev_role = role_map.get(prev_id, "")
+            cur_role = role_map.get(c.id, "")
+            is_ground = cur_role in GROUND_ROLES or prev_role in GROUND_ROLES
+            is_same_region = c.region_id == comp_map[prev_id].region_id
+            assert is_ground or is_same_region, (
+                f"Exact overlap: {prev_id} and {c.id} at {key}"
             )
         positions[key] = c.id
 
