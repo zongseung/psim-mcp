@@ -9,7 +9,7 @@ from psim_mcp.synthesis.graph import CircuitGraph
 
 from .anchors import resolve_pin_positions
 from .models import RoutedSegment, RoutingPreference, WireRouting
-from .trunk_branch import route_net_trunk_branch
+from .trunk_branch import minimize_crossings, route_net_trunk_branch
 
 
 class RoutingStrategy(Protocol):
@@ -53,9 +53,10 @@ def _generic_route(
     This wraps the existing routing logic pattern: resolve pin positions,
     then route each net independently using trunk-and-branch strategy.
     """
+    prefs = preferences or RoutingPreference()
     pin_pos = resolve_pin_positions(graph, layout)
 
-    all_segments: list[RoutedSegment] = []
+    per_net_segments: list[list[RoutedSegment]] = []
     all_junctions = []
     seg_counter = 1
 
@@ -67,9 +68,17 @@ def _generic_route(
         segs, juncs = route_net_trunk_branch(
             net.id, pins, net.role, seg_counter,
         )
-        all_segments.extend(segs)
+        per_net_segments.append(segs)
         all_junctions.extend(juncs)
         seg_counter += len(segs) + 1
+
+    # Post-processing: crossing minimization
+    if prefs.minimize_crossings:
+        per_net_segments = minimize_crossings(per_net_segments)
+
+    all_segments: list[RoutedSegment] = []
+    for segs in per_net_segments:
+        all_segments.extend(segs)
 
     return WireRouting(
         topology=graph.topology,

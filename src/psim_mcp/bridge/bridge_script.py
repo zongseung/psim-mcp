@@ -736,7 +736,6 @@ def handle_create_circuit(params):
 
     components = params.get("components", [])
     wire_segments = params.get("wire_segments", [])
-    connections = wire_segments or params.get("connections", [])
     save_path = params.get("save_path")
     simulation_settings = params.get("simulation_settings") or {}
 
@@ -840,51 +839,78 @@ def handle_create_circuit(params):
                     "reason": str(e),
                 })
 
-        # Build pin position map for accurate wire routing
-        pin_map = _resolve_pin_positions(components)
-
         # 와이어(연결선) 생성
         connected = 0
         failed_connections = []
-        for conn in connections:
-            try:
-                # 연결 방식 1: 좌표 기반 (직접 좌표 지정)
-                if "x1" in conn and "y1" in conn:
-                    _route_wire(
-                        p, sch,
-                        int(conn["x1"]), int(conn["y1"]),
-                        int(conn["x2"]), int(conn["y2"]),
-                    )
-                    connected += 1
-                    continue
 
-                # 연결 방식 2: from/to 핀 이름 기반 → pin_map에서 좌표 조회
-                from_pin = conn.get("from", "")
-                to_pin = conn.get("to", "")
-
-                from_pos = pin_map.get(from_pin)
-                to_pos = pin_map.get(to_pin)
-
-                if from_pos and to_pos:
-                    _route_wire(p, sch, from_pos[0], from_pos[1], to_pos[0], to_pos[1])
-                    connected += 1
-                else:
-                    missing = []
-                    if not from_pos:
-                        missing.append("from='%s'" % from_pin)
-                    if not to_pos:
-                        missing.append("to='%s'" % to_pin)
+        # Phase 4: wire_segments have explicit coordinates from routing engine.
+        # When available, use them directly as straight segments (no L-shape re-routing).
+        if wire_segments:
+            for seg in wire_segments:
+                try:
+                    if all(k in seg for k in ("x1", "y1", "x2", "y2")):
+                        p.PsimCreateNewElement(
+                            sch, "WIRE", "",
+                            X1=str(int(seg["x1"])), Y1=str(int(seg["y1"])),
+                            X2=str(int(seg["x2"])), Y2=str(int(seg["y2"])),
+                        )
+                        connected += 1
+                    else:
+                        failed_connections.append({
+                            "segment": seg,
+                            "reason": "missing x1/y1/x2/y2 keys",
+                        })
+                except Exception as e:
                     failed_connections.append({
-                        "from": from_pin,
-                        "to": to_pin,
-                        "reason": "pin position not found: %s" % ", ".join(missing),
+                        "segment": seg,
+                        "reason": str(e),
                     })
+        else:
+            # Fallback: resolve pin positions and route via from/to or coordinate pairs.
+            # PHASE 4 NOTE: This branch is fallback for when wire_segments are not
+            # provided. When wire_segments are available (from routing engine), the
+            # above branch handles wiring directly without _resolve_pin_positions.
+            connections = params.get("connections", [])
+            pin_map = _resolve_pin_positions(components)
+            for conn in connections:
+                try:
+                    # 연결 방식 1: 좌표 기반 (직접 좌표 지정)
+                    if "x1" in conn and "y1" in conn:
+                        _route_wire(
+                            p, sch,
+                            int(conn["x1"]), int(conn["y1"]),
+                            int(conn["x2"]), int(conn["y2"]),
+                        )
+                        connected += 1
+                        continue
 
-            except Exception as e:
-                failed_connections.append({
-                    "connection": conn,
-                    "reason": str(e),
-                })
+                    # 연결 방식 2: from/to 핀 이름 기반 -> pin_map에서 좌표 조회
+                    from_pin = conn.get("from", "")
+                    to_pin = conn.get("to", "")
+
+                    from_pos = pin_map.get(from_pin)
+                    to_pos = pin_map.get(to_pin)
+
+                    if from_pos and to_pos:
+                        _route_wire(p, sch, from_pos[0], from_pos[1], to_pos[0], to_pos[1])
+                        connected += 1
+                    else:
+                        missing_pins = []
+                        if not from_pos:
+                            missing_pins.append("from='%s'" % from_pin)
+                        if not to_pos:
+                            missing_pins.append("to='%s'" % to_pin)
+                        failed_connections.append({
+                            "from": from_pin,
+                            "to": to_pin,
+                            "reason": "pin position not found: %s" % ", ".join(missing_pins),
+                        })
+
+                except Exception as e:
+                    failed_connections.append({
+                        "connection": conn,
+                        "reason": str(e),
+                    })
 
         # 파일 저장
         # 저장 디렉토리가 없으면 생성
@@ -897,12 +923,13 @@ def handle_create_circuit(params):
         _current_sch = sch
         _current_path = save_path
 
+        total_requested_conns = len(wire_segments) if wire_segments else len(params.get("connections", []))
         result = {
             "file_path": save_path,
             "component_count": len(element_map),
             "total_requested": len(components),
             "connection_count": connected,
-            "total_connections_requested": len(connections),
+            "total_connections_requested": total_requested_conns,
             "status": "created",
         }
 

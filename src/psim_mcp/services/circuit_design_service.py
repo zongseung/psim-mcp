@@ -78,12 +78,18 @@ except ImportError:
 def _try_synthesize_and_layout(
     circuit_type: str,
     specs: dict | None,
+    config: AppConfig | None = None,
 ) -> dict | None:
     """Graph -> layout -> routing -> legacy materialization. Returns None on failure."""
     if not _SYNTHESIS_PIPELINE_AVAILABLE:
         return None
     if not specs:
         return None
+    # Check per-stage feature flags when config is available
+    if config:
+        graph_enabled = [t.lower() for t in config.psim_graph_enabled_topologies]
+        if graph_enabled and circuit_type.lower() not in graph_enabled:
+            return None
     try:
         generator = get_generator(circuit_type.lower())
     except (KeyError, Exception):
@@ -106,16 +112,30 @@ def _try_synthesize_and_layout(
     except Exception:
         return None
 
+    # Check layout feature flag
+    if config:
+        layout_enabled = [t.lower() for t in config.psim_layout_engine_enabled_topologies]
+        if layout_enabled and circuit_type.lower() not in layout_enabled:
+            return None
+
     try:
         layout = generate_layout(graph)
     except (NotImplementedError, Exception):
         return None
 
     wire_routing = None
-    try:
-        wire_routing = generate_routing(graph, layout)
-    except Exception:
-        pass  # routing failure is non-fatal
+    # Check routing feature flag
+    routing_blocked = False
+    if config:
+        routing_enabled = [t.lower() for t in config.psim_routing_enabled_topologies]
+        if routing_enabled and circuit_type.lower() not in routing_enabled:
+            routing_blocked = True
+
+    if not routing_blocked:
+        try:
+            wire_routing = generate_routing(graph, layout)
+        except Exception:
+            pass  # routing failure is non-fatal
 
     try:
         legacy_components, legacy_nets = materialize_to_legacy(graph, layout)
@@ -445,7 +465,7 @@ class CircuitDesignService:
     ) -> dict | None:
         if not self._is_synthesis_enabled_for_topology(topology):
             return None
-        return _try_synthesize_and_layout(topology, specs)
+        return _try_synthesize_and_layout(topology, specs, config=self._config)
 
     # ------------------------------------------------------------------
     # NLP → Design

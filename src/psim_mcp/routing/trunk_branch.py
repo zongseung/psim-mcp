@@ -11,9 +11,13 @@ For 2-pin nets: direct L-shaped orthogonal routing.
 
 from __future__ import annotations
 
+import copy
 from statistics import median
 
 from .models import JunctionPoint, RoutedSegment
+
+# Spacing constant used when shifting trunks to minimize crossings.
+PIN_SPACING = 10
 
 # Maps net roles to preferred trunk axis.
 # "horizontal" means the trunk runs left-right (branches go up/down).
@@ -229,3 +233,140 @@ def route_net_trunk_branch(
 
     # Default: horizontal trunk
     return _route_horizontal_trunk(net_id, unique_positions, segment_id_start)
+
+
+# ---------------------------------------------------------------------------
+# Crossing minimization helpers
+# ---------------------------------------------------------------------------
+
+def _count_inter_net_crossings(all_net_segments: list[list[RoutedSegment]]) -> int:
+    """Count crossings between segments from different nets."""
+    flat: list[RoutedSegment] = []
+    for net_segs in all_net_segments:
+        flat.extend(net_segs)
+
+    crossings = 0
+    for i in range(len(flat)):
+        for j in range(i + 1, len(flat)):
+            si, sj = flat[i], flat[j]
+            if si.net_id == sj.net_id:
+                continue
+            if _orthogonal_cross(si, sj):
+                crossings += 1
+    return crossings
+
+
+def _orthogonal_cross(a: RoutedSegment, b: RoutedSegment) -> bool:
+    """Check if two orthogonal segments cross (not share endpoints)."""
+    ax1, ay1, ax2, ay2 = a.x1, a.y1, a.x2, a.y2
+    bx1, by1, bx2, by2 = b.x1, b.y1, b.x2, b.y2
+
+    if ax1 > ax2:
+        ax1, ax2 = ax2, ax1
+    if ay1 > ay2:
+        ay1, ay2 = ay2, ay1
+    if bx1 > bx2:
+        bx1, bx2 = bx2, bx1
+    if by1 > by2:
+        by1, by2 = by2, by1
+
+    a_horiz = ay1 == ay2 and ax1 != ax2
+    a_vert = ax1 == ax2 and ay1 != ay2
+    b_horiz = by1 == by2 and bx1 != bx2
+    b_vert = bx1 == bx2 and by1 != by2
+
+    if a_horiz and b_vert:
+        if ax1 < bx1 < ax2 and by1 < ay1 < by2:
+            return True
+    elif a_vert and b_horiz:
+        if bx1 < ax1 < bx2 and ay1 < by1 < ay2:
+            return True
+    return False
+
+
+def _shift_trunk(
+    segments: list[RoutedSegment],
+    delta: int,
+) -> list[RoutedSegment]:
+    """Shift trunk position by *delta* in the perpendicular direction.
+
+    For horizontal trunks (y1 == y2) shift Y.
+    For vertical trunks (x1 == x2) shift X.
+    Branch endpoints touching the trunk are also adjusted.
+    """
+    shifted: list[RoutedSegment] = []
+    # Identify trunk Y/X
+    trunk_segs = [s for s in segments if s.role == "trunk"]
+    if not trunk_segs:
+        return list(segments)
+
+    ts = trunk_segs[0]
+    is_horiz = ts.y1 == ts.y2
+
+    for seg in segments:
+        s = copy.copy(seg)
+        s.metadata = dict(seg.metadata) if seg.metadata else {}
+        if s.role == "trunk":
+            if is_horiz:
+                s.y1 += delta
+                s.y2 += delta
+            else:
+                s.x1 += delta
+                s.x2 += delta
+        elif s.role == "branch":
+            if is_horiz:
+                # Branch connects pin to trunk_y -- adjust the end that was on trunk
+                if s.y2 == ts.y1:
+                    s.y2 += delta
+                elif s.y1 == ts.y1:
+                    s.y1 += delta
+            else:
+                if s.x2 == ts.x1:
+                    s.x2 += delta
+                elif s.x1 == ts.x1:
+                    s.x1 += delta
+        shifted.append(s)
+    return shifted
+
+
+def minimize_crossings(
+    all_net_segments: list[list[RoutedSegment]],
+) -> list[list[RoutedSegment]]:
+    """Reorder trunk positions to minimize inter-net crossings.
+
+    Simple heuristic: for each net with a trunk, try shifting trunk Y (or X)
+    by +/- PIN_SPACING. Keep the variant with fewer total crossings.
+    """
+    if len(all_net_segments) <= 1:
+        return all_net_segments
+
+    best = [list(segs) for segs in all_net_segments]
+    best_crossings = _count_inter_net_crossings(best)
+
+    if best_crossings == 0:
+        return best
+
+    # Try shifting each net's trunk and see if it reduces crossings
+    improved = True
+    max_iterations = 3
+    iteration = 0
+    while improved and iteration < max_iterations:
+        improved = False
+        iteration += 1
+        for idx in range(len(best)):
+            trunk_segs = [s for s in best[idx] if s.role == "trunk"]
+            if not trunk_segs:
+                continue
+
+            for delta in (PIN_SPACING, -PIN_SPACING):
+                candidate = list(best)
+                candidate[idx] = _shift_trunk(best[idx], delta)
+                c = _count_inter_net_crossings(candidate)
+                if c < best_crossings:
+                    best = candidate
+                    best_crossings = c
+                    improved = True
+                    if best_crossings == 0:
+                        return best
+
+    return best

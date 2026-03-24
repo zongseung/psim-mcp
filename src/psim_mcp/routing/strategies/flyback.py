@@ -5,7 +5,7 @@ from __future__ import annotations
 from psim_mcp.layout.models import SchematicLayout
 from psim_mcp.routing.anchors import resolve_pin_positions
 from psim_mcp.routing.models import RoutedSegment, RoutingPreference, WireRouting
-from psim_mcp.routing.trunk_branch import route_net_trunk_branch
+from psim_mcp.routing.trunk_branch import minimize_crossings, route_net_trunk_branch
 from psim_mcp.synthesis.graph import CircuitGraph
 
 _NET_LAYERS: dict[str, str] = {
@@ -32,9 +32,10 @@ class FlybackRoutingStrategy:
         layout: SchematicLayout,
         preferences: RoutingPreference | None = None,
     ) -> WireRouting:
+        prefs = preferences or RoutingPreference()
         pin_pos = resolve_pin_positions(graph, layout)
 
-        all_segments: list[RoutedSegment] = []
+        per_net_segments: list[list[RoutedSegment]] = []
         all_junctions = []
         seg_counter = 1
 
@@ -51,9 +52,16 @@ class FlybackRoutingStrategy:
             for seg in segs:
                 seg.layer = layer
 
-            all_segments.extend(segs)
+            per_net_segments.append(segs)
             all_junctions.extend(juncs)
             seg_counter += len(segs) + 1
+
+        if prefs.minimize_crossings:
+            per_net_segments = minimize_crossings(per_net_segments)
+
+        all_segments: list[RoutedSegment] = []
+        for segs in per_net_segments:
+            all_segments.extend(segs)
 
         return WireRouting(
             topology="flyback",
