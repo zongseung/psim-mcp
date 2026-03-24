@@ -145,6 +145,49 @@ PARAMETER_NAME_MAP: dict[str, dict[str, str]] = {
 }
 
 
+PORT_PIN_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "MOSFET": (("drain", "collector"), ("source", "emitter"), ("gate",)),
+    "IGBT": (("collector", "drain"), ("emitter", "source"), ("gate",)),
+    "Diode": (("anode",), ("cathode",)),
+    "DIODE": (("anode",), ("cathode",)),
+    "Schottky_Diode": (("anode",), ("cathode",)),
+    "Zener_Diode": (("anode",), ("cathode",)),
+    "DC_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "AC_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "Battery": (("positive", "pin1"), ("negative", "pin2")),
+    "DC_Current_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "AC_Current_Source": (("positive", "pin1"), ("negative", "pin2")),
+    "Inductor": (("pin1", "input"), ("pin2", "output")),
+    "Resistor": (("pin1", "input"), ("pin2", "output")),
+    "Capacitor": (("positive", "pin1"), ("negative", "pin2")),
+    "Ground": (("pin1",),),
+    "PWM_Generator": (("output",),),
+    "Voltage_Probe": (("positive",),),
+    "Current_Probe": (("input",), ("output",)),
+    "DiodeBridge": (("ac_pos",), ("ac_neg",), ("dc_pos",), ("dc_neg",)),
+    "Transformer": (
+        ("primary1", "primary_in"),
+        ("primary2", "primary_out"),
+        ("secondary1", "secondary_out"),
+        ("secondary2", "secondary_in"),
+    ),
+    "IdealTransformer": (
+        ("primary1", "primary_in"),
+        ("primary2", "primary_out"),
+        ("secondary1", "secondary_out"),
+        ("secondary2", "secondary_in"),
+    ),
+    "Center_Tap_Transformer": (
+        ("primary_top",),
+        ("primary_center",),
+        ("primary_bottom",),
+        ("secondary_top",),
+        ("secondary_center",),
+        ("secondary_bottom",),
+    ),
+}
+
+
 def get_bridge_mapping(component_type: str) -> dict | None:
     """Return full bridge mapping dict for *component_type*, or None."""
     psim_type = PSIM_TYPE_MAP.get(component_type)
@@ -176,3 +219,8 @@ def get_parameter_mapping(component_type: str) -> dict[str, str]:
     Returns an empty dict if no mapping is registered.
     """
     return dict(PARAMETER_NAME_MAP.get(component_type, {}))
+
+
+def get_port_pin_groups(component_type: str) -> tuple[tuple[str, ...], ...]:
+    """Return grouped pin aliases used to reconstruct port coordinates."""
+    return PORT_PIN_GROUPS.get(component_type, ())

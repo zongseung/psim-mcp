@@ -813,6 +813,54 @@ def get_slot_questions(topology: str) -> dict[str, str]:
     return {}
 
 
+def get_required_blocks(topology: str) -> list[str]:
+    """Return functional blocks expected in the synthesized graph."""
+    meta = get_topology_metadata(topology)
+    if meta:
+        return meta.get("required_blocks", [])
+    return []
+
+
+def get_required_component_roles(topology: str) -> list[str]:
+    """Return component roles expected in the synthesized graph."""
+    meta = get_topology_metadata(topology)
+    if meta:
+        return meta.get("required_component_roles", [])
+    return []
+
+
+def get_required_net_roles(topology: str) -> list[str]:
+    """Return net roles expected in the synthesized graph."""
+    meta = get_topology_metadata(topology)
+    if meta:
+        return meta.get("required_net_roles", [])
+    return []
+
+
+def get_layout_family(topology: str) -> str | None:
+    """Return the layout family for a topology."""
+    meta = get_topology_metadata(topology)
+    if meta:
+        return meta.get("layout_family")
+    return None
+
+
+def get_routing_family(topology: str) -> str | None:
+    """Return the routing family for a topology."""
+    meta = get_topology_metadata(topology)
+    if meta:
+        return meta.get("routing_family")
+    return None
+
+
+def get_bridge_constraints(topology: str) -> dict[str, object]:
+    """Return bridge/emission constraints for a topology."""
+    meta = get_topology_metadata(topology)
+    if meta:
+        return dict(meta.get("bridge_constraints", {}))
+    return {}
+
+
 def is_isolated(topology: str) -> bool:
     """Return True if the topology uses galvanic isolation."""
     meta = get_topology_metadata(topology)

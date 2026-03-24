@@ -33,107 +33,46 @@ START_Y = 80
 GROUND_RAIL_Y_OFFSET = 150  # ground rail relative offset
 ISOLATION_GAP = 100  # extra gap for isolated topologies
 
-# Role classification for placement
-POWER_PATH_ROLES = {
-    "main_switch",
-    "output_inductor",
-    "resonant_capacitor",
-    "resonant_inductor",
-    "input_source",
-    "isolation_transformer",
-    "primary_switch",
-    "high_side_switch",
-    "low_side_switch",
-    "secondary_rectifier",
-    "bridge_rectifier",
-    "output_rectifier",
-    "magnetizing_inductor",
-    "boost_diode",
-    "boost_inductor",
-}
+# ---------------------------------------------------------------------------
+# Role classification and direction — loaded from layout_strategy_registry.
+# No hardcoded role sets or direction maps in auto_placer itself.
+# ---------------------------------------------------------------------------
+from psim_mcp.data.layout_strategy_registry import (
+    ROLE_PLACEMENT,
+    ROLE_DIRECTION,
+    get_role_placement,
+    get_role_direction,
+)
 
-SHUNT_ROLES = {
-    "freewheel_diode",
-    "output_capacitor",
-    "load",
-    "magnetizing_inductance",
-    "coupling_capacitor",
-    "filter_capacitor",
-    "filter_inductor",
-}
+# Derived sets for fast membership checks (built from registry, not hardcoded)
+POWER_PATH_ROLES = {r for r, cat in ROLE_PLACEMENT.items() if cat == "power_path"}
+SHUNT_ROLES = {r for r, cat in ROLE_PLACEMENT.items() if cat == "shunt"}
+CONTROL_ROLES = {r for r, cat in ROLE_PLACEMENT.items() if cat == "control"}
+GROUND_ROLES = {r for r, cat in ROLE_PLACEMENT.items() if cat == "ground"}
 
-CONTROL_ROLES = {
-    "gate_drive",
-    "high_side_gate",
-    "low_side_gate",
-    "pwm_controller",
-    "feedback_sensor",
-}
+def _build_type_dir_to_variant() -> dict[tuple[str, int], str]:
+    """Build (component_type, direction) → variant_name lookup from symbol_registry.
 
-GROUND_ROLES = {
-    "ground_ref",
-    "primary_ground_ref",
-    "secondary_ground_ref",
-}
+    This is fully registry-driven — no hardcoded fallback table.
+    """
+    try:
+        from psim_mcp.data.symbol_registry import SYMBOL_VARIANTS
+    except ImportError:
+        return {}
 
-# Direction assignment by role / component type
-_ROLE_DIRECTION_MAP: dict[str, int] = {
-    # Horizontal passives
-    "output_inductor": 0,
-    "resonant_inductor": 0,
-    "boost_inductor": 0,
-    "filter_inductor": 0,
-    # Vertical passives
-    "output_capacitor": 90,
-    "filter_capacitor": 90,
-    "load": 90,
-    "resonant_capacitor": 0,  # horizontal in resonant path
-    "coupling_capacitor": 0,
-    # Sources
-    "input_source": 0,
-    # MOSFETs
-    "main_switch": 270,  # horizontal MOSFET
-    "primary_switch": 0,  # vertical MOSFET
-    "high_side_switch": 0,  # vertical
-    "low_side_switch": 0,  # vertical
-    # Diodes
-    "freewheel_diode": 270,  # vertical cathode up
-    "secondary_rectifier": 0,  # horizontal
-    "boost_diode": 0,
-    "output_rectifier": 0,
-    "bridge_rectifier": 0,
-    # Transformers
-    "isolation_transformer": 0,
-    "magnetizing_inductor": 90,  # vertical
-    # Control
-    "gate_drive": 0,
-    "high_side_gate": 0,
-    "low_side_gate": 0,
-    # Ground
-    "ground_ref": 0,
-    "primary_ground_ref": 0,
-    "secondary_ground_ref": 0,
-}
+    mapping: dict[tuple[str, int], str] = {}
+    for variant_name, variant_data in SYMBOL_VARIANTS.items():
+        comp_type = variant_data.get("component_type", "")
+        orientation = variant_data.get("orientation", 0)
+        key = (comp_type, orientation)
+        # First variant wins per (type, direction) pair
+        if key not in mapping:
+            mapping[key] = variant_name
+    return mapping
 
-# Symbol variant selection by (component_type, direction)
-_TYPE_DIR_TO_VARIANT: dict[tuple[str, int], str] = {
-    ("DC_Source", 0): "dc_source_vertical",
-    ("AC_Source", 0): "ac_source_vertical",
-    ("MOSFET", 270): "mosfet_horizontal",
-    ("MOSFET", 0): "mosfet_vertical",
-    ("Diode", 0): "diode_horizontal",
-    ("Diode", 270): "diode_vertical_cathode_up",
-    ("Inductor", 0): "inductor_horizontal",
-    ("Inductor", 90): "inductor_vertical",
-    ("Capacitor", 90): "capacitor_vertical",
-    ("Capacitor", 0): "capacitor_horizontal",
-    ("Resistor", 90): "resistor_vertical",
-    ("Transformer", 0): "transformer_vertical",
-    ("IdealTransformer", 0): "ideal_transformer",
-    ("DiodeBridge", 0): "diode_bridge",
-    ("PWM_Generator", 0): "pwm_block",
-    ("Ground", 0): "ground",
-}
+
+# Built once at import time from symbol_registry — no hardcoded values
+_TYPE_DIR_TO_VARIANT: dict[tuple[str, int], str] = _build_type_dir_to_variant()
 
 
 def auto_place(
@@ -150,6 +89,17 @@ def auto_place(
     # 2. Place components in regions
     components = _place_components(graph, regions, strategy)
 
+    # 2b. Force-directed fine-tuning (reduce wire length, prevent overlap)
+    from psim_mcp.layout.force_directed import force_adjust
+    force_adjust(
+        components,
+        graph.nets,
+        iterations=30,
+        damping=0.3,
+        grid=GRID,
+        regions=regions,
+    )
+
     # 3. Grid snap
     _snap_to_grid(components)
 
@@ -157,7 +107,8 @@ def auto_place(
     constraints = _build_constraints(strategy, regions)
 
     # 5. Enforce constraints (ground rail, bounds)
-    _enforce_constraints(components, regions, constraints, strategy)
+    component_roles = {gc.id: gc.role for gc in graph.components if gc.role}
+    _enforce_constraints(components, regions, constraints, strategy, component_roles)
 
     # 5b. Re-snap after constraint enforcement (shifts may break grid)
     _snap_to_grid(components)
@@ -350,25 +301,20 @@ def _get_misc_region_id(regions: dict[str, LayoutRegion]) -> str:
 
 
 def _get_direction_for_role(role: str, component_type: str) -> int:
-    """Determine component direction based on role, then type."""
-    if role in _ROLE_DIRECTION_MAP:
-        return _ROLE_DIRECTION_MAP[role]
-    # Type-based defaults
-    type_defaults: dict[str, int] = {
-        "DC_Source": 0,
-        "AC_Source": 0,
-        "MOSFET": 0,
-        "Diode": 0,
-        "Inductor": 0,
-        "Capacitor": 90,
-        "Resistor": 90,
-        "Transformer": 0,
-        "IdealTransformer": 0,
-        "DiodeBridge": 0,
-        "PWM_Generator": 0,
-        "Ground": 0,
-    }
-    return type_defaults.get(component_type, 0)
+    """Determine component direction from registry, then component type default."""
+    # 1. Role-based direction from layout_strategy_registry
+    role_dir = get_role_direction(role)
+    if role_dir is not None:
+        return role_dir
+    # 2. Component type default from symbol_registry
+    try:
+        from psim_mcp.data.symbol_registry import SYMBOL_VARIANTS
+        for _vname, vdata in SYMBOL_VARIANTS.items():
+            if vdata.get("component_type") == component_type:
+                return vdata.get("orientation", 0)
+    except ImportError:
+        pass
+    return 0
 
 
 def _compute_position_in_region(
@@ -461,6 +407,7 @@ def _enforce_constraints(
     regions: dict[str, LayoutRegion],
     constraints: list[LayoutConstraint],
     strategy: dict,
+    component_roles: dict[str, str] | None = None,
 ) -> None:
     """Enforce placement constraints on components."""
     from psim_mcp.layout.constraint_solver import (
@@ -471,8 +418,8 @@ def _enforce_constraints(
 
     ground_rail_y = strategy.get("ground_rail_y", START_Y + GROUND_RAIL_Y_OFFSET)
 
-    # Enforce ground rail alignment
-    enforce_rail_alignment(components, GROUND_ROLES, ground_rail_y)
+    # Enforce ground rail alignment (with role info for exact matching)
+    enforce_rail_alignment(components, GROUND_ROLES, ground_rail_y, component_roles)
 
     # Enforce region bounds
     enforce_region_bounds(components, regions)
@@ -486,8 +433,16 @@ def _assign_symbol_variants(
     components: list[LayoutComponent],
     graph: CircuitGraph,
 ) -> None:
-    """Assign symbol variant names based on component type and direction."""
-    from psim_mcp.data.symbol_registry import SYMBOL_VARIANTS
+    """Assign symbol variant names from symbol_registry.
+
+    Fully registry-driven: looks up SYMBOL_VARIANTS by (type, direction),
+    then falls back to any variant matching the component type.
+    No hardcoded variant table is used.
+    """
+    try:
+        from psim_mcp.data.symbol_registry import SYMBOL_VARIANTS
+    except ImportError:
+        return
 
     # Build component type lookup
     type_map = {gc.id: gc.type for gc in graph.components}
@@ -497,20 +452,19 @@ def _assign_symbol_variants(
         if comp_type is None:
             continue
 
-        # Try exact (type, direction) match first
+        # 1. Exact (type, direction) match via registry-built lookup
         variant = _TYPE_DIR_TO_VARIANT.get((comp_type, comp.direction))
-        if variant and variant in SYMBOL_VARIANTS:
+        if variant:
             comp.symbol_variant = variant
             continue
 
-        # Fall back to searching SYMBOL_VARIANTS
+        # 2. Search registry for matching orientation
         for vname, vdata in SYMBOL_VARIANTS.items():
-            if vdata["component_type"] == comp_type:
-                if vdata["orientation"] == comp.direction:
-                    comp.symbol_variant = vname
-                    break
+            if vdata["component_type"] == comp_type and vdata["orientation"] == comp.direction:
+                comp.symbol_variant = vname
+                break
         else:
-            # Use any variant for this type
+            # 3. Any variant for this component type
             for vname, vdata in SYMBOL_VARIANTS.items():
                 if vdata["component_type"] == comp_type:
                     comp.symbol_variant = vname

@@ -44,4 +44,6 @@ Thumbs.db
 *.csv
 
 /output
-/scrips
+
+/scripts
+/docs

@@ -2,25 +2,12 @@
 
 from __future__ import annotations
 
+from psim_mcp.data.routing_policy_registry import get_routing_policy
 from psim_mcp.layout.models import SchematicLayout
 from psim_mcp.routing.anchors import resolve_pin_positions
 from psim_mcp.routing.models import RoutedSegment, RoutingPreference, WireRouting
 from psim_mcp.routing.trunk_branch import minimize_crossings, route_net_trunk_branch
 from psim_mcp.synthesis.graph import CircuitGraph
-
-_NET_LAYERS: dict[str, str] = {
-    "primary_ground": "ground",
-    "secondary_ground": "ground",
-    "input_positive": "power",
-    "output_positive": "power",
-    "half_bridge_midpoint": "power",
-    "resonant_series": "power",
-    "resonant_node": "power",
-    "secondary_ac_pos": "power",
-    "secondary_ac_neg": "power",
-    "high_side_drive": "control",
-    "low_side_drive": "control",
-}
 
 
 class LlcRoutingStrategy:
@@ -38,6 +25,8 @@ class LlcRoutingStrategy:
     ) -> WireRouting:
         prefs = preferences or RoutingPreference()
         pin_pos = resolve_pin_positions(graph, layout)
+        routing_policy = get_routing_policy("llc") or {}
+        net_layers = routing_policy.get("net_layers", {})
 
         per_net_segments: list[list[RoutedSegment]] = []
         all_junctions = []
@@ -52,7 +41,7 @@ class LlcRoutingStrategy:
                 net.id, pins, net.role, seg_counter,
             )
 
-            layer = _NET_LAYERS.get(net.role or "", None)
+            layer = net_layers.get(net.role or "", None)
             for seg in segs:
                 seg.layer = layer
 
@@ -75,5 +64,6 @@ class LlcRoutingStrategy:
                 "strategy": "llc_trunk_branch",
                 "primary_ground_y": 230,
                 "secondary_ground_y": 230,
+                "routing_policy": routing_policy,
             },
         )

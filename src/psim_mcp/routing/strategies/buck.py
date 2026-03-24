@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
+from psim_mcp.data.routing_policy_registry import get_routing_policy
 from psim_mcp.layout.models import SchematicLayout
 from psim_mcp.routing.anchors import resolve_pin_positions
 from psim_mcp.routing.models import RoutedSegment, RoutingPreference, WireRouting
 from psim_mcp.routing.trunk_branch import minimize_crossings, route_net_trunk_branch
 from psim_mcp.synthesis.graph import CircuitGraph
-
-# Net layer classification for buck topology
-_NET_LAYERS: dict[str, str] = {
-    "ground": "ground",
-    "input_positive": "power",
-    "output_positive": "power",
-    "switch_node": "power",
-    "drive_signal": "control",
-}
 
 
 class BuckRoutingStrategy:
@@ -33,6 +25,8 @@ class BuckRoutingStrategy:
     ) -> WireRouting:
         prefs = preferences or RoutingPreference()
         pin_pos = resolve_pin_positions(graph, layout)
+        routing_policy = get_routing_policy("buck") or {}
+        net_layers = routing_policy.get("net_layers", {})
 
         per_net_segments: list[list[RoutedSegment]] = []
         all_junctions = []
@@ -48,7 +42,7 @@ class BuckRoutingStrategy:
             )
 
             # Tag layer metadata
-            layer = _NET_LAYERS.get(net.role or "", None)
+            layer = net_layers.get(net.role or "", None)
             for seg in segs:
                 seg.layer = layer
 
@@ -70,5 +64,6 @@ class BuckRoutingStrategy:
             metadata={
                 "strategy": "buck_trunk_branch",
                 "ground_rail_y": prefs.ground_rail_y or 150,
+                "routing_policy": routing_policy,
             },
         )

@@ -250,6 +250,101 @@ LAYOUT_STRATEGIES: dict[str, dict] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Role classification for auto-placement within regions
+# These categorise component roles by their placement row.
+# ---------------------------------------------------------------------------
+
+ROLE_PLACEMENT: dict[str, str] = {
+    # Power path (top row, horizontal)
+    "main_switch": "power_path",
+    "output_inductor": "power_path",
+    "resonant_capacitor": "power_path",
+    "resonant_inductor": "power_path",
+    "input_source": "power_path",
+    "isolation_transformer": "power_path",
+    "primary_switch": "power_path",
+    "high_side_switch": "power_path",
+    "low_side_switch": "power_path",
+    "secondary_rectifier": "power_path",
+    "bridge_rectifier": "power_path",
+    "output_rectifier": "power_path",
+    "magnetizing_inductor": "power_path",
+    "boost_diode": "power_path",
+    "boost_inductor": "power_path",
+    # Shunt (below power path, vertical)
+    "freewheel_diode": "shunt",
+    "output_capacitor": "shunt",
+    "load": "shunt",
+    "magnetizing_inductance": "shunt",
+    "coupling_capacitor": "shunt",
+    "filter_capacitor": "shunt",
+    "filter_inductor": "shunt",
+    # Control (bottom)
+    "gate_drive": "control",
+    "high_side_gate": "control",
+    "low_side_gate": "control",
+    "pwm_controller": "control",
+    "feedback_sensor": "control",
+    # Ground (rail)
+    "ground_ref": "ground",
+    "primary_ground_ref": "ground",
+    "secondary_ground_ref": "ground",
+}
+
+# ---------------------------------------------------------------------------
+# Direction (orientation) per role
+# ---------------------------------------------------------------------------
+
+ROLE_DIRECTION: dict[str, int] = {
+    # Horizontal passives
+    "output_inductor": 0,
+    "resonant_inductor": 0,
+    "boost_inductor": 0,
+    "filter_inductor": 0,
+    # Vertical passives
+    "output_capacitor": 90,
+    "filter_capacitor": 90,
+    "load": 90,
+    "resonant_capacitor": 0,
+    "coupling_capacitor": 0,
+    # Sources
+    "input_source": 0,
+    # Switches
+    "main_switch": 270,
+    "primary_switch": 0,
+    "high_side_switch": 0,
+    "low_side_switch": 0,
+    # Diodes
+    "freewheel_diode": 270,
+    "secondary_rectifier": 0,
+    "boost_diode": 0,
+    "output_rectifier": 0,
+    "bridge_rectifier": 0,
+    # Transformers
+    "isolation_transformer": 0,
+    "magnetizing_inductor": 90,
+    # Control
+    "gate_drive": 0,
+    "high_side_gate": 0,
+    "low_side_gate": 0,
+    # Ground
+    "ground_ref": 0,
+    "primary_ground_ref": 0,
+    "secondary_ground_ref": 0,
+}
+
+
+def get_role_placement(role: str) -> str:
+    """Return placement category for a component role."""
+    return ROLE_PLACEMENT.get(role, "power_path")
+
+
+def get_role_direction(role: str) -> int | None:
+    """Return preferred direction for a component role, or None if unknown."""
+    return ROLE_DIRECTION.get(role)
+
+
 def get_layout_strategy(topology: str) -> dict | None:
     """Return layout strategy metadata for *topology*, or None if unknown."""
     return LAYOUT_STRATEGIES.get(topology.lower())

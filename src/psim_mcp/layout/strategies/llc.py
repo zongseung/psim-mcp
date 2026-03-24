@@ -75,6 +75,10 @@ class LlcLayoutStrategy:
         graph: CircuitGraph,
         preferences: dict[str, object] | None = None,
     ) -> SchematicLayout:
+        prefs = preferences or {}
+        primary_ground_y = int(prefs.get("primary_ground_y", 230))
+        secondary_ground_y = int(prefs.get("secondary_ground_y", 230))
+        flow_direction = str(prefs.get("flow_direction", "left_to_right"))
         components: list[LayoutComponent] = []
         fallback_offset = 0
 
@@ -117,8 +121,8 @@ class LlcLayoutStrategy:
             LayoutConstraint(kind="left_of", subject_ids=["resonant_region", "transformer_region"]),
             LayoutConstraint(kind="left_of", subject_ids=["transformer_region", "secondary_region"]),
             LayoutConstraint(kind="left_of", subject_ids=["secondary_region", "output_region"]),
-            LayoutConstraint(kind="align_to_rail", subject_ids=["net_gnd_pri"], value={"y": 230}),
-            LayoutConstraint(kind="align_to_rail", subject_ids=["net_gnd_sec"], value={"y": 230}),
+            LayoutConstraint(kind="align_to_rail", subject_ids=["net_gnd_pri"], value={"y": primary_ground_y}),
+            LayoutConstraint(kind="align_to_rail", subject_ids=["net_gnd_sec"], value={"y": secondary_ground_y}),
         ]
 
         return SchematicLayout(
@@ -127,8 +131,9 @@ class LlcLayoutStrategy:
             regions=regions,
             constraints=constraints,
             metadata={
-                "flow_direction": "left_to_right",
-                "primary_ground_y": 230,
-                "secondary_ground_y": 230,
+                "flow_direction": flow_direction,
+                "primary_ground_y": primary_ground_y,
+                "secondary_ground_y": secondary_ground_y,
+                **prefs,
             },
         )

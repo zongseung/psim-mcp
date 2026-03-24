@@ -57,6 +57,10 @@ class FlybackLayoutStrategy:
         graph: CircuitGraph,
         preferences: dict[str, object] | None = None,
     ) -> SchematicLayout:
+        prefs = preferences or {}
+        primary_ground_y = int(prefs.get("primary_ground_y", 230))
+        isolation_boundary_x = int(prefs.get("isolation_boundary_x", 250))
+        flow_direction = str(prefs.get("flow_direction", "left_to_right"))
         components: list[LayoutComponent] = []
         fallback_offset = 0
 
@@ -96,7 +100,7 @@ class FlybackLayoutStrategy:
 
         constraints = [
             LayoutConstraint(kind="left_of", subject_ids=["primary_region", "secondary_region"]),
-            LayoutConstraint(kind="align_to_rail", subject_ids=["net_sw_gnd"], value={"y": 230}),
+            LayoutConstraint(kind="align_to_rail", subject_ids=["net_sw_gnd"], value={"y": primary_ground_y}),
         ]
 
         return SchematicLayout(
@@ -105,8 +109,9 @@ class FlybackLayoutStrategy:
             regions=regions,
             constraints=constraints,
             metadata={
-                "flow_direction": "left_to_right",
-                "primary_ground_y": 230,
-                "isolation_boundary_x": 250,
+                "flow_direction": flow_direction,
+                "primary_ground_y": primary_ground_y,
+                "isolation_boundary_x": isolation_boundary_x,
+                **prefs,
             },
         )

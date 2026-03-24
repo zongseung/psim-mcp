@@ -9,6 +9,11 @@ from psim_mcp.data.component_library import (
     get_component,
     get_pin_side,
 )
+from psim_mcp.data.symbol_registry import (
+    get_bounding_box,
+    get_pin_anchors,
+    get_symbol,
+)
 
 _BODY_W = 60
 _TOTAL_W = 80
@@ -160,7 +165,7 @@ def _svg_generic(x: int, y: int, comp_id: str, comp_type: str, params: dict) -> 
     )
 
 
-_SYMBOL_MAP = {
+_RENDER_STYLE_MAP = {
     "Resistor": _svg_resistor,
     "Capacitor": _svg_capacitor,
     "Inductor": _svg_inductor,
@@ -172,21 +177,15 @@ _SYMBOL_MAP = {
     "Diode": _svg_diode,
 }
 
-_PIN_ANCHOR_MAP: dict[str, dict[str, tuple[int, int]]] = {
-    "Resistor": {"pin1": (0, _MID_Y), "input": (0, _MID_Y), "pin2": (_TOTAL_W, _MID_Y), "output": (_TOTAL_W, _MID_Y)},
-    "Inductor": {"pin1": (0, _MID_Y), "input": (0, _MID_Y), "pin2": (_TOTAL_W, _MID_Y), "output": (_TOTAL_W, _MID_Y)},
-    "Capacitor": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
-    "DC_Source": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
-    "AC_Source": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
-    "Battery": {"positive": (0, _MID_Y), "pin1": (0, _MID_Y), "negative": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
-    "Diode": {"anode": (0, _MID_Y), "pin1": (0, _MID_Y), "cathode": (_TOTAL_W, _MID_Y), "pin2": (_TOTAL_W, _MID_Y)},
-    "MOSFET": {"drain": (0, _MID_Y), "source": (_TOTAL_W, _MID_Y), "gate": (25, _BODY_H)},
-    "IGBT": {"collector": (0, _MID_Y), "emitter": (_TOTAL_W, _MID_Y), "gate": (25, _BODY_H)},
-}
-
 
 def _port_pin_map(comp: dict) -> dict[str, tuple[int, int]]:
     return build_port_pin_map(comp)
+
+
+def _get_renderer(comp_type: str):
+    symbol_info = get_symbol(comp_type) or {}
+    render_style = symbol_info.get("render_style", comp_type)
+    return _RENDER_STYLE_MAP.get(render_style, lambda x, y, i, p: _svg_generic(x, y, i, comp_type, p))
 
 
 def _spread_positions(count: int, start: int, end: int) -> list[int]:
@@ -229,7 +228,7 @@ def _build_pin_positions(components: list[dict]) -> dict[str, tuple[int, int]]:
         cx = _TOTAL_W / 2
         cy = _MID_Y
 
-        explicit_anchors = _PIN_ANCHOR_MAP.get(comp_type)
+        explicit_anchors = get_pin_anchors(comp_type)
         if explicit_anchors:
             for pin_name, (dx, dy) in explicit_anchors.items():
                 rdx, rdy = _rotate_point(dx, dy, direction, cx, cy)
@@ -529,7 +528,7 @@ def _render_component(comp: dict) -> str:
 
     pos = comp.get("position", {"x": 0, "y": 0})
     direction = comp.get("direction", 0)
-    renderer = _SYMBOL_MAP.get(comp_type, lambda x, y, i, p: _svg_generic(x, y, i, comp_type, p))
+    renderer = _get_renderer(comp_type)
     inner_svg = renderer(0, 0, cid, params)
 
     if direction in (0, None):
@@ -592,8 +591,24 @@ def render_circuit_svg(
     title: str | None = None,
 ) -> str:
     components = _apply_layout_to_components(components, layout)
-    max_x = max((max(c.get("ports", [c.get("position", {}).get("x", 0)])) if c.get("ports") else c.get("position", {}).get("x", 0) for c in components), default=0) + 80
-    max_y = max((max(c.get("ports", [c.get("position", {}).get("y", 0)])) if c.get("ports") else c.get("position", {}).get("y", 0) for c in components), default=0) + 80
+    max_x = max(
+        (
+            (c.get("position", {}).get("x", 0) + get_bounding_box(c.get("type", "")).get("width", 80))
+            if not c.get("ports")
+            else max(c.get("ports", [c.get("position", {}).get("x", 0)]))
+            for c in components
+        ),
+        default=0,
+    ) + 80
+    max_y = max(
+        (
+            (c.get("position", {}).get("y", 0) + get_bounding_box(c.get("type", "")).get("height", 30))
+            if not c.get("ports")
+            else max(c.get("ports", [c.get("position", {}).get("y", 0)]))
+            for c in components
+        ),
+        default=0,
+    ) + 80
     width = max(max_x, 500)
     height = max(max_y, 250)
     display_title = title or f"{circuit_type.upper()} Converter Preview"

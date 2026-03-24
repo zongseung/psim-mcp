@@ -1,0 +1,47 @@
+{
+  "_comment": "Claude Desktop MCP 서버 설정 예제. 아래 세 가지 구성 중 하나를 선택하여 claude_desktop_config.json에 복사하세요.",
+  "_config_path_windows": "%APPDATA%\\Claude\\claude_desktop_config.json",
+  "_config_path_macos": "~/Library/Application Support/Claude/claude_desktop_config.json",
+
+  "_1_real_mode": "========== 구성 1: Real 모드 (PSIM 설치 필요) ==========",
+  "mcpServers_real": {
+    "psim-mcp": {
+      "command": "psim-mcp",
+      "env": {
+        "PSIM_MODE": "real",
+        "PSIM_PATH": "C:\\Powersim\\PSIM",
+        "PSIM_PYTHON_EXE": "C:\\Powersim\\PSIM\\python38\\python.exe",
+        "PSIM_PROJECT_DIR": "C:\\Users\\{사용자}\\psim-projects",
+        "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output",
+        "LOG_LEVEL": "INFO",
+        "SIMULATION_TIMEOUT": "300"
+      }
+    }
+  },
+
+  "_2_mock_mode": "========== 구성 2: Mock 모드 (개발/테스트용, PSIM 불필요) ==========",
+  "mcpServers_mock": {
+    "psim-mcp": {
+      "command": "psim-mcp",
+      "env": {
+        "PSIM_MODE": "mock",
+        "LOG_LEVEL": "DEBUG"
+      }
+    }
+  },
+
+  "_3_uv_mode": "========== 구성 3: uv 환경 (psim-mcp가 PATH에 없을 경우) ==========",
+  "mcpServers_uv": {
+    "psim-mcp": {
+      "command": "uv",
+      "args": ["run", "--directory", "C:\\Users\\{사용자}\\psim-mcp", "psim-mcp"],
+      "env": {
+        "PSIM_MODE": "real",
+        "PSIM_PATH": "C:\\Powersim\\PSIM",
+        "PSIM_PYTHON_EXE": "C:\\Powersim\\PSIM\\python38\\python.exe",
+        "PSIM_PROJECT_DIR": "C:\\Users\\{사용자}\\psim-projects",
+        "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output"
+      }
+    }
+  }
+}

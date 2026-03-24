@@ -84,10 +84,11 @@ def force_adjust(
             dx = b.x - a.x
             dy = b.y - a.y
             dist_sq = dx * dx + dy * dy
-            dist = math.sqrt(dist_sq) if dist_sq > 0 else MIN_DISTANCE
-            if dist < MIN_DISTANCE:
+            if dist_sq < MIN_DISTANCE * MIN_DISTANCE:
                 dist = MIN_DISTANCE
-                dist_sq = dist * dist
+                dist_sq = MIN_DISTANCE * MIN_DISTANCE
+            else:
+                dist = math.sqrt(dist_sq)
 
             # Only repel if close enough to matter
             if dist > OVERLAP_MARGIN * 4:

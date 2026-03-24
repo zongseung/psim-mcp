@@ -145,32 +145,32 @@ _MID_Y = 15
 
 PIN_ANCHOR_MAP: dict[str, dict[str, tuple[int, int]]] = {
     "DC_Source": {
-        "positive": (0, 0), "pin1": (0, 0),
-        "negative": (0, 50), "pin2": (0, 50),
+        "positive": (0, 15), "pin1": (0, 15),
+        "negative": (80, 15), "pin2": (80, 15),
     },
     "AC_Source": {
-        "positive": (0, 0), "pin1": (0, 0),
-        "negative": (0, 50), "pin2": (0, 50),
+        "positive": (0, 15), "pin1": (0, 15),
+        "negative": (80, 15), "pin2": (80, 15),
     },
     "Ground": {"pin1": (0, 0)},
     "MOSFET": {
-        "drain": (0, 0), "source": (0, 50), "gate": (-20, 30),
+        "drain": (0, 15), "source": (80, 15), "gate": (25, 30),
     },
     "Diode": {
-        "anode": (0, 0), "pin1": (0, 0),
-        "cathode": (50, 0), "pin2": (50, 0),
+        "anode": (0, 15), "pin1": (0, 15),
+        "cathode": (80, 15), "pin2": (80, 15),
     },
     "Inductor": {
-        "pin1": (0, 0), "input": (0, 0),
-        "pin2": (50, 0), "output": (50, 0),
+        "pin1": (0, 15), "input": (0, 15),
+        "pin2": (80, 15), "output": (80, 15),
     },
     "Capacitor": {
-        "positive": (0, 0), "pin1": (0, 0),
-        "negative": (0, 50), "pin2": (0, 50),
+        "positive": (0, 15), "pin1": (0, 15),
+        "negative": (80, 15), "pin2": (80, 15),
     },
     "Resistor": {
-        "pin1": (0, 0), "input": (0, 0),
-        "pin2": (0, 50), "output": (0, 50),
+        "pin1": (0, 15), "input": (0, 15),
+        "pin2": (80, 15), "output": (80, 15),
     },
     "PWM_Generator": {"output": (0, 0)},
     "Transformer": {
@@ -190,11 +190,11 @@ PIN_ANCHOR_MAP: dict[str, dict[str, tuple[int, int]]] = {
         "dc_pos": (80, 0), "dc_neg": (80, 60),
     },
     "IGBT": {
-        "collector": (0, 0), "emitter": (0, 50), "gate": (-20, 30),
+        "collector": (0, 15), "emitter": (80, 15), "gate": (25, 30),
     },
     "Battery": {
-        "positive": (0, 0), "pin1": (0, 0),
-        "negative": (0, 50), "pin2": (0, 50),
+        "positive": (0, 15), "pin1": (0, 15),
+        "negative": (80, 15), "pin2": (80, 15),
     },
 }
 
@@ -262,6 +262,7 @@ def get_symbol(component_type: str) -> dict | None:
     return {
         "variants": variants,
         "default_variant": default_variant,
+        "render_style": component_type,
         "bounding_box": {
             "x": first["bounding_box"][0],
             "y": first["bounding_box"][1],

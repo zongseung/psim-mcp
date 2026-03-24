@@ -58,6 +58,9 @@ class BuckLayoutStrategy:
         graph: CircuitGraph,
         preferences: dict[str, object] | None = None,
     ) -> SchematicLayout:
+        prefs = preferences or {}
+        ground_rail_y = int(prefs.get("ground_rail_y", 150))
+        flow_direction = str(prefs.get("flow_direction", "left_to_right"))
         components: list[LayoutComponent] = []
         fallback_offset = 0
 
@@ -93,7 +96,7 @@ class BuckLayoutStrategy:
         constraints = [
             LayoutConstraint(kind="left_of", subject_ids=["input_region", "switch_region"]),
             LayoutConstraint(kind="left_of", subject_ids=["switch_region", "output_region"]),
-            LayoutConstraint(kind="align_to_rail", subject_ids=["net_gnd"], value={"y": 150}),
+            LayoutConstraint(kind="align_to_rail", subject_ids=["net_gnd"], value={"y": ground_rail_y}),
         ]
 
         return SchematicLayout(
@@ -101,5 +104,9 @@ class BuckLayoutStrategy:
             components=components,
             regions=regions,
             constraints=constraints,
-            metadata={"flow_direction": "left_to_right", "ground_rail_y": 150},
+            metadata={
+                "flow_direction": flow_direction,
+                "ground_rail_y": ground_rail_y,
+                **prefs,
+            },
         )
