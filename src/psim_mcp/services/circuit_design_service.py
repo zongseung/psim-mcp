@@ -436,7 +436,11 @@ def _render_and_store(
     )
 
     svg_dir = tempfile.gettempdir()
-    svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}_{uuid.uuid4().hex[:8]}.svg")
+    # Use content hash instead of random UUID to avoid accumulating duplicate SVG files.
+    # Same circuit produces same hash → overwrites previous file instead of creating new one.
+    import hashlib
+    content_hash = hashlib.sha256(svg_content.encode()).hexdigest()[:8]
+    svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}_{content_hash}.svg")
     with open(svg_path, "w", encoding="utf-8") as f:
         f.write(svg_content)
 
@@ -1073,6 +1077,13 @@ class CircuitDesignService:
         )
 
         if isinstance(result, dict) and result.get("success"):
+            # Clean up preview SVG file
+            svg_path = preview.get("svg_path")
+            if svg_path:
+                try:
+                    os.remove(svg_path)
+                except OSError:
+                    pass
             self._store.delete(preview_token)
 
         return result
