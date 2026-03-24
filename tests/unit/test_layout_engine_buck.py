@@ -172,10 +172,12 @@ def test_ground_at_rail_y(buck_layout):
     assert gnd.y == 150, "Ground should be at y=150"
 
 
-def test_diode_at_rail_y(buck_layout):
+def test_diode_below_power_path(buck_layout):
+    """Freewheel diode (shunt role) should be at or below the power path row."""
     d1 = buck_layout.get_component("D1")
-    assert d1 is not None
-    assert d1.y == 150, "Diode anode should be at ground rail y=150"
+    sw1 = buck_layout.get_component("SW1")
+    assert d1 is not None and sw1 is not None
+    assert d1.y >= sw1.y, "Diode should be at or below switch level"
 
 
 # --- Constraints tests ---

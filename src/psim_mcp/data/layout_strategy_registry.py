@@ -251,88 +251,118 @@ LAYOUT_STRATEGIES: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
-# Role classification for auto-placement within regions
-# These categorise component roles by their placement row.
+# Role classification — rule-based inference with explicit overrides.
+#
+# New roles are auto-classified by keyword patterns in the role name.
+# Only roles that DON'T follow the naming convention need an explicit
+# override entry. This means adding a new topology with standard role
+# names requires ZERO changes to this file.
 # ---------------------------------------------------------------------------
 
-ROLE_PLACEMENT: dict[str, str] = {
-    # Power path (top row, horizontal)
-    "main_switch": "power_path",
-    "output_inductor": "power_path",
-    "resonant_capacitor": "power_path",
-    "resonant_inductor": "power_path",
-    "input_source": "power_path",
-    "isolation_transformer": "power_path",
-    "primary_switch": "power_path",
-    "high_side_switch": "power_path",
-    "low_side_switch": "power_path",
-    "secondary_rectifier": "power_path",
-    "bridge_rectifier": "power_path",
-    "output_rectifier": "power_path",
-    "magnetizing_inductor": "power_path",
-    "boost_diode": "power_path",
-    "boost_inductor": "power_path",
-    # Shunt (below power path, vertical)
-    "freewheel_diode": "shunt",
-    "output_capacitor": "shunt",
-    "load": "shunt",
-    "magnetizing_inductance": "shunt",
+# Explicit overrides (only for roles whose name doesn't match the rules)
+_PLACEMENT_OVERRIDES: dict[str, str] = {
+    "freewheel_diode": "shunt",       # contains "diode" but is shunt, not power_path
+    "magnetizing_inductance": "shunt", # shunt branch of transformer
+    "load": "shunt",                   # generic name, placed as shunt
+    "resonant_capacitor": "power_path",  # "capacitor" keyword → shunt, but resonant is power_path
     "coupling_capacitor": "shunt",
-    "filter_capacitor": "shunt",
-    "filter_inductor": "shunt",
-    # Control (bottom)
-    "gate_drive": "control",
-    "high_side_gate": "control",
-    "low_side_gate": "control",
-    "pwm_controller": "control",
-    "feedback_sensor": "control",
-    # Ground (rail)
-    "ground_ref": "ground",
-    "primary_ground_ref": "ground",
-    "secondary_ground_ref": "ground",
+    "main_switch": "power_path",       # "switch" → power_path (matches rule, but explicit for clarity)
 }
 
+# Keyword patterns → placement category (checked in order)
+_PLACEMENT_RULES: list[tuple[list[str], str]] = [
+    (["ground", "gnd"], "ground"),
+    (["gate", "drive", "pwm", "controller", "feedback", "sensor", "control"], "control"),
+    (["capacitor", "cap", "filter_capacitor"], "shunt"),
+    (["switch", "source", "inductor", "transformer", "rectifier", "bridge", "diode", "boost"], "power_path"),
+]
+
+
+def _infer_placement(role: str) -> str:
+    """Infer placement category from role name using keyword rules."""
+    role_lower = role.lower()
+    for keywords, category in _PLACEMENT_RULES:
+        for kw in keywords:
+            if kw in role_lower:
+                return category
+    return "power_path"  # default
+
+
+def _build_role_placement() -> dict[str, str]:
+    """Build the complete ROLE_PLACEMENT dict from overrides + all known roles.
+
+    Scans topology_metadata.required_component_roles to discover all roles,
+    then classifies each via override or keyword inference.
+    """
+    all_roles: set[str] = set()
+    try:
+        from psim_mcp.data.topology_metadata import TOPOLOGY_METADATA
+        for meta in TOPOLOGY_METADATA.values():
+            all_roles.update(meta.get("required_component_roles", []))
+    except ImportError:
+        pass
+
+    # Add override keys (they may not appear in metadata)
+    all_roles.update(_PLACEMENT_OVERRIDES.keys())
+
+    placement: dict[str, str] = {}
+    for role in sorted(all_roles):
+        if role in _PLACEMENT_OVERRIDES:
+            placement[role] = _PLACEMENT_OVERRIDES[role]
+        else:
+            placement[role] = _infer_placement(role)
+    return placement
+
+
+ROLE_PLACEMENT: dict[str, str] = _build_role_placement()
+
 # ---------------------------------------------------------------------------
-# Direction (orientation) per role
+# Direction — rule-based inference with explicit overrides.
+#
+# Directions are inferred from role name keywords:
+#   - "inductor" in power_path → 0 (horizontal)
+#   - "capacitor"/"load" in shunt → 90 (vertical)
+#   - "switch" at top level → 270 (horizontal MOSFET)
+#   - "switch" with "high_side"/"low_side"/"primary" → 0 (vertical)
+#   - everything else → 0
 # ---------------------------------------------------------------------------
 
-ROLE_DIRECTION: dict[str, int] = {
-    # Horizontal passives
-    "output_inductor": 0,
-    "resonant_inductor": 0,
-    "boost_inductor": 0,
-    "filter_inductor": 0,
-    # Vertical passives
-    "output_capacitor": 90,
-    "filter_capacitor": 90,
-    "load": 90,
-    "resonant_capacitor": 0,
-    "coupling_capacitor": 0,
-    # Sources
-    "input_source": 0,
-    # Switches
+_DIRECTION_OVERRIDES: dict[str, int] = {
     "main_switch": 270,
-    "primary_switch": 0,
-    "high_side_switch": 0,
-    "low_side_switch": 0,
-    # Diodes
     "freewheel_diode": 270,
-    "secondary_rectifier": 0,
-    "boost_diode": 0,
-    "output_rectifier": 0,
-    "bridge_rectifier": 0,
-    # Transformers
-    "isolation_transformer": 0,
     "magnetizing_inductor": 90,
-    # Control
-    "gate_drive": 0,
-    "high_side_gate": 0,
-    "low_side_gate": 0,
-    # Ground
-    "ground_ref": 0,
-    "primary_ground_ref": 0,
-    "secondary_ground_ref": 0,
+    "magnetizing_inductance": 90,
+    "resonant_capacitor": 0,  # horizontal in resonant path
 }
+
+
+def _infer_direction(role: str) -> int:
+    """Infer component direction from role name."""
+    role_lower = role.lower()
+    # Vertical shunt components
+    if any(kw in role_lower for kw in ("capacitor", "load")):
+        return 90
+    # Vertical switches (half-bridge legs, primary side)
+    if any(kw in role_lower for kw in ("high_side", "low_side", "primary_switch")):
+        return 0
+    # Horizontal switches
+    if "switch" in role_lower:
+        return 270
+    return 0
+
+
+def _build_role_direction() -> dict[str, int]:
+    """Build ROLE_DIRECTION from overrides + inferred for all known roles."""
+    direction: dict[str, int] = {}
+    for role in ROLE_PLACEMENT:
+        if role in _DIRECTION_OVERRIDES:
+            direction[role] = _DIRECTION_OVERRIDES[role]
+        else:
+            direction[role] = _infer_direction(role)
+    return direction
+
+
+ROLE_DIRECTION: dict[str, int] = _build_role_direction()
 
 
 def get_role_placement(role: str) -> str:
