@@ -290,6 +290,49 @@ LAYOUT_STRATEGIES: dict[str, dict] = {
 # names requires ZERO changes to this file.
 # ---------------------------------------------------------------------------
 
+# =====================================================================
+# ROLE NAMING CONVENTION
+# =====================================================================
+#
+# New component roles are auto-classified by keyword patterns in the
+# role name.  Follow these rules when naming roles to ensure automatic
+# placement and direction assignment works without adding overrides.
+#
+# PLACEMENT (which row in the schematic):
+#   ground   → name contains "ground" or "gnd"
+#   control  → name contains "gate", "drive", "pwm", "controller",
+#              "feedback", "sensor", or "control"
+#   shunt    → name contains "capacitor" or "cap"
+#   power_path → name contains "switch", "source", "inductor",
+#                "transformer", "rectifier", "bridge", "diode", "boost"
+#   (default) → power_path (if no keyword matched)
+#
+# DIRECTION (component orientation):
+#   90  (vertical)   → name contains "capacitor" or "load"
+#   0   (vertical)   → name contains "high_side", "low_side", "primary_switch"
+#   270 (horizontal)  → name contains "switch" (but not high/low/primary)
+#   0   (default)    → everything else
+#
+# EXCEPTIONS (roles that break convention → need explicit override):
+#   "freewheel_diode"        → shunt (not power_path despite "diode")
+#   "magnetizing_inductance" → shunt (not power_path despite "inductance")
+#   "load"                   → shunt (generic name, no keyword match)
+#   "resonant_capacitor"     → power_path (not shunt despite "capacitor")
+#   "coupling_capacitor"     → shunt (matches "capacitor" rule, but explicit)
+#   "main_switch"            → direction 270 (horizontal, override)
+#   "freewheel_diode"        → direction 270 (vertical cathode-up, override)
+#   "magnetizing_inductor"   → direction 90 (vertical shunt, override)
+#   "resonant_capacitor"     → direction 0 (horizontal in resonant path)
+#
+# To add a new role that auto-classifies correctly:
+#   Good: "output_inductor"     → power_path, direction 0 (keyword: "inductor")
+#   Good: "secondary_rectifier" → power_path, direction 0 (keyword: "rectifier")
+#   Good: "filter_capacitor"    → shunt, direction 90 (keyword: "capacitor")
+#   Good: "primary_ground_ref"  → ground, direction 0 (keyword: "ground")
+#   Bad:  "load_element"        → would default to power_path (no keyword match)
+#         → add to _PLACEMENT_OVERRIDES if needed
+# =====================================================================
+
 # Explicit overrides (only for roles whose name doesn't match the rules)
 _PLACEMENT_OVERRIDES: dict[str, str] = {
     "freewheel_diode": "shunt",       # contains "diode" but is shunt, not power_path
@@ -305,7 +348,7 @@ _PLACEMENT_RULES: list[tuple[list[str], str]] = [
     (["ground", "gnd"], "ground"),
     (["gate", "drive", "pwm", "controller", "feedback", "sensor", "control"], "control"),
     (["capacitor", "cap", "filter_capacitor"], "shunt"),
-    (["switch", "source", "inductor", "transformer", "rectifier", "bridge", "diode", "boost"], "power_path"),
+    (["switch", "source", "inductor", "transformer", "rectifier", "bridge", "diode", "boost", "motor", "thyristor", "battery"], "power_path"),
 ]
 
 
@@ -427,6 +470,67 @@ def get_role_row(role: str) -> dict[str, object]:
     if row is None:
         row = PLACEMENT_ROWS["misc"]
     return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Validation — detect roles that fell through to defaults
+# ---------------------------------------------------------------------------
+
+def validate_role_classifications() -> list[dict[str, str]]:
+    """Check all known roles for suspicious default-only classifications.
+
+    Returns a list of issues. Each issue is a dict with:
+    - ``role``: the role name
+    - ``field``: "placement" or "direction"
+    - ``value``: the assigned value
+    - ``reason``: why it's suspicious
+
+    Use this in tests to catch roles that weren't intentionally classified.
+    """
+    issues: list[dict[str, str]] = []
+
+    for role in ROLE_PLACEMENT:
+        # Placement: flagged if not in overrides AND no keyword matched
+        # (i.e., fell through to the default "power_path")
+        if role not in _PLACEMENT_OVERRIDES:
+            inferred = _infer_placement(role)
+            if inferred == "power_path":
+                # Check if any placement keyword actually matched
+                role_lower = role.lower()
+                matched = False
+                for keywords, _cat in _PLACEMENT_RULES:
+                    for kw in keywords:
+                        if kw in role_lower:
+                            matched = True
+                            break
+                    if matched:
+                        break
+                if not matched:
+                    issues.append({
+                        "role": role,
+                        "field": "placement",
+                        "value": "power_path",
+                        "reason": "no keyword matched — fell to default",
+                    })
+
+        # Direction: only flag roles where direction=0 is likely WRONG.
+        # direction=0 is the correct default for most components (sources,
+        # transformers, horizontal passives, diodes). Only flag roles where
+        # the component type typically needs non-zero direction but got 0.
+        if role not in _DIRECTION_OVERRIDES:
+            inferred_dir = _infer_direction(role)
+            # Only suspicious if role name suggests vertical (capacitor/load)
+            # but somehow got direction=0, or vice versa.
+            role_lower = role.lower()
+            if inferred_dir == 90 and "capacitor" not in role_lower and "load" not in role_lower:
+                issues.append({
+                    "role": role,
+                    "field": "direction",
+                    "value": str(inferred_dir),
+                    "reason": "inferred 90 (vertical) but role name lacks capacitor/load keyword",
+                })
+
+    return issues
 
 
 def get_layout_strategy(topology: str) -> dict | None:
