@@ -46,6 +46,10 @@ class AppConfig(BaseSettings):
     # --- Preview ---
     preview_ttl: int = 3600  # seconds
 
+    # --- Feature flags ---
+    psim_intent_pipeline_v2: bool = True
+    psim_synthesis_enabled_topologies: list[str] = []
+
     # --- Security ---
     allowed_project_dirs: list[str] = []
 
@@ -72,7 +76,7 @@ class AppConfig(BaseSettings):
             raise ValueError(f"log_level must be one of {valid}, got '{v}'")
         return v
 
-    @field_validator("allowed_project_dirs", mode="before")
+    @field_validator("allowed_project_dirs", "psim_synthesis_enabled_topologies", mode="before")
     @classmethod
     def _parse_allowed_dirs(cls, v: str | list[str]) -> list[str]:
         if isinstance(v, str):

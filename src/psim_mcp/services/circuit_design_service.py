@@ -427,6 +427,26 @@ class CircuitDesignService:
         self._logger = logging.getLogger(__name__)
         self._audit = AuditMiddleware()
 
+    def _is_intent_v2_enabled(self) -> bool:
+        return _INTENT_V2_AVAILABLE and bool(self._config.psim_intent_pipeline_v2)
+
+    def _is_synthesis_enabled_for_topology(self, topology: str) -> bool:
+        if not _SYNTHESIS_PIPELINE_AVAILABLE:
+            return False
+        enabled = [item.lower() for item in self._config.psim_synthesis_enabled_topologies]
+        if not enabled or "*" in enabled or "all" in enabled:
+            return True
+        return topology.lower() in enabled
+
+    def _try_synthesis_for_topology(
+        self,
+        topology: str,
+        specs: dict | None,
+    ) -> dict | None:
+        if not self._is_synthesis_enabled_for_topology(topology):
+            return None
+        return _try_synthesize_and_layout(topology, specs)
+
     # ------------------------------------------------------------------
     # NLP → Design
     # ------------------------------------------------------------------
@@ -459,7 +479,7 @@ class CircuitDesignService:
 
     def _resolve_intent_v2(self, description: str) -> dict | None:
         """V2 intent pipeline. Returns legacy-compatible parsed dict, or None."""
-        if not _INTENT_V2_AVAILABLE:
+        if not self._is_intent_v2_enabled():
             return None
         try:
             intent_model = extract_intent(description)
@@ -749,7 +769,7 @@ class CircuitDesignService:
         # Phase 2-4: Try full synthesis pipeline first
         synth_result = None
         if not components and specs:
-            synth_result = _try_synthesize_and_layout(circuit_type, specs)
+            synth_result = self._try_synthesis_for_topology(circuit_type, specs)
 
         # Try generator first
         gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
@@ -993,7 +1013,7 @@ class CircuitDesignService:
 
         synth_result = None
         if not components and specs:
-            synth_result = _try_synthesize_and_layout(circuit_type, specs)
+            synth_result = self._try_synthesis_for_topology(circuit_type, specs)
 
         if synth_result is not None:
             components = synth_result["components"]
@@ -1116,7 +1136,7 @@ class CircuitDesignService:
         self, topology: str, specs: dict, intent: dict,
     ) -> dict:
         """High-confidence auto-generation with fallback."""
-        synth_result = _try_synthesize_and_layout(topology, specs)
+        synth_result = self._try_synthesis_for_topology(topology, specs)
         if synth_result is not None:
             return self._validate_and_render(
                 topology=topology,
@@ -1303,12 +1323,9 @@ class CircuitDesignService:
             for f in missing_fields
         ]
 
-        session_token = self._store.save({
-            "type": "design_session",
-            "topology": topology,
-            "specs": specs,
-            "missing_fields": missing_fields,
-        })
+        session_token = self._store.save(
+            _make_design_session_payload(topology, specs, missing_fields),
+        )
 
         data: dict = {
             "action": "need_specs",
