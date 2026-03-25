@@ -31,7 +31,7 @@ TOPOLOGY_METADATA: dict[str, dict] = {
     "buck": {
         "required_fields": ["vin", "vout_target"],
         "design_ready_fields": ["vin", "vout_target"],
-        "optional_fields": ["iout", "switching_frequency"],
+        "optional_fields": ["iout", "switching_frequency", "ripple_ratio", "voltage_ripple_ratio"],
         "isolated": False,
         "single_voltage_role": "vin",
         "conversion_type": "dc_dc",
@@ -138,7 +138,17 @@ TOPOLOGY_METADATA: dict[str, dict] = {
     "forward": {
         "required_fields": ["vin", "vout_target"],
         "design_ready_fields": ["vin", "vout_target"],
-        "optional_fields": ["iout", "switching_frequency"],
+        "optional_fields": [
+            "iout",
+            "switching_frequency",
+            "n_ratio",
+            "duty_cycle",
+            "switching_points",
+            "ripple_ratio",
+            "voltage_ripple_ratio",
+            "rectifier_diode_drop",
+            "freewheel_diode_drop",
+        ],
         "isolated": True,
         "single_voltage_role": "vout_target",
         "conversion_type": "dc_dc",
@@ -152,6 +162,9 @@ TOPOLOGY_METADATA: dict[str, dict] = {
         "slot_questions": {
             "vin": "입력 전압은 몇 V인가요?",
             "vout_target": "출력 전압은 몇 V인가요?",
+            "iout": "출력 전류는 몇 A인가요?",
+            "n_ratio": "변압기 턴비(Ns/Np)를 지정할 수 있습니다 (예: 0.3)",
+            "duty_cycle": "듀티 사이클을 직접 지정하시겠습니까? (예: 0.45)",
         },
         "required_blocks": ["primary_input", "switch_primary", "magnetic_transfer", "secondary_rectifier", "output_filter"],
         "optional_blocks": [],
