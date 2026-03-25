@@ -155,3 +155,46 @@ class TestCreateCircuit:
         assert result["data"]["component_count"] == 2
         assert result["data"]["components"][0]["psim_element_type"] == "VDC"
         assert result["data"]["components"][1]["psim_element_type"] == "MULTI_RESISTOR"
+
+    async def test_rejects_save_path_outside_allowed_root(
+        self, mock_adapter: MockPsimAdapter
+    ):
+        base = Path("output") / "simulation_service_path_guard"
+        project_root = base / "projects"
+        project_root.mkdir(parents=True, exist_ok=True)
+        service = SimulationService(
+            adapter=mock_adapter,
+            config=AppConfig(psim_mode="mock", allowed_project_dirs=[str(project_root)]),
+        )
+
+        circuit_spec = {
+            "components": [
+                {
+                    "id": "V1",
+                    "type": "DC_Source",
+                    "parameters": {"voltage": 48.0},
+                    "position": {"x": 0, "y": 0},
+                },
+                {
+                    "id": "R1",
+                    "type": "Resistor",
+                    "parameters": {"resistance": 10.0},
+                    "position": {"x": 120, "y": 0},
+                },
+            ],
+            "nets": [
+                {"name": "vin", "pins": ["V1.positive", "R1.pin1"]},
+                {"name": "gnd", "pins": ["V1.negative", "R1.pin2"]},
+            ],
+        }
+
+        result = await service.create_circuit(
+            circuit_type="custom",
+            components=[],
+            connections=[],
+            save_path=str(base / "outside" / "generated.psimsch"),
+            circuit_spec=circuit_spec,
+        )
+
+        assert result["success"] is False
+        assert result["error"]["code"] == "PATH_NOT_ALLOWED"

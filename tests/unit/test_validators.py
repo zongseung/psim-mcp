@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 
 from psim_mcp.services.validators import (
-    ValidationResult,
     validate_component_id,
     validate_output_format,
     validate_parameter_name,
     validate_parameter_value,
     validate_project_path,
+    validate_save_path,
 )
 
 
@@ -75,6 +75,27 @@ class TestValidateProjectPath:
 
         result2 = validate_project_path(str(sample_project_path), allowed_dirs=[])
         assert result2.is_valid is True
+
+
+class TestValidateSavePath:
+    def test_valid_new_path_within_allowed_dirs(self) -> None:
+        root = Path("output") / "validator_save_path"
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / "projects" / "generated.psimsch"
+        result = validate_save_path(str(target), allowed_dirs=[str(root)])
+        assert result.is_valid is True
+
+    def test_invalid_extension(self) -> None:
+        result = validate_save_path(str(Path("output") / "generated.txt"))
+        assert result.is_valid is False
+        assert result.error_code == "INVALID_EXTENSION"
+
+    def test_path_outside_allowed_dirs(self) -> None:
+        root = Path("output") / "validator_save_path"
+        target = root / "outside" / "generated.psimsch"
+        result = validate_save_path(str(target), allowed_dirs=[str(root / "allowed")])
+        assert result.is_valid is False
+        assert result.error_code == "PATH_NOT_ALLOWED"
 
 
 # ---------------------------------------------------------------------------

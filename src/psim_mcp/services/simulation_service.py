@@ -8,8 +8,7 @@ services (``ProjectService``, ``ParameterService``, ``CircuitDesignService``).
 from __future__ import annotations
 
 import logging
-import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from psim_mcp.shared.audit import AuditMiddleware
 from psim_mcp.shared.response import ResponseBuilder
@@ -19,9 +18,9 @@ from psim_mcp.services.validators import (
     validate_component_id,
     validate_output_dir,
     validate_output_format,
-    validate_parameter_name,
     validate_parameter_value,
     validate_project_path,
+    validate_save_path,
     validate_signals_list,
     validate_simulation_options,
     validate_string_length,
@@ -31,6 +30,17 @@ if TYPE_CHECKING:
     from psim_mcp.adapters.base import BasePsimAdapter
     from psim_mcp.config import AppConfig
     from psim_mcp.shared.protocols import ProjectServiceProtocol
+
+
+def _get_allowed_save_dirs(config: AppConfig | None) -> list[str] | None:
+    """Resolve allowed output roots for newly created schematics."""
+    if config is None:
+        return None
+    if config.allowed_project_dirs:
+        return config.allowed_project_dirs
+    if config.psim_mode == "real" and config.psim_project_dir is not None:
+        return [str(config.psim_project_dir)]
+    return None
 
 
 class SimulationService:
@@ -351,6 +361,17 @@ class SimulationService:
                 return ResponseBuilder.error(
                     code="VALIDATION_ERROR",
                     message="save_path는 .psimsch 확장자여야 합니다.",
+                )
+
+            save_path_validation = validate_save_path(
+                save_path,
+                allowed_dirs=_get_allowed_save_dirs(self._config),
+            )
+            if not save_path_validation.is_valid:
+                return ResponseBuilder.error(
+                    code=save_path_validation.error_code or "VALIDATION_ERROR",
+                    message=save_path_validation.error_message or "Invalid save_path.",
+                    suggestion="Use a .psimsch path under the configured project root.",
                 )
 
             validation_input = {

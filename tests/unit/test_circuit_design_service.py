@@ -1,7 +1,10 @@
 """Unit tests for CircuitDesignService."""
 
+from pathlib import Path
+
 import pytest
 
+from psim_mcp.adapters.mock_adapter import MockPsimAdapter
 from psim_mcp.generators import get_generator
 from psim_mcp.services.circuit_design_service import CircuitDesignService
 from psim_mcp.config import AppConfig
@@ -190,6 +193,27 @@ async def test_confirm_circuit_preserves_generated_simulation_settings(circuit_d
 
     assert result["success"] is True
     assert result["data"]["simulation_settings"] == expected
+
+
+@pytest.mark.asyncio
+async def test_confirm_circuit_rejects_save_path_outside_allowed_root():
+    base = Path("output") / "circuit_design_service_path_guard"
+    project_root = base / "projects"
+    project_root.mkdir(parents=True, exist_ok=True)
+    config = AppConfig(psim_mode="mock", allowed_project_dirs=[str(project_root)])
+    service = CircuitDesignService(adapter=MockPsimAdapter(), config=config)
+
+    preview = await service.preview_circuit(circuit_type="buck")
+    assert preview["success"] is True
+
+    outside_path = base / "outside" / "blocked.psimsch"
+    result = await service.confirm_circuit(
+        save_path=str(outside_path),
+        preview_token=preview["data"]["preview_token"],
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "PATH_NOT_ALLOWED"
 
 
 # --- Design (NLP) ---

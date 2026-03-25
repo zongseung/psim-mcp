@@ -29,6 +29,7 @@ from psim_mcp.shared.audit import AuditMiddleware
 from psim_mcp.shared.response import ResponseBuilder
 from psim_mcp.shared.state_store import StateStore, get_state_store
 from psim_mcp.validators import validate_circuit as validate_circuit_spec
+from psim_mcp.services.validators import validate_save_path
 
 # Helper sub-modules
 from psim_mcp.services._circuit_pipeline import (
@@ -135,6 +136,17 @@ def _merge_simulation_settings(
     if overrides:
         merged.update(overrides)
     return merged
+
+
+def _get_allowed_save_dirs(config: AppConfig | None) -> list[str] | None:
+    """Resolve allowed output roots for new schematic files."""
+    if config is None:
+        return None
+    if config.allowed_project_dirs:
+        return config.allowed_project_dirs
+    if config.psim_mode == "real" and config.psim_project_dir is not None:
+        return [str(config.psim_project_dir)]
+    return None
 
 
 # ===========================================================================
@@ -1212,6 +1224,17 @@ class CircuitDesignService:
                 return ResponseBuilder.error(
                     code="VALIDATION_ERROR",
                     message="save_path는 .psimsch 확장자여야 합니다.",
+                )
+
+            save_path_validation = validate_save_path(
+                save_path,
+                allowed_dirs=_get_allowed_save_dirs(self._config),
+            )
+            if not save_path_validation.is_valid:
+                return ResponseBuilder.error(
+                    code=save_path_validation.error_code or "VALIDATION_ERROR",
+                    message=save_path_validation.error_message or "Invalid save_path.",
+                    suggestion="Use a .psimsch path under the configured project root.",
                 )
 
             validation_input = {
