@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 
 from .base import TopologyGenerator
-from .layout import auto_layout
 
 
 class FullBridgeInverterGenerator(TopologyGenerator):
@@ -133,26 +132,26 @@ class FullBridgeInverterGenerator(TopologyGenerator):
             # Left-side GATINGs to the LEFT of MOSFETs
             {
                 "id": "G1", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "0,180"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 0 180."},
                 "position": {"x": 160, "y": 110}, "direction": 0,
                 "ports": [160, 110],
             },
             {
                 "id": "G3", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "180,360"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 180 360."},
                 "position": {"x": 160, "y": 190}, "direction": 0,
                 "ports": [160, 190],
             },
             # Right-side GATINGs to the LEFT of right-leg MOSFETs (gate is at x-20)
             {
                 "id": "G2", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "180,360"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 180 360."},
                 "position": {"x": 360, "y": 110}, "direction": 0,
                 "ports": [360, 110],
             },
             {
                 "id": "G4", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "0,180"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 0 180."},
                 "position": {"x": 360, "y": 190}, "direction": 0,
                 "ports": [360, 190],
             },

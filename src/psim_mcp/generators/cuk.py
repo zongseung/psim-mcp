@@ -8,7 +8,6 @@ inductors on both sides.
 from __future__ import annotations
 
 from .base import TopologyGenerator
-from .layout import auto_layout
 
 
 class CukGenerator(TopologyGenerator):
@@ -115,7 +114,7 @@ class CukGenerator(TopologyGenerator):
                 "parameters": {
                     "Frequency": fsw,
                     "NoOfPoints": 2,
-                    "Switching_Points": f"0,{int(duty * 360)}",
+                    "Switching_Points": f" 0 {int(duty * 360)}.",
                 },
                 "position": {"x": 180, "y": 170}, "direction": 0,
                 "ports": [180, 170],

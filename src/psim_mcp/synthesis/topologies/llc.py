@@ -22,7 +22,11 @@ def synthesize_llc(requirements: dict) -> CircuitGraph:
     vin = float(requirements["vin"])
     vout = float(requirements["vout_target"])
     fsw = float(requirements.get("fsw", 100_000))
-    ln_ratio = float(requirements.get("quality_factor", 6.0))
+    # k_ind = Lm/Lr inductance ratio; PSIM reference designs use K_ind=4.
+    # Accept 'k_ind' (preferred) or 'quality_factor' (legacy alias).
+    ln_ratio = float(
+        requirements.get("k_ind", requirements.get("quality_factor", 4.0))
+    )
     ln_ratio = max(3.0, min(ln_ratio, 10.0))
 
     if requirements.get("power"):
@@ -62,10 +66,10 @@ def synthesize_llc(requirements: dict) -> CircuitGraph:
                         parameters={"switching_frequency": fsw, "on_resistance": 0.01},
                         block_ids=["half_bridge"]),
         make_component("G1", "PWM_Generator", role="high_side_gate",
-                        parameters={"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "0,175"},
+                        parameters={"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 0 175."},
                         block_ids=["half_bridge"]),
         make_component("G2", "PWM_Generator", role="low_side_gate",
-                        parameters={"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "180,355"},
+                        parameters={"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 180 355."},
                         block_ids=["half_bridge"]),
         make_component("Cr", "Capacitor", role="resonant_capacitor",
                         parameters={"capacitance": round(cr, 9)},
@@ -85,7 +89,7 @@ def synthesize_llc(requirements: dict) -> CircuitGraph:
         make_component("Cout", "Capacitor", role="output_capacitor",
                         parameters={"capacitance": round(cout, 9)},
                         block_ids=["output_filter"]),
-        make_component("R1", "Resistor", role="load",
+        make_component("Vout", "Resistor", role="load",
                         parameters={"resistance": round(r_load, 4), "VoltageFlag": 1},
                         block_ids=["output_filter"]),
     ]
@@ -97,11 +101,11 @@ def synthesize_llc(requirements: dict) -> CircuitGraph:
         make_net("net_resonant_node", ["Lr.pin2", "Lm.pin1", "T1.primary1"], role="resonant_node"),
         make_net("net_tf_sec1_bd_ac_pos", ["T1.secondary1", "BD1.ac_pos"], role="secondary_ac_pos"),
         make_net("net_tf_sec2_bd_ac_neg", ["T1.secondary2", "BD1.ac_neg"], role="secondary_ac_neg"),
-        make_net("net_rect_out", ["BD1.dc_pos", "Cout.positive", "R1.pin1"], role="output_positive"),
+        make_net("net_rect_out", ["BD1.dc_pos", "Cout.positive", "Vout.pin1"], role="output_positive"),
         make_net("net_gnd_pri", ["V1.negative", "GND1.pin1", "SW2.source"], role="primary_ground"),
         make_net("net_gnd_sec", [
             "Lm.pin2", "T1.primary2", "GND2.pin1",
-            "BD1.dc_neg", "Cout.negative", "R1.pin2",
+            "BD1.dc_neg", "Cout.negative", "Vout.pin2",
         ], role="secondary_ground"),
         make_net("net_gate1", ["G1.output", "SW1.gate"], role="high_side_drive"),
         make_net("net_gate2", ["G2.output", "SW2.gate"], role="low_side_drive"),
@@ -114,14 +118,14 @@ def synthesize_llc(requirements: dict) -> CircuitGraph:
         make_block("magnetizing_branch", "magnetic", role="magnetizing", component_ids=["Lm"]),
         make_block("transformer_stage", "transformer", role="isolation", component_ids=["T1"]),
         make_block("secondary_rectifier", "rectifier", role="rectification", component_ids=["BD1"]),
-        make_block("output_filter", "filter", role="output", component_ids=["Cout", "R1", "GND2"]),
+        make_block("output_filter", "filter", role="output", component_ids=["Cout", "Vout", "GND2"]),
     ]
 
     traces = [
         make_trace("design_formula", "turns_ratio", round(n, 6), rationale="n = Vin/(2*Vout)"),
         make_trace("design_formula", "resonant_inductance", round(lr, 9), rationale="Lr = Zr/(2*pi*fr)"),
         make_trace("design_formula", "resonant_capacitance", round(cr, 9), rationale="Cr = 1/((2*pi*fr)^2*Lr)"),
-        make_trace("design_formula", "magnetizing_inductance", round(lm, 9), rationale=f"Lm = {ln_ratio}*Lr"),
+        make_trace("design_formula", "magnetizing_inductance", round(lm, 9), rationale=f"Lm = {ln_ratio}*Lr (K_ind={ln_ratio}, PSIM ref uses K_ind=4)"),
     ]
 
     return CircuitGraph(
@@ -141,8 +145,9 @@ def synthesize_llc(requirements: dict) -> CircuitGraph:
             "r_load": round(r_load, 4),
         },
         simulation={
+            # 200 pts/period for waveform resolution; 500 cycles for LLC steady state
             "time_step": round(1 / (fsw * 200), 9),
-            "total_time": round(50 / fsw, 6),
+            "total_time": round(500 / fsw, 6),
         },
         traces=traces,
         metadata={

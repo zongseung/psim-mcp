@@ -9,7 +9,6 @@ for battery charging/discharging and energy storage applications.
 from __future__ import annotations
 
 from .base import TopologyGenerator
-from .layout import auto_layout
 
 
 class BidirectionalBuckBoostGenerator(TopologyGenerator):
@@ -127,13 +126,13 @@ class BidirectionalBuckBoostGenerator(TopologyGenerator):
             # Individual GATING per MOSFET, placed next to gate pins
             {
                 "id": "G1", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": f"0,{int(duty * 360)}"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": f" 0 {int(duty * 360)}."},
                 "position": {"x": 160, "y": 110}, "direction": 0,
                 "ports": [160, 110],
             },
             {
                 "id": "G2", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": f"{int(duty * 360)},360"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": f" {int(duty * 360)} 360."},
                 "position": {"x": 160, "y": 190}, "direction": 0,
                 "ports": [160, 190],
             },

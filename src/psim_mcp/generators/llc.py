@@ -95,7 +95,9 @@ class LLCGenerator(TopologyGenerator):
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["iout", "fsw", "power", "quality_factor"]
+        # k_ind: Lm/Lr inductance ratio (K_ind in PSIM reference designs, typical 3~8, default 4)
+        # quality_factor: legacy alias for k_ind (kept for backward compatibility)
+        return ["iout", "fsw", "power", "k_ind", "quality_factor"]
 
     def synthesize(self, requirements: dict) -> CircuitGraph:
         """Synthesize a CircuitGraph (no positions) from requirements."""
@@ -115,7 +117,11 @@ class LLCGenerator(TopologyGenerator):
         vin: float = float(requirements["vin"])
         vout: float = float(requirements["vout_target"])
         fsw: float = float(requirements.get("fsw", 100_000))
-        ln_ratio: float = float(requirements.get("quality_factor", 6.0))
+        # k_ind = Lm/Lr inductance ratio; PSIM reference designs (3.3kW OBC, 500W) use K_ind=4.
+        # Accept either 'k_ind' (preferred) or 'quality_factor' (legacy alias).
+        ln_ratio: float = float(
+            requirements.get("k_ind", requirements.get("quality_factor", 4.0))
+        )
         ln_ratio = max(3.0, min(ln_ratio, 10.0))
 
         # Output power
@@ -198,10 +204,10 @@ class LLCGenerator(TopologyGenerator):
             make_ground("GND2", 490, 230),  # secondary-side GND hub
             make_mosfet_v("SW1", 200, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW2", 200, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G1", 160, 110, fsw, "0,175"),
-            make_gating("G2", 160, 190, fsw, "180,355"),
+            make_gating("G1", 160, 110, fsw, " 0 175."),
+            make_gating("G2", 160, 190, fsw, " 180 355."),
             make_capacitor_h("Cr", 260, 130, cr),  # resonant capacitor, horizontal
-            make_inductor("Lr", 330, 130, lr),
+            make_inductor("Lr", 330, 130, lr, current_flag=1),  # I(Lr) probe
             make_inductor_v("Lm", 400, 130, lm),
             make_ideal_transformer(
                 "T1",
@@ -211,7 +217,8 @@ class LLCGenerator(TopologyGenerator):
             ),
             make_diode_bridge("BD1", 490, 130),
             make_capacitor("Cout", 600, 130, cout),
-            make_resistor("R1", 650, 130, r_load, voltage_flag=1),
+            # Named "Vout" so PSIM records signal as V(Vout) matching topology_metrics
+            make_resistor("Vout", 650, 130, r_load, voltage_flag=1),
         ]
 
         # LLC net connections:
@@ -227,12 +234,12 @@ class LLCGenerator(TopologyGenerator):
             {"name": "net_resonant_node", "pins": ["Lr.pin2", "Lm.pin1", "T1.primary1"]},
             {"name": "net_tf_sec1_bd_ac_pos", "pins": ["T1.secondary1", "BD1.ac_pos"]},
             {"name": "net_tf_sec2_bd_ac_neg", "pins": ["T1.secondary2", "BD1.ac_neg"]},
-            {"name": "net_rect_out", "pins": ["BD1.dc_pos", "Cout.positive", "R1.pin1"]},
+            {"name": "net_rect_out", "pins": ["BD1.dc_pos", "Cout.positive", "Vout.pin1"]},
             # GND: two Ground symbols to avoid long wires crossing gate area
             {"name": "net_gnd_pri", "pins": ["V1.negative", "GND1.pin1", "SW2.source"]},
             {"name": "net_gnd_sec", "pins": [
                 "Lm.pin2", "T1.primary2", "GND2.pin1",
-                "BD1.dc_neg", "Cout.negative", "R1.pin2",
+                "BD1.dc_neg", "Cout.negative", "Vout.pin2",
             ]},
             {"name": "net_gate1", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_gate2", "pins": ["G2.output", "SW2.gate"]},
@@ -264,7 +271,10 @@ class LLCGenerator(TopologyGenerator):
             "components": components,
             "nets": nets,
             "simulation": {
+                # time_step: 200 pts/switching period for adequate waveform resolution
+                # total_time: 500 switching periods — LLC resonant tanks need ~100+ cycles
+                # to reach steady state; 500 cycles matches simulation_defaults.py (5ms @100kHz)
                 "time_step": round(1 / (fsw * 200), 9),
-                "total_time": round(50 / fsw, 6),
+                "total_time": round(500 / fsw, 6),
             },
         }

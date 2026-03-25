@@ -81,7 +81,7 @@ def synthesize_flyback(requirements: dict) -> CircuitGraph:
             parameters={
                 "Frequency": fsw,
                 "NoOfPoints": 2,
-                "Switching_Points": f"0,{int(duty * 360)}",
+                "Switching_Points": f" 0 {int(duty * 360)}.",
             },
             block_ids=["switch_primary"],
         ),
@@ -98,7 +98,7 @@ def synthesize_flyback(requirements: dict) -> CircuitGraph:
             block_ids=["output_filter"],
         ),
         make_component(
-            "R1", "Resistor",
+            "Vout", "Resistor",
             role="load",
             parameters={"resistance": round(r_load, 4), "VoltageFlag": 1},
             block_ids=["output_filter"],
@@ -111,8 +111,8 @@ def synthesize_flyback(requirements: dict) -> CircuitGraph:
         make_net("net_gate", ["G1.output", "SW1.gate"], role="drive_signal"),
         make_net("net_sw_gnd", ["SW1.source", "V1.negative", "GND1.pin1"], role="primary_ground"),
         make_net("net_sec2_d", ["T1.secondary2", "D1.anode"], role="secondary_ac"),
-        make_net("net_d_out", ["D1.cathode", "C1.positive", "R1.pin1"], role="output_positive"),
-        make_net("net_sec_gnd", ["T1.secondary1", "C1.negative", "R1.pin2"], role="secondary_ground"),
+        make_net("net_d_out", ["D1.cathode", "C1.positive", "Vout.pin1"], role="output_positive"),
+        make_net("net_sec_gnd", ["T1.secondary1", "C1.negative", "Vout.pin2"], role="secondary_ground"),
     ]
 
     blocks = [
@@ -120,7 +120,7 @@ def synthesize_flyback(requirements: dict) -> CircuitGraph:
         make_block("switch_primary", "switching", role="primary_switch", component_ids=["SW1", "G1"]),
         make_block("magnetic_transfer", "transformer", role="isolation", component_ids=["T1"]),
         make_block("secondary_rectifier_block", "rectifier", role="rectification", component_ids=["D1"]),
-        make_block("output_filter", "filter", role="output", component_ids=["C1", "R1"]),
+        make_block("output_filter", "filter", role="output", component_ids=["C1", "Vout"]),
     ]
 
     traces = [

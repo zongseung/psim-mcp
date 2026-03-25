@@ -132,9 +132,9 @@ PARAMETER_NAME_MAP: dict[str, dict[str, str]] = {
         "ns_turns": "Ns__secondary_",
     },
     "PWM_Generator": {
-        "Frequency": "Freq",
-        "NoOfPoints": "NoOfPoints",
-        "Switching_Points": "Points",
+        "Frequency": "Frequency",
+        "NoOfPoints": "No__of_Points",
+        "Switching_Points": "Switching_Points",
     },
     "Battery": {
         "voltage": "V1",

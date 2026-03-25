@@ -43,8 +43,8 @@ class ThreePhaseInverterGenerator(TopologyGenerator):
         # Three legs, each with high-side and low-side MOSFET
         # 120-degree phase shift: A=0, B=120, C=240
         # Switching_Points: on_angle, off_angle
-        sw_points_high = ["0,180", "120,300", "240,60"]
-        sw_points_low = ["180,360", "300,120", "60,240"]
+        sw_points_high = [" 0 180.", " 120 300.", " 240 60."]
+        sw_points_low = [" 180 360.", " 300 120.", " 60 240."]
 
         # Layout:
         # VDC(80,80)-(80,230), GND at (80,230)

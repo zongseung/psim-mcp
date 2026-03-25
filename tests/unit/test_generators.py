@@ -120,6 +120,151 @@ def test_generated_circuits_validate(topology: str, requirements: dict):
     ]
 
 
+def test_forward_generator_generate():
+    gen = get_generator("forward")
+    result = gen.generate({
+        "vin": 48.0,
+        "vout_target": 12.0,
+        "iout": 2.0,
+        "fsw": 100000,
+    })
+    assert result["topology"] == "forward"
+    components = result["components"]
+    nets = result["nets"]
+    design = result["metadata"]["design"]
+
+    # Design sanity checks
+    assert 0.05 < design["duty"] <= 0.95
+    assert 0.05 < design["turns_ratio"] <= 10.0
+    assert design["inductance"] > 0
+    assert design["capacitance"] > 0
+    assert design["r_load"] > 0
+
+    # Required component types present
+    types = {c["type"] for c in components}
+    assert "Transformer" in types
+    assert "MOSFET" in types
+    assert "Diode" in types
+    assert "Inductor" in types
+    assert "Capacitor" in types
+    assert "Resistor" in types
+
+    # Simulation time: at least 200 switching cycles for steady-state
+    fsw = 100000
+    assert result["simulation"]["total_time"] >= 200 / fsw
+
+    # Net completeness: all expected nets present
+    net_names = {n["name"] for n in nets}
+    assert "net_gate" in net_names
+    assert "net_out" in net_names
+    assert "net_pri_gnd" in net_names
+    assert "net_sec_gnd" in net_names
+
+
+def test_forward_generator_required_fields():
+    gen = get_generator("forward")
+    assert "vin" in gen.required_fields
+    assert "vout_target" in gen.required_fields
+
+
+def test_forward_generator_missing_fields():
+    gen = get_generator("forward")
+    missing = gen.missing_fields({"vin": 48})
+    assert "vout_target" in missing
+
+
+def test_forward_generator_custom_turns_ratio():
+    """n_ratio override should be respected."""
+    gen = get_generator("forward")
+    result = gen.generate({
+        "vin": 100.0,
+        "vout_target": 24.0,
+        "iout": 3.0,
+        "n_ratio": 0.6,
+    })
+    assert abs(result["metadata"]["design"]["turns_ratio"] - 0.6) < 1e-9
+
+
+def test_forward_generator_respects_explicit_duty_override():
+    gen = get_generator("forward")
+    result = gen.generate({
+        "vin": 48.0,
+        "vout_target": 12.0,
+        "n_ratio": 5.0 / 9.0,
+        "duty_cycle": 181 / 360,
+    })
+
+    design = result["metadata"]["design"]
+    gating = next(c for c in result["components"] if c["id"] == "G1")
+
+    assert design["duty"] == pytest.approx(181 / 360, rel=0, abs=1e-6)
+    assert design["switching_points"] == " 0 181."
+    assert gating["parameters"]["Switching_Points"] == " 0 181."
+
+
+def test_forward_generator_accepts_switching_frequency_alias():
+    gen = get_generator("forward")
+    result = gen.generate({
+        "vin": 48.0,
+        "vout_target": 12.0,
+        "switching_frequency": 80_000,
+    })
+
+    gating = next(c for c in result["components"] if c["id"] == "G1")
+    assert gating["parameters"]["Frequency"] == 80_000
+    assert result["simulation"]["time_step"] == pytest.approx(round(1 / (80_000 * 200), 9))
+
+
+def test_forward_generator_uses_diode_compensated_duty_with_fixed_turns_ratio():
+    gen = get_generator("forward")
+    result = gen.generate({
+        "vin": 48.0,
+        "vout_target": 12.0,
+        "n_ratio": 5.0 / 9.0,
+        "rectifier_diode_drop": 0.7,
+        "freewheel_diode_drop": 0.7,
+    })
+
+    duty = result["metadata"]["design"]["duty"]
+    assert duty == pytest.approx((12.0 + 0.7) / (48.0 * (5.0 / 9.0)), rel=0, abs=1e-6)
+
+
+def test_forward_generator_simulation_defaults():
+    """Embedded simulation time should be >= 200 cycles regardless of fsw."""
+    from psim_mcp.generators import get_generator
+    for fsw in [50000, 100000, 200000]:
+        gen = get_generator("forward")
+        result = gen.generate({"vin": 48.0, "vout_target": 12.0, "fsw": fsw})
+        min_cycles = 200
+        assert result["simulation"]["total_time"] >= min_cycles / fsw, (
+            f"fsw={fsw}: total_time={result['simulation']['total_time']} < {min_cycles/fsw}"
+        )
+
+
+def test_forward_in_simulation_defaults():
+    """forward must appear in SIMULATION_DEFAULTS so get_simulation_defaults works."""
+    from psim_mcp.data.simulation_defaults import SIMULATION_DEFAULTS, get_simulation_defaults
+    assert "forward" in SIMULATION_DEFAULTS
+    defaults = get_simulation_defaults("forward")
+    assert "time_step" in defaults
+    assert "total_time" in defaults
+
+
+def test_forward_topology_metrics_defined():
+    """forward must have topology_metrics entry with acceptance_criteria."""
+    from psim_mcp.data.topology_metrics import get_topology_metrics, get_acceptance_criteria
+    metrics = get_topology_metrics("forward")
+    assert metrics is not None
+    assert "metrics" in metrics
+    assert "steady_state_skip" in metrics
+    assert "primary_signals" in metrics
+    assert "tunable_params" in metrics
+    criteria = get_acceptance_criteria("forward")
+    assert criteria is not None
+    assert "output_voltage_mean" in criteria
+    assert "output_voltage_ripple_pct" in criteria
+
+
 def test_layout_factories_follow_port_contract_lengths():
     comp = make_mosfet_h("SW1", 100, 120, switching_frequency=50000)
 

@@ -54,7 +54,7 @@ def synthesize_buck(requirements: dict) -> CircuitGraph:
             parameters={
                 "Frequency": fsw,
                 "NoOfPoints": 2,
-                "Switching_Points": f"0,{int(duty * 360)}",
+                "Switching_Points": f" 0 {int(duty * 360)}.",
             },
             block_ids=["switch_stage"],
         ),
@@ -76,8 +76,9 @@ def synthesize_buck(requirements: dict) -> CircuitGraph:
             parameters={"capacitance": round(capacitance, 9)},
             block_ids=["output_filter"],
         ),
+        # Named "Vout" so PSIM records V(Vout) matching topology_metrics signal names
         make_component(
-            "R1", "Resistor",
+            "Vout", "Resistor",
             role="load",
             parameters={"resistance": round(r_load, 4), "VoltageFlag": 1},
             block_ids=["output_filter"],
@@ -88,10 +89,10 @@ def synthesize_buck(requirements: dict) -> CircuitGraph:
         make_net("net_vin_sw", ["V1.positive", "SW1.drain"], role="input_positive"),
         make_net("net_sw_junc", ["SW1.source", "D1.cathode", "L1.pin1"], role="switch_node"),
         make_net("net_gate", ["G1.output", "SW1.gate"], role="drive_signal"),
-        make_net("net_out", ["L1.pin2", "C1.positive", "R1.pin1"], role="output_positive"),
+        make_net("net_out", ["L1.pin2", "C1.positive", "Vout.pin1"], role="output_positive"),
         make_net(
             "net_gnd",
-            ["V1.negative", "GND1.pin1", "D1.anode", "C1.negative", "R1.pin2"],
+            ["V1.negative", "GND1.pin1", "D1.anode", "C1.negative", "Vout.pin2"],
             role="ground",
         ),
     ]
@@ -99,7 +100,7 @@ def synthesize_buck(requirements: dict) -> CircuitGraph:
     blocks = [
         make_block("input_stage", "input", role="input", component_ids=["V1", "GND1"]),
         make_block("switch_stage", "switching", role="switching", component_ids=["SW1", "D1", "G1"]),
-        make_block("output_filter", "filter", role="output", component_ids=["L1", "C1", "R1"]),
+        make_block("output_filter", "filter", role="output", component_ids=["L1", "C1", "Vout"]),
     ]
 
     traces = [

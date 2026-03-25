@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
-from .layout import auto_layout
 
 if TYPE_CHECKING:
     from psim_mcp.synthesis.graph import CircuitGraph
@@ -84,7 +83,7 @@ class BuckGenerator(TopologyGenerator):
                 "parameters": {
                     "Frequency": fsw,
                     "NoOfPoints": 2,
-                    "Switching_Points": f"0,{int(duty * 360)}",
+                    "Switching_Points": f" 0 {int(duty * 360)}.",
                 },
                 "position": {"x": 180, "y": 170}, "direction": 0,
                 "ports": [180, 170],
@@ -112,7 +111,8 @@ class BuckGenerator(TopologyGenerator):
                 "ports": [300, 100, 300, 150],
             },
             {
-                "id": "R1", "type": "Resistor",
+                # Named "Vout" so PSIM records V(Vout) matching topology_metrics
+                "id": "Vout", "type": "Resistor",
                 "parameters": {"resistance": round(r_load, 4), "VoltageFlag": 1},
                 "position": {"x": 350, "y": 100},
                 "position2": {"x": 350, "y": 150},
@@ -126,8 +126,8 @@ class BuckGenerator(TopologyGenerator):
             {"name": "net_vin_sw", "pins": ["V1.positive", "SW1.drain"]},
             {"name": "net_sw_junc", "pins": ["SW1.source", "D1.cathode", "L1.pin1"]},
             {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
-            {"name": "net_out", "pins": ["L1.pin2", "C1.positive", "R1.pin1"]},
-            {"name": "net_gnd", "pins": ["V1.negative", "GND1.pin1", "D1.anode", "C1.negative", "R1.pin2"]},
+            {"name": "net_out", "pins": ["L1.pin2", "C1.positive", "Vout.pin1"]},
+            {"name": "net_gnd", "pins": ["V1.negative", "GND1.pin1", "D1.anode", "C1.negative", "Vout.pin2"]},
         ]
 
         return {

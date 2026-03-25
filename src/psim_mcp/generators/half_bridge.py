@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 
 from .base import TopologyGenerator
-from .layout import auto_layout
 
 
 class HalfBridgeInverterGenerator(TopologyGenerator):
@@ -131,13 +130,13 @@ class HalfBridgeInverterGenerator(TopologyGenerator):
             # Individual GATING per MOSFET, placed next to gate pins
             {
                 "id": "G1", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "0,180"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 0 180."},
                 "position": {"x": 160, "y": 110}, "direction": 0,
                 "ports": [160, 110],
             },
             {
                 "id": "G2", "type": "PWM_Generator",
-                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": "180,360"},
+                "parameters": {"Frequency": fsw, "NoOfPoints": 2, "Switching_Points": " 180 360."},
                 "position": {"x": 160, "y": 190}, "direction": 0,
                 "ports": [160, 190],
             },
