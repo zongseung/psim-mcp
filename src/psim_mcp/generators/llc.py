@@ -31,6 +31,52 @@ from .layout import (
     make_vdc,
 )
 
+_LLC_PSIM_NATIVE_REFERENCE = {
+    "source": "output/converted_ResonantLLC_CurrentAndVoltageLoop.py",
+    "transformer": {
+        "element_type": "TF_IDEAL",
+        "ports": [860, 170, 860, 220, 910, 170, 910, 220],
+        "parameter_names": {
+            "np_turns": "Np__primary_",
+            "ns_turns": "Ns__secondary_",
+        },
+    },
+    "resonant_capacitor": {
+        "element_type": "MULTI_CAPACITOR",
+        "ports": [660, 170, 710, 170],
+        "parameter_names": {
+            "capacitance": "Capacitance",
+            "current_flag": "Current_Flag",
+            "voltage_flag": "Voltage_Flag",
+        },
+    },
+    "resonant_inductor": {
+        "element_type": "MULTI_INDUCTOR",
+        "ports": [720, 170, 770, 170],
+        "parameter_names": {
+            "inductance": "Inductance",
+            "current_flag": "Current_Flag",
+            "voltage_flag": "Voltage_Flag",
+        },
+    },
+    "magnetizing_inductor": {
+        "element_type": "MULTI_INDUCTOR",
+        "ports": [810, 180, 810, 230],
+        "parameter_names": {
+            "inductance": "Inductance",
+            "current_flag": "Current_Flag",
+            "voltage_flag": "Voltage_Flag",
+        },
+    },
+    "secondary_rectifier": {
+        "element_type": "BDIODE1",
+        "ports": [940, 170, 940, 230, 1020, 170, 1020, 230],
+        "parameter_names": {
+            "forward_voltage": "Diode_Voltage_Drop",
+        },
+    },
+}
+
 
 if TYPE_CHECKING:
     from psim_mcp.synthesis.graph import CircuitGraph
@@ -117,14 +163,16 @@ class LLCGenerator(TopologyGenerator):
         cout = iout / (2 * 2 * fsw * vripple) if (fsw and vripple) else 100e-6
         cout = max(cout, 1e-12)
 
-        # Layout based on PSIM reference (converted_ResonantLLC_CurrentAndVoltageLoop.py):
+        # Layout and native parameter contract verified from
+        # output/converted_ResonantLLC_CurrentAndVoltageLoop.py via PsimConvertToPython.
         #
         # Key insight: PSIM LLC uses TF_IDEAL (not TF_1F_1) + separate Lm inductor
         # in PARALLEL with transformer primary. Lm is NOT a transformer parameter.
         #
         # Reference components and their PORTS from the converted file:
         #   VDC "VDC1": PORTS=[350,200, 350,250], Amplitude="Vin"
-        #   TF_IDEAL "TI2": PORTS=[860,170, 860,220, 910,170, 910,220], DIR=0
+        #   TF_IDEAL "TI2": PORTS=[860,170, 860,220, 910,170, 910,220], DIR=0,
+        #                    Np__primary_="1", Ns__secondary_="a_sp"
         #   MULTI_INDUCTOR "Ls": PORTS=[720,170, 770,170], DIR=0  (series resonant)
         #   MULTI_INDUCTOR "Lm": PORTS=[810,180, 810,230], DIR=90 (magnetizing, vertical shunt)
         #   MULTI_CAPACITOR "Cs": PORTS=[660,170, 710,170], DIR=0  (series resonant)
@@ -200,6 +248,8 @@ class LLCGenerator(TopologyGenerator):
                 ),
                 "design": {
                     "turns_ratio": round(n, 6),
+                    "np_turns": round(n, 6),
+                    "ns_turns": 1,
                     "resonant_frequency": round(fr, 2),
                     "resonant_inductance": round(lr, 9),
                     "resonant_capacitance": round(cr, 9),
@@ -209,6 +259,7 @@ class LLCGenerator(TopologyGenerator):
                     "ln_ratio": round(ln_ratio, 2),
                     "r_load": round(r_load, 4),
                 },
+                "psim_native_reference": _LLC_PSIM_NATIVE_REFERENCE,
             },
             "components": components,
             "nets": nets,

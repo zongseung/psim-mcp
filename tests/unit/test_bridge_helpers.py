@@ -6,13 +6,12 @@ bridge_script.py는 PSIM Python 3.8에서 실행되지만,
 
 from __future__ import annotations
 
-import pytest
-
 from psim_mcp.bridge.bridge_script import (
+    _PSIM_TYPE_MAP,
     _calculate_simcontrol_position,
-    _resolve_pin_positions,
-    _get_simulation_defaults,
     _GLOBAL_DEFAULT,
+    _get_simulation_defaults,
+    _resolve_pin_positions,
     _SIMULATION_DEFAULTS,
 )
 from psim_mcp.generators.layout import make_transformer
@@ -95,3 +94,9 @@ class TestResolvePinPositions:
         assert pin_map["T1.primary_in"] == (100, 80)
         assert pin_map["T1.secondary1"] == (150, 130)
         assert pin_map["T1.secondary_out"] == (150, 130)
+
+
+class TestPsimTypeMap:
+    def test_vac_mapping_uses_native_vac_element(self):
+        assert _PSIM_TYPE_MAP["VAC"] == "VAC"
+        assert _PSIM_TYPE_MAP["AC_Source"] == "VAC"

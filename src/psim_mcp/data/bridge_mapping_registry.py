@@ -116,17 +116,20 @@ PARAMETER_NAME_MAP: dict[str, dict[str, str]] = {
     "Diode": {
         "forward_voltage": "Vd",
     },
+    # Validated from PsimConvertToPython outputs:
+    # - output/converted_Flyback_converter_with_peak_current_mode_control.py
+    # - output/converted_ResonantLLC_CurrentAndVoltageLoop.py
     "Transformer": {
-        "turns_ratio": "Ratio",
-        "np_turns": "N1",
-        "ns_turns": "N2",
-        "magnetizing_inductance": "Lm",
-        "Lm": "Lm",
+        "turns_ratio": None,
+        "np_turns": "Np__primary_",
+        "ns_turns": "Ns__secondary_",
+        "magnetizing_inductance": "Lm__magnetizing_",
+        "Lm": "Lm__magnetizing_",
     },
     "IdealTransformer": {
-        "turns_ratio": "Ratio",
-        "np_turns": "N1",
-        "ns_turns": "N2",
+        "turns_ratio": None,
+        "np_turns": "Np__primary_",
+        "ns_turns": "Ns__secondary_",
     },
     "PWM_Generator": {
         "Frequency": "Freq",

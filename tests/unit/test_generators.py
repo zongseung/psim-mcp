@@ -74,6 +74,29 @@ def test_boost_generator_generate():
     assert len(result["components"]) > 0
 
 
+def test_llc_generator_exposes_psim_native_reference_contract():
+    gen = get_generator("llc")
+    result = gen.generate({
+        "vin": 400.0,
+        "vout_target": 48.0,
+        "power": 1000.0,
+        "fsw": 100000,
+    })
+
+    design = result["metadata"]["design"]
+    native_ref = result["metadata"]["psim_native_reference"]
+
+    assert result["topology"] == "llc"
+    assert design["np_turns"] > 1
+    assert design["ns_turns"] == 1
+    assert native_ref["source"] == "output/converted_ResonantLLC_CurrentAndVoltageLoop.py"
+    assert native_ref["transformer"]["element_type"] == "TF_IDEAL"
+    assert native_ref["transformer"]["parameter_names"] == {
+        "np_turns": "Np__primary_",
+        "ns_turns": "Ns__secondary_",
+    }
+
+
 @pytest.mark.parametrize(
     ("topology", "requirements"),
     [
