@@ -2,6 +2,7 @@
 
 import pytest
 
+from psim_mcp.generators import get_generator
 from psim_mcp.services.circuit_design_service import CircuitDesignService
 from psim_mcp.config import AppConfig
 
@@ -94,6 +95,42 @@ async def test_preview_circuit_generator_topologies(circuit_design_service, circ
 
 
 @pytest.mark.asyncio
+async def test_preview_circuit_stores_generated_simulation_settings(circuit_design_service):
+    specs = {"vin": 48, "vout_target": 12, "iout": 5}
+    expected = get_generator("forward").generate(specs)["simulation"]
+
+    result = await circuit_design_service.preview_circuit(
+        circuit_type="forward",
+        specs=specs,
+    )
+
+    assert result["success"] is True
+    token = result["data"]["preview_token"]
+    preview = circuit_design_service._store.get(token)
+    assert preview["simulation_settings"] == expected
+
+
+@pytest.mark.asyncio
+async def test_preview_circuit_merges_generated_and_explicit_simulation_settings(circuit_design_service):
+    specs = {"vin": 48, "vout_target": 12, "iout": 5}
+    generated = get_generator("forward").generate(specs)["simulation"]
+
+    result = await circuit_design_service.preview_circuit(
+        circuit_type="forward",
+        specs=specs,
+        simulation_settings={"total_time": 0.05},
+    )
+
+    assert result["success"] is True
+    token = result["data"]["preview_token"]
+    preview = circuit_design_service._store.get(token)
+    assert preview["simulation_settings"] == {
+        **generated,
+        "total_time": 0.05,
+    }
+
+
+@pytest.mark.asyncio
 async def test_preview_circuit_fails_on_validation_errors(circuit_design_service):
     result = await circuit_design_service.preview_circuit(
         circuit_type="custom",
@@ -133,6 +170,26 @@ async def test_confirm_circuit_after_preview(circuit_design_service):
         preview_token=token,
     )
     assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_confirm_circuit_preserves_generated_simulation_settings(circuit_design_service):
+    specs = {"vin": 48, "vout_target": 12, "iout": 5}
+    expected = get_generator("forward").generate(specs)["simulation"]
+
+    preview = await circuit_design_service.preview_circuit(
+        circuit_type="forward",
+        specs=specs,
+    )
+    assert preview["success"] is True
+
+    result = await circuit_design_service.confirm_circuit(
+        save_path="/test/forward_output.psimsch",
+        preview_token=preview["data"]["preview_token"],
+    )
+
+    assert result["success"] is True
+    assert result["data"]["simulation_settings"] == expected
 
 
 # --- Design (NLP) ---

@@ -4,6 +4,13 @@ Consolidates circuit design logic that was previously scattered across
 ``tools/design.py``, ``tools/circuit.py``, and parts of ``SimulationService``.
 
 Handles: NLP parsing -> generation -> preview -> validation -> creation.
+
+Implementation is split across three private helper modules to keep each
+file focused on a single responsibility:
+
+* ``_circuit_pipeline.py``   — synthesis / layout / routing pipeline
+* ``_circuit_render.py``     — rendering and validation helpers
+* ``_circuit_generators.py`` — generator resolution helper
 """
 
 from __future__ import annotations
@@ -12,66 +19,63 @@ import copy
 import json
 import logging
 import os
-import tempfile
-import uuid
 from typing import TYPE_CHECKING, Any
 
 from psim_mcp.data.circuit_templates import TEMPLATES as _TEMPLATES, CATEGORIES as _CATEGORIES
-from psim_mcp.data.capability_matrix import is_supported as _capability_is_supported
 from psim_mcp.data.component_library import COMPONENTS as _COMPONENTS, CATEGORIES as _COMP_CATEGORIES
-from psim_mcp.data.component_library import resolve_psim_element_type
-from psim_mcp.data.layout_strategy_registry import get_layout_strategy as _get_layout_strategy
-from psim_mcp.data.routing_policy_registry import get_routing_policy as _get_routing_policy
 from psim_mcp.data.spec_mapping import apply_specs as _apply_specs
-from psim_mcp.data.topology_metadata import (
-    get_bridge_constraints as _get_bridge_constraints,
-    get_layout_family as _get_layout_family,
-    get_required_blocks as _get_required_blocks,
-    get_required_component_roles as _get_required_component_roles,
-    get_required_net_roles as _get_required_net_roles,
-    get_routing_family as _get_routing_family,
-)
-from psim_mcp.generators import get_generator
-from psim_mcp.generators.constraints import validate_design_constraints
 from psim_mcp.parsers import parse_circuit_intent
 from psim_mcp.shared.audit import AuditMiddleware
 from psim_mcp.shared.response import ResponseBuilder
 from psim_mcp.shared.state_store import StateStore, get_state_store
-from psim_mcp.utils.ascii_renderer import render_circuit_ascii
-from psim_mcp.utils.svg_renderer import render_circuit_svg, open_svg_in_browser
 from psim_mcp.validators import validate_circuit as validate_circuit_spec
+
+# Helper sub-modules
+from psim_mcp.services._circuit_pipeline import (
+    SYNTHESIS_PIPELINE_AVAILABLE,
+    PREVIEW_PAYLOAD_KIND,
+    PREVIEW_PAYLOAD_VERSION,
+    DESIGN_SESSION_KIND,
+    DESIGN_SESSION_VERSION,
+    try_synthesize_and_layout as _try_synthesize_and_layout,
+    normalize_preview_payload as _normalize_preview_payload,
+    normalize_design_session_payload as _normalize_design_session_payload,
+    load_graph_layout_routing as _load_graph_layout_routing,
+    make_design_session_payload as _make_design_session_payload,
+)
+from psim_mcp.services._circuit_render import (
+    run_validation as _run_validation,
+    convert_nets_to_connections as _convert_nets_to_connections,
+    nets_to_connections_simple as _nets_to_connections_simple,
+    enrich_components_for_bridge as _enrich_components_for_bridge,
+    render_and_store as _render_and_store,
+)
+from psim_mcp.services._circuit_generators import try_generate as _try_generate
 
 if TYPE_CHECKING:
     from psim_mcp.adapters.base import BasePsimAdapter
     from psim_mcp.config import AppConfig
 
-
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Backward-compatibility aliases (tests import these from this module)
+# ---------------------------------------------------------------------------
+
+# Synthesis pipeline availability flags (referenced by several test modules)
+_SYNTHESIS_PIPELINE_AVAILABLE = SYNTHESIS_PIPELINE_AVAILABLE
+_LAYOUT_ENGINE_AVAILABLE = SYNTHESIS_PIPELINE_AVAILABLE
+_ROUTING_ENGINE_AVAILABLE = SYNTHESIS_PIPELINE_AVAILABLE
+
+# Payload kind / version constants (referenced by test_build_need_specs_versioned)
+_PREVIEW_PAYLOAD_KIND = PREVIEW_PAYLOAD_KIND
+_PREVIEW_PAYLOAD_VERSION = PREVIEW_PAYLOAD_VERSION
+_DESIGN_SESSION_KIND = DESIGN_SESSION_KIND
+_DESIGN_SESSION_VERSION = DESIGN_SESSION_VERSION
 
 # ---------------------------------------------------------------------------
-# Synthesis pipeline feature flags (Phase 1-5)
+# Optional V2 intent pipeline
 # ---------------------------------------------------------------------------
-try:
-    from psim_mcp.synthesis.graph import CircuitGraph
-    from psim_mcp.validators.graph import validate_graph
-    from psim_mcp.layout.engine import generate_layout
-    from psim_mcp.layout.materialize import materialize_to_legacy
-    from psim_mcp.routing.engine import generate_routing
-    from psim_mcp.routing.models import WireRouting as _WireRouting  # noqa: F401
-
-    _SYNTHESIS_PIPELINE_AVAILABLE = True
-except ImportError:
-    _SYNTHESIS_PIPELINE_AVAILABLE = False
-
-# Backward compatibility aliases for tests
-_LAYOUT_ENGINE_AVAILABLE = _SYNTHESIS_PIPELINE_AVAILABLE
-_ROUTING_ENGINE_AVAILABLE = _SYNTHESIS_PIPELINE_AVAILABLE
-
-_PREVIEW_PAYLOAD_KIND = "preview_payload"
-_PREVIEW_PAYLOAD_VERSION = "v1"
-_DESIGN_SESSION_KIND = "design_session"
-_DESIGN_SESSION_VERSION = "v2"
 
 try:
     from psim_mcp.intent import (
@@ -84,6 +88,11 @@ try:
     _INTENT_V2_AVAILABLE = True
 except ImportError:
     _INTENT_V2_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# Utility: open .psimsch file in PSIM GUI
+# ---------------------------------------------------------------------------
 
 
 def _open_in_psim(file_path: str) -> None:
@@ -113,400 +122,25 @@ def _open_in_psim(file_path: str) -> None:
         logger.debug("Failed to open PSIM GUI for %s", file_path, exc_info=True)
 
 
-def _try_synthesize_and_layout(
-    circuit_type: str,
-    specs: dict | None,
-    config: AppConfig | None = None,
+def _merge_simulation_settings(
+    generated: dict | None,
+    overrides: dict | None,
 ) -> dict | None:
-    """Graph -> layout -> routing -> legacy materialization. Returns None on failure."""
-    if not _SYNTHESIS_PIPELINE_AVAILABLE:
+    """Merge user overrides on top of generator-provided simulation settings."""
+    if generated is None and overrides is None:
         return None
-    if not specs:
-        return None
-    topology = circuit_type.lower()
-    if not _capability_is_supported(topology, "synthesize"):
-        return None
-    if not _capability_is_supported(topology, "graph"):
-        return None
-    # Check per-stage feature flags when config is available
-    if config:
-        graph_enabled = [t.lower() for t in config.psim_graph_enabled_topologies]
-        if graph_enabled and topology not in graph_enabled:
-            return None
-    try:
-        generator = get_generator(topology)
-    except (KeyError, Exception):
-        return None
-
-    if generator.missing_fields(specs or {}):
-        return None
-
-    try:
-        graph = generator.synthesize(specs)
-    except (AttributeError, NotImplementedError):
-        return None
-    except Exception:
-        return None
-
-    try:
-        issues = validate_graph(graph)
-        if any(i.severity == "error" for i in issues):
-            return None
-    except Exception:
-        return None
-    graph_component_roles = {component.role for component in graph.components if component.role}
-    graph_net_roles = {net.role for net in graph.nets if net.role}
-    graph_block_ids = {block.id for block in graph.blocks}
-    required_component_roles = set(_get_required_component_roles(topology))
-    required_net_roles = set(_get_required_net_roles(topology))
-    required_blocks = set(_get_required_blocks(topology))
-    if required_component_roles and not required_component_roles.issubset(graph_component_roles):
-        return None
-    if required_net_roles and not required_net_roles.issubset(graph_net_roles):
-        return None
-    if required_blocks and not required_blocks.issubset(graph_block_ids):
-        return None
-
-    # Check layout feature flag
-    if not _capability_is_supported(topology, "layout"):
-        return None
-    if config:
-        layout_enabled = [t.lower() for t in config.psim_layout_engine_enabled_topologies]
-        if layout_enabled and topology not in layout_enabled:
-            return None
-
-    layout_preferences = dict(_get_layout_strategy(topology) or {})
-    layout_family = _get_layout_family(topology)
-    if layout_family:
-        layout_preferences.setdefault("layout_family", layout_family)
-    if required_blocks:
-        layout_preferences.setdefault("required_blocks", sorted(required_blocks))
-    try:
-        layout = generate_layout(graph, preferences=layout_preferences or None)
-    except (NotImplementedError, Exception):
-        return None
-
-    wire_routing = None
-    # Check routing feature flag
-    routing_blocked = not _capability_is_supported(topology, "routing")
-    if config:
-        routing_enabled = [t.lower() for t in config.psim_routing_enabled_topologies]
-        if routing_enabled and topology not in routing_enabled:
-            routing_blocked = True
-
-    if not routing_blocked:
-        try:
-            from psim_mcp.routing.models import RoutingPreference
-
-            routing_policy = dict(_get_routing_policy(topology) or {})
-            routing_family = _get_routing_family(topology)
-            routing_preferences = RoutingPreference(
-                use_ground_rail=routing_policy.get("ground_policy") in {"bottom_rail", "dual_rail"},
-                minimize_crossings=routing_policy.get("crossing_policy") == "minimize",
-                ground_rail_y=layout_preferences.get("ground_rail_y"),
-            )
-            wire_routing = generate_routing(graph, layout, routing_preferences)
-            wire_routing.metadata.setdefault("routing_family", routing_family)
-            wire_routing.metadata.setdefault("routing_policy", routing_policy)
-        except Exception:
-            pass  # routing failure is non-fatal
-
-    try:
-        legacy_components, legacy_nets = materialize_to_legacy(graph, layout)
-    except Exception:
-        return None
-
-    wire_segments = wire_routing.to_legacy_segments() if wire_routing else []
-    graph.metadata.setdefault("layout_family", layout_family)
-    graph.metadata.setdefault("routing_family", _get_routing_family(topology))
-    graph.metadata.setdefault("bridge_constraints", _get_bridge_constraints(topology))
-    layout.metadata.setdefault("layout_family", layout_family)
-    layout.metadata.setdefault("layout_strategy", layout_preferences)
-
-    return {
-        "graph": graph,
-        "layout": layout,
-        "wire_routing": wire_routing,
-        "components": legacy_components,
-        "nets": legacy_nets,
-        "wire_segments": wire_segments,
-    }
-
-
-def _normalize_preview_payload(preview: dict) -> dict:
-    """Ensure preview payload has expected keys regardless of version."""
-    preview.setdefault("payload_kind", _PREVIEW_PAYLOAD_KIND)
-    preview.setdefault("payload_version", _PREVIEW_PAYLOAD_VERSION)
-    preview.setdefault("connections", [])
-    preview.setdefault("nets", [])
-    preview.setdefault("simulation_settings", None)
-    preview.setdefault("wire_segments", [])
-    return preview
-
-
-def _normalize_design_session_payload(session: dict) -> dict:
-    """Ensure design session payload is readable across v1/v2 formats."""
-    session.setdefault("type", _DESIGN_SESSION_KIND)
-    session.setdefault("payload_kind", _DESIGN_SESSION_KIND)
-    session.setdefault("payload_version", "v1")
-    session.setdefault("specs", {})
-    session.setdefault("missing_fields", [])
-    return session
-
-
-def _load_graph_layout_routing(preview: dict) -> tuple:
-    """Extract graph, layout, routing from preview data if present.
-
-    Reconstructs typed objects from serialized dicts when possible.
-    Returns (graph_or_None, layout_or_None, routing_or_None).
-    """
-    graph_data = preview.get("graph")
-    layout_data = preview.get("layout")
-    routing_data = preview.get("wire_routing")
-
-    graph = None
-    layout = None
-    routing = None
-
-    if graph_data is not None and _SYNTHESIS_PIPELINE_AVAILABLE:
-        try:
-            graph = CircuitGraph.from_dict(graph_data) if isinstance(graph_data, dict) else graph_data
-        except Exception:
-            pass
-
-    if layout_data is not None:
-        try:
-            from psim_mcp.layout.models import SchematicLayout
-            layout = SchematicLayout.from_dict(layout_data) if isinstance(layout_data, dict) else layout_data
-        except Exception:
-            pass
-
-    if routing_data is not None:
-        try:
-            from psim_mcp.routing.models import WireRouting as WR
-            routing = WR.from_dict(routing_data) if isinstance(routing_data, dict) else routing_data
-        except Exception:
-            pass
-
-    return graph, layout, routing
-
-
-def _make_design_session_payload(
-    topology: str,
-    specs: dict,
-    missing_fields: list[str],
-) -> dict:
-    """Build a design session payload for the state store."""
-    return {
-        "type": _DESIGN_SESSION_KIND,
-        "payload_kind": _DESIGN_SESSION_KIND,
-        "payload_version": _DESIGN_SESSION_VERSION,
-        "topology": topology,
-        "specs": specs,
-        "missing_fields": missing_fields,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Validation helpers (from _preview_helpers)
-# ---------------------------------------------------------------------------
-
-def _run_validation(
-    components: list[dict],
-    connections: list[dict],
-    nets: list[dict],
-) -> tuple[list[dict], bool]:
-    """Validate circuit and return (issues, has_errors)."""
-    validation_input = {
-        "components": components,
-        "connections": connections,
-        "nets": nets,
-    }
-    result = validate_circuit_spec(validation_input)
-    issues = [
-        {
-            "code": issue.code,
-            "message": issue.message,
-            "component_id": issue.component_id,
-            "suggestion": issue.suggestion,
-        }
-        for issue in (result.errors + result.warnings)
-    ]
-    return issues, bool(result.errors)
-
-
-def _convert_nets_to_connections(nets: list[dict]) -> list[dict]:
-    """Convert net-based wiring to point-to-point connections."""
-    from psim_mcp.bridge.wiring import nets_to_connections
-    return nets_to_connections(nets)
-
-
-def _nets_to_connections_simple(nets: list[dict]) -> list[dict]:
-    """Convert net-based representation to point-to-point connections (simple)."""
-    connections = []
-    for net in nets:
-        pins = net.get("pins", [])
-        for i in range(len(pins) - 1):
-            connections.append({"from": pins[i], "to": pins[i + 1]})
-    return connections
-
-
-def _enrich_components_for_bridge(components: list[dict]) -> list[dict]:
-    """Attach bridge-facing metadata expected by the real adapter."""
-    enriched: list[dict] = []
-    for component in components:
-        item = dict(component)
-        item_type = str(item.get("type", ""))
-        item["psim_element_type"] = resolve_psim_element_type(item_type)
-        enriched.append(item)
-    return enriched
-
-
-# ---------------------------------------------------------------------------
-# Generator resolution helper
-# ---------------------------------------------------------------------------
-
-def _try_generate(
-    circuit_type: str,
-    specs: dict | None,
-    components: list[dict] | None,
-) -> tuple[list[dict] | None, list[dict], list[dict], str, str | None, dict | None]:
-    """Attempt to resolve components via generator.
-
-    Returns (components, connections, nets, generation_mode, note, constraint_validation).
-    """
-    if components:
-        return None, [], [], "template", None, None, None
-
-    try:
-        generator = get_generator(circuit_type.lower())
-    except (KeyError, Exception):
-        return None, [], [], "template_fallback", None, None, None
-
-    req = specs or {}
-    if generator.missing_fields(req):
-        return None, [], [], "template_fallback", None, None, None
-
-    try:
-        gen_result = generator.generate(req)
-
-        # Run constraint validation on generator output
-        constraint_check = validate_design_constraints(circuit_type, req, gen_result)
-        constraint_validation = {
-            "is_feasible": constraint_check.is_feasible,
-            "issues": [
-                {
-                    "severity": i.severity,
-                    "code": i.code,
-                    "message": i.message,
-                    "parameter": i.parameter,
-                    "suggestion": i.suggestion,
-                }
-                for i in constraint_check.issues
-            ],
-        }
-
-        return (
-            gen_result["components"],
-            [],
-            gen_result.get("nets", []),
-            "generator",
-            None,
-            constraint_validation,
-            gen_result.get("psim_template"),
-        )
-    except Exception as exc:
-        logger.warning("Generator failed for '%s': %s", circuit_type, exc)
-        return (
-            None, [], [], "template_fallback",
-            "Generator not available for this topology. Using template with default values.",
-            None,
-            None,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Render helpers
-# ---------------------------------------------------------------------------
-
-def _render_and_store(
-    store: StateStore,
-    circuit_type: str,
-    components: list[dict],
-    connections: list[dict],
-    nets: list[dict],
-    simulation_settings: dict | None = None,
-    psim_template: dict | None = None,
-    wire_segments: list[dict] | None = None,
-    graph: object | None = None,
-    layout: object | None = None,
-    wire_routing: object | None = None,
-) -> dict:
-    """Render ASCII + SVG, open browser, save to store.
-
-    Accepts optional graph/layout/routing from the synthesis pipeline
-    so they can be persisted in the preview payload for confirm_circuit.
-    """
-    ascii_diagram = render_circuit_ascii(
-        circuit_type=circuit_type,
-        components=components,
-        connections=connections,
-    )
-
-    svg_content = render_circuit_svg(
-        circuit_type=circuit_type,
-        components=components,
-        connections=connections,
-        nets=nets,
-        wire_segments=wire_segments,
-        layout=layout,
-    )
-
-    svg_dir = tempfile.gettempdir()
-    # Use content hash instead of random UUID to avoid accumulating duplicate SVG files.
-    # Same circuit produces same hash → overwrites previous file instead of creating new one.
-    import hashlib
-    content_hash = hashlib.sha256(svg_content.encode()).hexdigest()[:8]
-    svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}_{content_hash}.svg")
-    with open(svg_path, "w", encoding="utf-8") as f:
-        f.write(svg_content)
-
-    open_svg_in_browser(svg_path)
-
-    store_data: dict[str, Any] = {
-        "payload_kind": _PREVIEW_PAYLOAD_KIND,
-        "payload_version": _PREVIEW_PAYLOAD_VERSION,
-        "circuit_type": circuit_type,
-        "components": components,
-        "connections": connections,
-        "nets": nets,
-        "simulation_settings": simulation_settings,
-        "svg_path": svg_path,
-    }
-    if psim_template:
-        store_data["psim_template"] = psim_template
-    if wire_segments:
-        store_data["wire_segments"] = wire_segments
-    if graph is not None:
-        store_data["graph"] = graph.to_dict() if hasattr(graph, "to_dict") else graph
-    if layout is not None:
-        store_data["layout"] = layout.to_dict() if hasattr(layout, "to_dict") else layout
-    if wire_routing is not None:
-        serialized_routing = wire_routing.to_dict() if hasattr(wire_routing, "to_dict") else wire_routing
-        store_data["wire_routing"] = serialized_routing
-        store_data["routing"] = serialized_routing
-    token = store.save(store_data)
-
-    return {
-        "ascii_diagram": ascii_diagram,
-        "svg_path": svg_path,
-        "preview_token": token,
-    }
+    merged: dict[str, Any] = {}
+    if generated:
+        merged.update(generated)
+    if overrides:
+        merged.update(overrides)
+    return merged
 
 
 # ===========================================================================
 # CircuitDesignService
 # ===========================================================================
+
 
 class CircuitDesignService:
     """Circuit design pipeline service.
@@ -530,6 +164,10 @@ class CircuitDesignService:
         self._logger = logging.getLogger(__name__)
         self._audit = AuditMiddleware()
 
+    # ------------------------------------------------------------------
+    # Feature flag helpers
+    # ------------------------------------------------------------------
+
     def _is_intent_v2_enabled(self) -> bool:
         return _INTENT_V2_AVAILABLE and bool(self._config.psim_intent_pipeline_v2)
 
@@ -538,6 +176,8 @@ class CircuitDesignService:
         topology: str,
         stage: str = "synthesize",
     ) -> bool:
+        from psim_mcp.data.capability_matrix import is_supported as _capability_is_supported
+
         if not _SYNTHESIS_PIPELINE_AVAILABLE:
             return False
         if not _capability_is_supported(topology, stage):
@@ -558,7 +198,7 @@ class CircuitDesignService:
         return _try_synthesize_and_layout(topology, specs, config=self._config)
 
     # ------------------------------------------------------------------
-    # NLP → Design
+    # NLP -> Design
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -641,7 +281,6 @@ class CircuitDesignService:
 
         Tries V2 intent pipeline first, falls back to legacy on failure.
         """
-        # Try V2 intent pipeline first, fall back to legacy on failure
         try:
             intent = self._resolve_intent_v2(description)
         except Exception:
@@ -658,7 +297,6 @@ class CircuitDesignService:
         confidence = intent["confidence"]
         use_case = intent["use_case"]
 
-        # V2-specific enrichment fields
         candidate_scores = intent.get("candidate_scores")
         decision_trace = intent.get("decision_trace")
 
@@ -791,8 +429,7 @@ class CircuitDesignService:
 
         self._store.delete(session_token)
 
-        # Try generator
-        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template = (
+        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template, gen_simulation = (
             _try_generate(topology, merged_specs, None)
         )
 
@@ -801,10 +438,11 @@ class CircuitDesignService:
         resolved_nets = gen_nets
         generation_mode = gen_mode
 
-        # If generator needs more fields, ask again
         if resolved_components is None:
             generator = None
             try:
+                from psim_mcp.generators import get_generator
+
                 generator = get_generator(topology)
             except (KeyError, Exception):
                 pass
@@ -816,7 +454,6 @@ class CircuitDesignService:
                         topology, merged_specs, still_missing, "awaiting_specs",
                     )
 
-        # Template fallback: check design_ready_fields
         if resolved_components is None:
             design_missing = self._check_design_readiness(topology, merged_specs)
             if design_missing:
@@ -824,7 +461,6 @@ class CircuitDesignService:
                     topology, merged_specs, design_missing, "awaiting_design_specs",
                 )
 
-        # Fallback to template
         if resolved_components is None:
             template = _TEMPLATES.get(topology)
             if template:
@@ -854,6 +490,7 @@ class CircuitDesignService:
             confidence="high",
             constraint_validation=gen_constraints,
             psim_template=gen_template,
+            simulation_settings=gen_simulation,
         )
 
     # ------------------------------------------------------------------
@@ -876,13 +513,11 @@ class CircuitDesignService:
         synth_layout = None
         synth_routing = None
 
-        # Phase 2-4: Try full synthesis pipeline first
         synth_result = None
         if not components and specs:
             synth_result = self._try_synthesis_for_topology(circuit_type, specs, stage="preview_generator")
 
-        # Try generator first
-        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
+        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template, gen_simulation = _try_generate(
             circuit_type, specs, components,
         )
         if gen_components is not None:
@@ -929,7 +564,6 @@ class CircuitDesignService:
                     },
                 }
 
-        # Phase 2-4: Override with synthesis result if available
         if synth_result is not None:
             resolved_components = synth_result["components"]
             resolved_connections = []
@@ -965,6 +599,8 @@ class CircuitDesignService:
                 },
             }
 
+        effective_simulation_settings = _merge_simulation_settings(gen_simulation, simulation_settings)
+
         preview = _render_and_store(
             self._store,
             circuit_type=circuit_type,
@@ -972,7 +608,7 @@ class CircuitDesignService:
             connections=resolved_connections,
             nets=resolved_nets,
             wire_segments=wire_segments,
-            simulation_settings=simulation_settings,
+            simulation_settings=effective_simulation_settings,
             psim_template=_gen_template,
             graph=synth_graph,
             layout=synth_layout,
@@ -1044,7 +680,6 @@ class CircuitDesignService:
         simulation_settings = preview.get("simulation_settings")
         psim_template = preview.get("psim_template")
 
-        # Template mode: skip validation/wiring, pass template directly to bridge
         if psim_template:
             try:
                 data = await self._adapter.create_circuit(
@@ -1068,6 +703,8 @@ class CircuitDesignService:
 
         if graph is not None and layout is not None:
             try:
+                from psim_mcp.layout.materialize import materialize_to_legacy
+
                 components, nets = materialize_to_legacy(graph, layout)
                 connections = []
             except Exception:
@@ -1104,7 +741,6 @@ class CircuitDesignService:
         )
 
         if isinstance(result, dict) and result.get("success"):
-            # Clean up preview SVG file
             svg_path = preview.get("svg_path")
             if svg_path:
                 try:
@@ -1112,7 +748,6 @@ class CircuitDesignService:
                 except OSError:
                     pass
             self._store.delete(preview_token)
-            # Auto-open in PSIM GUI if available
             _open_in_psim(save_path)
 
         return result
@@ -1149,18 +784,19 @@ class CircuitDesignService:
             }
             gen_mode = "generator"
         else:
-            gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template = _try_generate(
+            gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template, gen_simulation = _try_generate(
                 circuit_type, specs, components,
             )
 
             if gen_components is not None:
                 components = gen_components
                 connections = gen_connections
+                simulation_settings = _merge_simulation_settings(gen_simulation, simulation_settings)
                 circuit_spec = {
                     "topology": circuit_type,
                     "components": components,
                     "nets": gen_nets,
-                    "simulation": {},
+                    "simulation": simulation_settings or {},
                 }
             else:
                 template = _TEMPLATES.get(circuit_type.lower())
@@ -1191,7 +827,6 @@ class CircuitDesignService:
         elif isinstance(result, dict):
             result.setdefault("data", {})["generation_mode"] = gen_mode
 
-        # Auto-open in PSIM GUI if creation succeeded
         if isinstance(result, dict) and result.get("success"):
             _open_in_psim(save_path)
 
@@ -1276,7 +911,7 @@ class CircuitDesignService:
                 wire_segments=synth_result.get("wire_segments"),
             )
 
-        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template = (
+        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template, gen_simulation = (
             _try_generate(topology, specs, None)
         )
 
@@ -1286,9 +921,8 @@ class CircuitDesignService:
         generation_mode = gen_mode
         generation_note = gen_note
 
-        # Fallback to template
         if resolved_components is None:
-            gen_constraints = None  # No constraint data for template fallback
+            gen_constraints = None
             generator_was_attempted = gen_note is not None
             template = _TEMPLATES.get(topology)
             if template:
@@ -1302,7 +936,6 @@ class CircuitDesignService:
                         "Using template with default values."
                     )
 
-        # If template fallback, check design_ready_fields
         if generation_mode == "template_fallback":
             design_missing = self._check_design_readiness(topology, specs)
             if design_missing:
@@ -1324,6 +957,7 @@ class CircuitDesignService:
                 generation_note=generation_note,
                 constraint_validation=gen_constraints,
                 psim_template=gen_template,
+                simulation_settings=gen_simulation,
             )
 
         return self._no_match_response(specs)
@@ -1341,6 +975,7 @@ class CircuitDesignService:
         generation_note: str | None = None,
         constraint_validation: dict | None = None,
         psim_template: dict | None = None,
+        simulation_settings: dict | None = None,
         graph: object | None = None,
         layout: object | None = None,
         wire_routing: object | None = None,
@@ -1375,6 +1010,7 @@ class CircuitDesignService:
             components=components,
             connections=connections,
             nets=nets,
+            simulation_settings=simulation_settings,
             psim_template=psim_template,
             wire_segments=wire_segments,
             graph=graph,
@@ -1403,7 +1039,6 @@ class CircuitDesignService:
         if constraint_validation:
             response_data["constraint_validation"] = constraint_validation
 
-        # Build message with constraint warnings appended
         message = (
             f"'{topology}' 회로가 자동 설계되었습니다 (token: {token}):\n\n"
             f"```\n{ascii_diagram}\n```\n\n"
@@ -1440,6 +1075,7 @@ class CircuitDesignService:
     ) -> dict:
         """Build a response asking the user for additional specs."""
         from psim_mcp.data.topology_metadata import get_slot_questions
+
         topo_questions = get_slot_questions(topology)
         questions = [
             topo_questions.get(f, f"{f}을(를) 지정해주세요.")
@@ -1481,6 +1117,7 @@ class CircuitDesignService:
     def _check_design_readiness(topology: str, specs: dict) -> list[str] | None:
         """Check if template fallback has enough fields for meaningful design."""
         from psim_mcp.data.topology_metadata import get_design_ready_fields
+
         design_fields = get_design_ready_fields(topology)
         if not design_fields:
             return None
@@ -1537,10 +1174,7 @@ class CircuitDesignService:
         simulation_settings: dict | None = None,
         circuit_spec: dict | None = None,
     ) -> dict:
-        """Validate and create circuit via adapter.
-
-        This contains the logic previously in SimulationService.create_circuit().
-        """
+        """Validate and create circuit via adapter."""
 
         async def _handler():
             nonlocal components, connections

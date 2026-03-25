@@ -62,6 +62,7 @@ _SIMULATION_DEFAULTS = {
     "boost": {"time_step": "1E-006", "total_time": "0.02"},
     "buck_boost": {"time_step": "1E-006", "total_time": "0.02"},
     "flyback": {"time_step": "5E-007", "total_time": "0.01"},
+    "forward": {"time_step": "5E-007", "total_time": "0.01"},
     "llc": {"time_step": "1E-007", "total_time": "0.005"},
     "dab": {"time_step": "1E-007", "total_time": "0.005"},
     # 인버터
@@ -231,6 +232,47 @@ _PARAM_NAME_MAP = {
     "Rseries": "Rseries",
 }
 
+_PARAMETER_COMPONENT_ALIASES = {
+    "VDC": "DC_Source",
+    "VAC": "AC_Source",
+    "IDC": "DC_Current_Source",
+    "IAC": "AC_Current_Source",
+    "BATTERY": "Battery",
+    "GATING": "PWM_Generator",
+    "SIMCONTROL": "SimControl",
+    "MULTI_RESISTOR": "Resistor",
+    "MULTI_INDUCTOR": "Inductor",
+    "MULTI_CAPACITOR": "Capacitor",
+    "MULTI_DIODE": "Diode",
+    "MULTI_MOSFET": "MOSFET",
+    "MULTI_IGBT": "IGBT",
+    "TF_1F_1": "Transformer",
+    "TF_IDEAL": "IdealTransformer",
+}
+
+
+def _get_parameter_name_mapping(component_type):
+    """Resolve parameter-name mapping for a schematic element type."""
+    candidates = []
+    if component_type:
+        candidates.append(component_type)
+    alias = _PARAMETER_COMPONENT_ALIASES.get(component_type)
+    if alias and alias not in candidates:
+        candidates.append(alias)
+
+    if _registry_get_parameter_mapping is not None:
+        for candidate in candidates:
+            mapping = _registry_get_parameter_mapping(candidate)
+            if mapping:
+                return mapping
+
+    for candidate in candidates:
+        mapping = _PARAM_NAME_MAP.get(candidate)
+        if mapping:
+            return mapping
+
+    return {}
+
 
 def _get_simulation_defaults(topology):
     """토폴로지에 맞는 기본 시뮬레이션 파라미터를 반환한다."""
@@ -386,7 +428,7 @@ def handle_open_project(params):
 
 
 def handle_set_parameter(params):
-    """컴포넌트 파라미터를 변경한다."""
+    """Update a component parameter in the currently open schematic."""
     global _current_sch
 
     component_id = params.get("component_id")
@@ -395,33 +437,51 @@ def handle_set_parameter(params):
     component_type = params.get("component_type")
 
     if not component_id or not parameter_name:
-        return _error("INVALID_INPUT", "component_id와 parameter_name이 필요합니다.")
+        return _error("INVALID_INPUT", "component_id and parameter_name are required.")
 
     if _current_sch is None:
-        return _error("NO_PROJECT", "열린 프로젝트가 없습니다. open_project를 먼저 호출하세요.")
+        return _error("NO_PROJECT", "No project is open. Call open_project first.")
 
-    # component_type이 없으면 element cache에서 자동 조회
+    if not component_type and not _element_cache:
+        _build_element_cache()
     if not component_type:
         component_type = _element_cache.get(component_id, "")
+    if not component_type:
+        return _error("COMPONENT_NOT_FOUND", "Unknown component '%s'" % component_id)
 
     try:
         p = _get_psim()
+        parameter_map = _get_parameter_name_mapping(component_type)
+        psim_parameter_name = parameter_map.get(parameter_name, parameter_name)
+        if psim_parameter_name is None:
+            return _error(
+                "UNSUPPORTED_PARAMETER",
+                "Parameter '%s' is not directly writable for component type '%s'"
+                % (parameter_name, component_type),
+            )
 
-        # PsimSetElmValue2: type + name으로 지정
-        result = p.PsimSetElmValue2(
-            _current_sch, component_type, component_id,
-            parameter_name, str(value)
-        )
+        with _suppress_stdout():
+            result = p.PsimSetElmValue2(
+                _current_sch,
+                component_type,
+                component_id,
+                psim_parameter_name,
+                str(value),
+            )
+            if _current_path:
+                p.PsimFileSave(_current_sch, _current_path)
 
         return _success({
             "component_id": component_id,
             "parameter_name": parameter_name,
+            "psim_parameter_name": psim_parameter_name,
             "new_value": str(value),
+            "persisted": bool(_current_path),
             "raw_result": result,
         })
 
     except Exception as e:
-        return _error("PSIM_ERROR", "파라미터 설정 실패: %s" % str(e))
+        return _error("PSIM_ERROR", "Parameter update failed: %s" % str(e))
 
 
 def handle_run_simulation(params):
@@ -494,7 +554,6 @@ def handle_run_simulation(params):
 def handle_export_results(params):
     """시뮬레이션 결과를 CSV로 내보낸다."""
     output_dir = params.get("output_dir", ".")
-    fmt = params.get("format", "csv")
     signals = params.get("signals")
     graph_file = params.get("graph_file", "")
 
@@ -747,6 +806,7 @@ def _handle_template_circuit(psim_template, save_path):
         p.PsimFileSave(sch, save_path)
         _current_sch = sch
         _current_path = save_path
+        _build_element_cache()
 
         return _success({
             "file_path": save_path,
@@ -862,11 +922,7 @@ def handle_create_circuit(params):
                     kwargs["SubType"] = "Ideal"
 
                 # Map and add parameters (내부 이름 → PSIM API 이름)
-                parameter_map = (
-                    _registry_get_parameter_mapping(comp_type)
-                    if _registry_get_parameter_mapping is not None
-                    else _PARAM_NAME_MAP
-                )
+                parameter_map = _get_parameter_name_mapping(comp_type)
                 for param_name, param_value in comp_params.items():
                     psim_name = parameter_map.get(param_name, param_name)
                     if psim_name is not None:
@@ -981,6 +1037,7 @@ def handle_create_circuit(params):
 
         _current_sch = sch
         _current_path = save_path
+        _build_element_cache()
 
         total_requested_conns = len(wire_segments) if wire_segments else len(params.get("connections", []))
         result = {
