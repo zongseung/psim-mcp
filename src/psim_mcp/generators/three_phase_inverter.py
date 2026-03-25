@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_vdc,
     make_ground,
@@ -21,11 +26,15 @@ class ThreePhaseInverterGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vdc"]
+        return ["vin"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["load_resistance", "fsw"]
+        return ["vdc", "load_resistance", "fsw"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.three_phase_inverter import synthesize_three_phase_inverter
+        return synthesize_three_phase_inverter(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -36,7 +45,7 @@ class ThreePhaseInverterGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vdc: float = float(requirements["vdc"])
+        vdc: float = float(requirements.get("vdc", requirements.get("vin", 48.0)))
         r_load: float = float(requirements.get("load_resistance", 10.0))
         fsw: float = float(requirements.get("fsw", 10_000))
 

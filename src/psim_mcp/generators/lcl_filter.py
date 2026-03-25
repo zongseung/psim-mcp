@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_vac,
     make_ground,
@@ -23,11 +27,15 @@ class LCLFilterGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["fsw", "f_line", "load_resistance"]
+        return []
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["vin", "vdc", "delta_i_ratio"]
+        return ["fsw", "f_line", "load_resistance", "vin", "vdc", "delta_i_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.lcl_filter import synthesize_lcl_filter
+        return synthesize_lcl_filter(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -38,9 +46,9 @@ class LCLFilterGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        fsw: float = float(requirements["fsw"])
-        f_line: float = float(requirements["f_line"])
-        r_load: float = float(requirements["load_resistance"])
+        fsw: float = float(requirements.get("fsw", 10_000))
+        f_line: float = float(requirements.get("f_line", 60.0))
+        r_load: float = float(requirements.get("load_resistance", requirements.get("vout_target", 12.0)))
         vin: float = float(requirements.get("vin", 220.0))
         vdc: float = float(requirements.get("vdc", vin * math.sqrt(2)))
         delta_i_ratio: float = float(requirements.get("delta_i_ratio", 0.15))

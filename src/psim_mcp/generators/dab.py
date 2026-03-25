@@ -14,8 +14,12 @@ Layout structure:
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_gating,
     make_ground,
@@ -36,11 +40,15 @@ class DABGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vin", "vout_target", "power"]
+        return ["vin", "vout_target"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["fsw", "phase_shift_deg"]
+        return ["power", "fsw", "phase_shift_deg"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.dab import synthesize_dab
+        return synthesize_dab(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -53,7 +61,8 @@ class DABGenerator(TopologyGenerator):
 
         vin: float = float(requirements["vin"])
         vout: float = float(requirements["vout_target"])
-        pout: float = float(requirements["power"])
+        iout_default = float(requirements.get("iout", 1.0))
+        pout: float = float(requirements.get("power", vout * iout_default))
         fsw: float = float(requirements.get("fsw", 100_000))
 
         # Turns ratio

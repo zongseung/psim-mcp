@@ -9,8 +9,12 @@ applications for reduced harmonic distortion.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_diode_v,
     make_gating,
@@ -19,7 +23,6 @@ from .layout import (
     make_resistor,
     make_vdc,
     make_igbt_v,
-    _build_component,
 )
 
 
@@ -32,11 +35,15 @@ class ThreeLevelNPCGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vdc_total"]
+        return ["vin"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["fsw", "load_resistance", "filter_inductance", "modulation_index"]
+        return ["vdc_total", "fsw", "load_resistance", "filter_inductance", "modulation_index"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.three_level_npc import synthesize_three_level_npc
+        return synthesize_three_level_npc(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -47,7 +54,7 @@ class ThreeLevelNPCGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vdc_total: float = float(requirements["vdc_total"])
+        vdc_total: float = float(requirements.get("vdc_total", requirements.get("vin", 48.0)))
         vdc_half = vdc_total / 2.0
         fsw: float = float(requirements.get("fsw", 10_000))
         m: float = float(requirements.get("modulation_index", 0.8))

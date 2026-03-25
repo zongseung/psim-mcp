@@ -61,6 +61,14 @@ _ANCHOR_OFFSETS: dict[tuple[str, int], dict[str, tuple[int, int]]] = {
     ("MOSFET", 0): {
         "drain": (0, 0), "source": (0, 50), "gate": (-20, 30),
     },
+    # IGBT horizontal: DIR=270
+    ("IGBT", 270): {
+        "collector": (0, 0), "emitter": (50, 0), "gate": (30, 20),
+    },
+    # IGBT vertical: DIR=0
+    ("IGBT", 0): {
+        "collector": (0, 0), "emitter": (0, 50), "gate": (-20, 30),
+    },
     # PWM Generator: DIR=0
     ("PWM_Generator", 0): {"output": (0, 0)},
     # Diode horizontal (make_diode_h): DIR=0

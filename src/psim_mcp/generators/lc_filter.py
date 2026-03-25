@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_vac,
     make_ground,
@@ -23,11 +27,15 @@ class LCFilterGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["load_resistance"]
+        return []
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["cutoff_freq", "vin_freq", "capacitance", "inductance", "vin", "freq"]
+        return ["load_resistance", "cutoff_freq", "vin_freq", "capacitance", "inductance", "vin", "freq"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.lc_filter import synthesize_lc_filter
+        return synthesize_lc_filter(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -38,7 +46,7 @@ class LCFilterGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        r_load: float = float(requirements["load_resistance"])
+        r_load: float = float(requirements.get("load_resistance", requirements.get("vout_target", 12.0)))
         vin: float = float(requirements.get("vin", 10.0))
         freq: float = float(requirements.get("freq", 1000.0))
 

@@ -9,7 +9,12 @@ the two bridge legs.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_capacitor,
     make_diode_h,
@@ -37,6 +42,10 @@ class PhaseShiftedFullBridgeGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["fsw", "n_ratio", "ripple_ratio", "voltage_ripple_ratio", "phase_shift"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.phase_shifted_full_bridge import synthesize_phase_shifted_full_bridge
+        return synthesize_phase_shifted_full_bridge(requirements)
 
     # ------------------------------------------------------------------
     # Design

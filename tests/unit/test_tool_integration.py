@@ -177,13 +177,12 @@ async def test_continue_design_keeps_asking_when_template_not_design_ready(mock_
 
     raw = await app._tool_manager.call_tool(
         "design_circuit",
-        {"description": "태양광 MPPT 회로"},
+        {"description": "푸시풀 컨버터"},
         convert_result=False,
     )
     first = json.loads(raw)
     assert first["success"] is True
-    # With pv_mppt_boost generator registered, missing required fields
-    # causes need_specs to be returned immediately (or confirm_intent first)
+    # push_pull requires vin, vout_target, iout — missing fields cause need_specs or confirm_intent
     action = first["data"]["action"]
     assert action in ("confirm_intent", "need_specs")
 

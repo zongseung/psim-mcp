@@ -13,8 +13,12 @@ Layout structure:
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_capacitor,
     make_gating,
@@ -35,11 +39,15 @@ class TotemPolePFCGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vac_rms"]
+        return ["vin"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["vout_target", "power", "fsw", "ripple_ratio"]
+        return ["vac_rms", "vout_target", "power", "fsw", "ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.totem_pole_pfc import synthesize_totem_pole_pfc
+        return synthesize_totem_pole_pfc(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -50,7 +58,7 @@ class TotemPolePFCGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vac_rms: float = float(requirements["vac_rms"])
+        vac_rms: float = float(requirements.get("vac_rms", requirements.get("vin", 220.0)))
         fsw: float = float(requirements.get("fsw", 65_000))
         ripple_ratio: float = float(requirements.get("ripple_ratio", 0.3))
         vripple_ratio: float = float(requirements.get("voltage_ripple_ratio", 0.02))

@@ -13,8 +13,12 @@ Layout structure:
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_capacitor,
     make_diode_bridge,
@@ -38,11 +42,15 @@ class EVOBCGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vac_rms", "vbat"]
+        return ["vin", "vout_target"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["charge_current", "fsw", "power"]
+        return ["vac_rms", "vbat", "charge_current", "fsw", "power"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.ev_obc import synthesize_ev_obc
+        return synthesize_ev_obc(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -53,8 +61,8 @@ class EVOBCGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vac_rms: float = float(requirements["vac_rms"])
-        vbat: float = float(requirements["vbat"])
+        vac_rms: float = float(requirements.get("vac_rms", requirements.get("vin", 220.0)))
+        vbat: float = float(requirements.get("vbat", requirements.get("vout_target", 400.0)))
         i_charge: float = float(requirements.get("charge_current", 10.0))
         fsw: float = float(requirements.get("fsw", 65_000))
         f_line: float = float(requirements.get("frequency", 60.0))

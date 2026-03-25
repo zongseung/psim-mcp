@@ -14,7 +14,7 @@ import asyncio
 import pytest
 
 from psim_mcp.config import AppConfig
-from psim_mcp.data.capability_matrix import CAPABILITY_MATRIX, get_capability, is_supported
+from psim_mcp.data.capability_matrix import CAPABILITY_MATRIX
 
 
 # ---------------------------------------------------------------------------

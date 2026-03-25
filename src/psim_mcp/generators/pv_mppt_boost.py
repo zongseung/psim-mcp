@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
-    make_vdc,
     make_ground,
     make_inductor,
     make_capacitor,
@@ -13,7 +17,6 @@ from .layout import (
     make_mosfet_v,
     make_diode_h,
     _build_component,
-    _flatten_points,
 )
 
 
@@ -26,11 +29,15 @@ class PVMPPTBoostGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["voc", "isc", "vout_target"]
+        return []
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["vmp", "imp", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+        return ["voc", "isc", "vout_target", "vmp", "imp", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.pv_mppt_boost import synthesize_pv_mppt_boost
+        return synthesize_pv_mppt_boost(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -41,9 +48,10 @@ class PVMPPTBoostGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        voc: float = float(requirements["voc"])
-        isc: float = float(requirements["isc"])
-        vout: float = float(requirements["vout_target"])
+        vin_default = float(requirements.get("vin", 48.0))
+        voc: float = float(requirements.get("voc", vin_default * 1.25))
+        isc: float = float(requirements.get("isc", 2.0))
+        vout: float = float(requirements.get("vout_target", vin_default * 1.5))
         # MPP is typically ~80% of Voc, ~90% of Isc
         vmp: float = float(requirements.get("vmp", voc * 0.8))
         imp: float = float(requirements.get("imp", isc * 0.9))

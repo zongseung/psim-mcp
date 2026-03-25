@@ -8,9 +8,12 @@ galvanic isolation.
 
 from __future__ import annotations
 
-import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_capacitor,
     make_diode_h,
@@ -21,7 +24,6 @@ from .layout import (
     make_resistor,
     make_vdc,
     _build_component,
-    _flatten_points,
 )
 
 
@@ -39,6 +41,10 @@ class PushPullGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["fsw", "n_ratio", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.push_pull import synthesize_push_pull
+        return synthesize_push_pull(requirements)
 
     # ------------------------------------------------------------------
     # Design

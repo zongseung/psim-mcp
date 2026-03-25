@@ -11,8 +11,12 @@ Layout structure:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_bldc_motor,
     make_gating,
@@ -31,11 +35,15 @@ class BLDCDriveGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vdc"]
+        return ["vin"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["motor_power", "speed", "fsw"]
+        return ["vdc", "motor_power", "speed", "fsw"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.bldc_drive import synthesize_bldc_drive
+        return synthesize_bldc_drive(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -46,7 +54,7 @@ class BLDCDriveGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vdc: float = float(requirements["vdc"])
+        vdc: float = float(requirements.get("vdc", requirements.get("vin", 48.0)))
         motor_power: float = float(requirements.get("motor_power", 500.0))
         speed_rpm: float = float(requirements.get("speed", 3000.0))
         fsw: float = float(requirements.get("fsw", 20_000))

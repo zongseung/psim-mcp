@@ -8,8 +8,12 @@ half-bridge legs, each providing one phase to the motor windings.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_gating,
     make_ground,
@@ -28,14 +32,18 @@ class InductionMotorVfGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vdc"]
+        return ["vin"]
 
     @property
     def optional_fields(self) -> list[str]:
         return [
-            "motor_power", "load_torque", "fsw", "f_motor", "poles",
+            "vdc", "motor_power", "load_torque", "fsw", "f_motor", "poles",
             "Rs", "Rr", "Ls", "Lr", "Lm", "J",
         ]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.induction_motor_vf import synthesize_induction_motor_vf
+        return synthesize_induction_motor_vf(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -46,7 +54,7 @@ class InductionMotorVfGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vdc: float = float(requirements["vdc"])
+        vdc: float = float(requirements.get("vdc", requirements.get("vin", 48.0)))
         fsw: float = float(requirements.get("fsw", 5_000))
         f_motor: float = float(requirements.get("f_motor", 60.0))
         poles: int = int(requirements.get("poles", 4))

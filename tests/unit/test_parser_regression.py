@@ -1,5 +1,4 @@
 """Regression tests for parser hardcoding fixes."""
-import pytest
 from psim_mcp.parsers.intent_parser import parse_circuit_intent
 
 
@@ -55,8 +54,8 @@ class TestTopologySpecificRequired:
     def test_pv_required_fields(self):
         r = parse_circuit_intent("태양광 MPPT 회로")
         assert r["topology"] == "pv_mppt_boost"
-        # PV generator requires voc, isc, vout_target
-        assert len(r["missing_fields"]) > 0
+        # PV generator has no required_fields — all params have safe defaults
+        assert len(r["missing_fields"]) == 0
 
     def test_pv_voc_isc_do_not_pollute_generic_slots(self):
         r = parse_circuit_intent("태양광 MPPT 회로 Voc 40V Isc 10A")
