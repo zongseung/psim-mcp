@@ -263,6 +263,9 @@ def test_forward_topology_metrics_defined():
     assert criteria is not None
     assert "output_voltage_mean" in criteria
     assert "output_voltage_ripple_pct" in criteria
+    tunable_components = {item["component"] for item in metrics["tunable_params"]}
+    assert "Vout" in tunable_components
+    assert "R1" not in tunable_components
 
 
 def test_layout_factories_follow_port_contract_lengths():
