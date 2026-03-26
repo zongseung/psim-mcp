@@ -21,11 +21,19 @@ def test_delete():
 
 
 def test_expired():
-    store = PreviewStore(ttl=0)  # immediate expiry
-    import time
-    token = store.save({"test": True})
-    time.sleep(0.01)
-    assert store.get(token) is None
+    from unittest.mock import patch
+
+    fake_time = 1000.0
+    with patch("psim_mcp.shared.state_store.time") as mock_time:
+        mock_time.monotonic = lambda: fake_time
+        store = PreviewStore(ttl=1)
+        token = store.save({"test": True})
+
+        # Advance time past the TTL
+        fake_time = 1001.1
+        mock_time.monotonic = lambda: fake_time
+
+        assert store.get(token) is None
 
 
 def test_multiple_tokens():

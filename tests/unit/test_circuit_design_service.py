@@ -216,6 +216,33 @@ async def test_confirm_circuit_rejects_save_path_outside_allowed_root():
     assert result["error"]["code"] == "PATH_NOT_ALLOWED"
 
 
+@pytest.mark.asyncio
+async def test_confirm_circuit_allows_save_path_in_real_mode_output_dir():
+    base = Path("output") / "circuit_design_service_real_mode_guard"
+    project_root = base / "projects"
+    output_root = base / "generated"
+    project_root.mkdir(parents=True, exist_ok=True)
+    output_root.mkdir(parents=True, exist_ok=True)
+    config = AppConfig(
+        psim_mode="real",
+        psim_project_dir=project_root,
+        psim_output_dir=output_root,
+    )
+    service = CircuitDesignService(adapter=MockPsimAdapter(), config=config)
+
+    preview = await service.preview_circuit(circuit_type="buck")
+    assert preview["success"] is True
+
+    target = output_root / "allowed.psimsch"
+    result = await service.confirm_circuit(
+        save_path=str(target),
+        preview_token=preview["data"]["preview_token"],
+    )
+
+    assert result["success"] is True
+    assert result["data"]["file_path"] == str(target)
+
+
 # --- Design (NLP) ---
 
 @pytest.mark.asyncio

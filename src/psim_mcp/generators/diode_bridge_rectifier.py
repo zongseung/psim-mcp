@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
 from .layout import (
     make_vac,
@@ -12,6 +14,9 @@ from .layout import (
     make_capacitor,
     make_resistor,
 )
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class DiodeBridgeRectifierGenerator(TopologyGenerator):
@@ -23,11 +28,15 @@ class DiodeBridgeRectifierGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vac_rms"]
+        return ["vin"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["f_line", "load_resistance", "capacitance", "ripple_ratio"]
+        return ["vac_rms", "f_line", "load_resistance", "capacitance", "ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.diode_bridge_rectifier import synthesize_diode_bridge_rectifier
+        return synthesize_diode_bridge_rectifier(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -38,7 +47,7 @@ class DiodeBridgeRectifierGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vac_rms: float = float(requirements["vac_rms"])
+        vac_rms: float = float(requirements.get("vac_rms", requirements.get("vin", 220.0)))
         f_line: float = float(requirements.get("f_line", 60.0))
         r_load: float = float(requirements.get("load_resistance", 100.0))
         ripple_ratio: float = float(requirements.get("ripple_ratio", 0.05))

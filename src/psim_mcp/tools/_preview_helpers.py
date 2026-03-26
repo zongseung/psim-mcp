@@ -7,6 +7,8 @@ and design.py.
 
 from __future__ import annotations
 
+import glob as _glob
+import hashlib
 import os
 import tempfile
 from dataclasses import dataclass
@@ -74,7 +76,17 @@ def render_and_store_preview(
     )
 
     svg_dir = tempfile.gettempdir()
-    svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}.svg")
+    content_hash = hashlib.sha256(svg_content.encode()).hexdigest()[:8]
+    svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}_{content_hash}.svg")
+
+    # Remove stale previews across ALL topologies to prevent accumulation.
+    for stale in _glob.glob(os.path.join(svg_dir, "psim_preview_*.svg")):
+        if stale != svg_path:
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+
     with open(svg_path, "w", encoding="utf-8") as f:
         f.write(svg_content)
 

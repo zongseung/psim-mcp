@@ -198,3 +198,53 @@ class TestCreateCircuit:
 
         assert result["success"] is False
         assert result["error"]["code"] == "PATH_NOT_ALLOWED"
+
+    async def test_allows_save_path_in_real_mode_output_dir(
+        self, mock_adapter: MockPsimAdapter
+    ):
+        base = Path("output") / "simulation_service_real_mode_guard"
+        project_root = base / "projects"
+        output_root = base / "generated"
+        project_root.mkdir(parents=True, exist_ok=True)
+        output_root.mkdir(parents=True, exist_ok=True)
+        service = SimulationService(
+            adapter=mock_adapter,
+            config=AppConfig(
+                psim_mode="real",
+                psim_project_dir=project_root,
+                psim_output_dir=output_root,
+            ),
+        )
+
+        circuit_spec = {
+            "components": [
+                {
+                    "id": "V1",
+                    "type": "DC_Source",
+                    "parameters": {"voltage": 48.0},
+                    "position": {"x": 0, "y": 0},
+                },
+                {
+                    "id": "R1",
+                    "type": "Resistor",
+                    "parameters": {"resistance": 10.0},
+                    "position": {"x": 120, "y": 0},
+                },
+            ],
+            "nets": [
+                {"name": "vin", "pins": ["V1.positive", "R1.pin1"]},
+                {"name": "gnd", "pins": ["V1.negative", "R1.pin2"]},
+            ],
+        }
+
+        target = output_root / "generated.psimsch"
+        result = await service.create_circuit(
+            circuit_type="custom",
+            components=[],
+            connections=[],
+            save_path=str(target),
+            circuit_spec=circuit_spec,
+        )
+
+        assert result["success"] is True
+        assert result["data"]["file_path"] == str(target)

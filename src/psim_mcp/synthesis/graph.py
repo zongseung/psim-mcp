@@ -69,6 +69,7 @@ class CircuitGraph:
     simulation: dict[str, object] = field(default_factory=dict)
     traces: list[DesignDecisionTrace] = field(default_factory=list)
     metadata: dict[str, object] = field(default_factory=dict)
+    graph_version: str = "1.0"
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -84,6 +85,7 @@ class CircuitGraph:
             simulation=data.get("simulation", {}),
             traces=[DesignDecisionTrace(**t) for t in data.get("traces", [])],
             metadata=data.get("metadata", {}),
+            graph_version=data.get("graph_version", "1.0"),
         )
 
     def get_component(self, component_id: str) -> GraphComponent | None:

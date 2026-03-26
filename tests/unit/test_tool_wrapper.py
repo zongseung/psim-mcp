@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from psim_mcp.tools import encode_response, format_tool_error, tool_handler
+from psim_mcp.tools import encode_response, tool_handler
 
 
 # ------------------------------------------------------------------

@@ -93,7 +93,7 @@ class PVMPPTBoostGenerator(TopologyGenerator):
             make_ground("GND1", 80, 150),
             make_inductor("L1", 150, 100, inductance, current_flag=1),
             make_mosfet_v("SW1", 220, 100, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G1", 200, 170, fsw, f"0,{int(duty * 360)}"),
+            make_gating("G1", 200, 170, fsw, f" 0 {int(duty * 360)}."),
             make_diode_h("D1", 240, 100, forward_voltage=0.7),
             make_capacitor("C1", 320, 100, capacitance),
             make_resistor("R1", 380, 100, r_load, voltage_flag=1),

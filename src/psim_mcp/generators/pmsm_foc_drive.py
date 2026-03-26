@@ -90,18 +90,18 @@ class PMSMFOCDriveGenerator(TopologyGenerator):
             # Phase A leg
             make_igbt_v("Q_AH", 200, 80, switching_frequency=fsw, on_resistance=0.02),
             make_igbt_v("Q_AL", 200, 160, switching_frequency=fsw, on_resistance=0.02),
-            make_gating("G_AH", 160, 110, f_elec, "0,180"),
-            make_gating("G_AL", 160, 190, f_elec, "180,360"),
+            make_gating("G_AH", 160, 110, f_elec, " 0 180."),
+            make_gating("G_AL", 160, 190, f_elec, " 180 360."),
             # Phase B leg
             make_igbt_v("Q_BH", 350, 80, switching_frequency=fsw, on_resistance=0.02),
             make_igbt_v("Q_BL", 350, 160, switching_frequency=fsw, on_resistance=0.02),
-            make_gating("G_BH", 310, 110, f_elec, "120,300"),
-            make_gating("G_BL", 310, 190, f_elec, "300,480"),
+            make_gating("G_BH", 310, 110, f_elec, " 120 300."),
+            make_gating("G_BL", 310, 190, f_elec, " 300 480."),
             # Phase C leg
             make_igbt_v("Q_CH", 500, 80, switching_frequency=fsw, on_resistance=0.02),
             make_igbt_v("Q_CL", 500, 160, switching_frequency=fsw, on_resistance=0.02),
-            make_gating("G_CH", 460, 110, f_elec, "240,420"),
-            make_gating("G_CL", 460, 190, f_elec, "60,240"),
+            make_gating("G_CH", 460, 110, f_elec, " 240 420."),
+            make_gating("G_CL", 460, 190, f_elec, " 60 240."),
             # Motor
             make_pmsm("M1", 620, 130,
                        poles=poles, Rs=0.1, Ld=1e-3, Lq=1e-3, flux=0.05, J=0.01),

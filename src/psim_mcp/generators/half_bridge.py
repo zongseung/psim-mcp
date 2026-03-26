@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import math
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class HalfBridgeInverterGenerator(TopologyGenerator):
@@ -26,6 +31,10 @@ class HalfBridgeInverterGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["vout_target", "iout", "fsw", "load_resistance"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.half_bridge import synthesize_half_bridge
+        return synthesize_half_bridge(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -162,10 +171,10 @@ class HalfBridgeInverterGenerator(TopologyGenerator):
         #   Lf.pin1 -> SW1.source = horizontal, SW1.source -> SW2.drain = vertical
         nets = [
             {"name": "net_vdc_pos", "pins": ["V1.positive", "C1.positive", "SW1.drain"]},
-            {"name": "net_cap_mid", "pins": ["C1.negative", "C2.positive"]},
+            {"name": "net_cap_mid", "pins": ["C1.negative", "C2.positive", "R1.pin2"]},
             {"name": "net_bridge_mid", "pins": ["Lf.pin1", "SW1.source", "SW2.drain"]},
             {"name": "net_lf_out", "pins": ["Lf.pin2", "R1.pin1"]},
-            {"name": "net_gnd", "pins": ["V1.negative", "GND1.pin1", "C2.negative", "SW2.source", "R1.pin2"]},
+            {"name": "net_gnd", "pins": ["V1.negative", "GND1.pin1", "C2.negative", "SW2.source"]},
             {"name": "net_gate1", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_gate2", "pins": ["G2.output", "SW2.gate"]},
         ]

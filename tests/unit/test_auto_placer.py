@@ -8,9 +8,7 @@ from psim_mcp.layout.auto_placer import (
     GRID,
     GROUND_ROLES,
     auto_place,
-    _allocate_regions,
     _load_strategy,
-    _snap_to_grid,
 )
 from psim_mcp.layout.models import LayoutComponent, SchematicLayout
 from psim_mcp.synthesis.graph import (
@@ -111,7 +109,7 @@ def test_buck_power_flow_direction(buck_graph):
     """Input source should be left of output load."""
     layout = auto_place(buck_graph)
     comp_map = {c.id: c for c in layout.components}
-    assert comp_map["V1"].x < comp_map["R1"].x
+    assert comp_map["V1"].x < comp_map["Vout"].x
 
 
 def test_buck_switch_between_input_and_output(buck_graph):
@@ -119,7 +117,7 @@ def test_buck_switch_between_input_and_output(buck_graph):
     layout = auto_place(buck_graph)
     comp_map = {c.id: c for c in layout.components}
     assert comp_map["V1"].x < comp_map["SW1"].x
-    assert comp_map["SW1"].x < comp_map["R1"].x
+    assert comp_map["SW1"].x < comp_map["Vout"].x
 
 
 def test_buck_topology_name(buck_graph):
@@ -191,7 +189,7 @@ def test_llc_power_flow(llc_graph):
     """Input source should be left of output load."""
     layout = auto_place(llc_graph)
     comp_map = {c.id: c for c in layout.components}
-    assert comp_map["V1"].x < comp_map["R1"].x
+    assert comp_map["V1"].x < comp_map["Vout"].x
 
 
 # ---------------------------------------------------------------------------

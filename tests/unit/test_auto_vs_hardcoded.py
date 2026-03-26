@@ -53,9 +53,9 @@ def test_buck_auto_vs_hardcoded_power_flow_matches(buck_graph):
     hc_map = {c.id: c for c in hc_layout.components}
 
     # Auto: V1 left of R1
-    assert auto_map["V1"].x < auto_map["R1"].x
+    assert auto_map["V1"].x < auto_map["Vout"].x
     # Hardcoded: V1 left of R1
-    assert hc_map["V1"].x < hc_map["R1"].x
+    assert hc_map["V1"].x < hc_map["Vout"].x
 
 
 def test_flyback_auto_vs_hardcoded_same_count(flyback_graph):
@@ -68,7 +68,7 @@ def test_flyback_auto_vs_hardcoded_power_flow(flyback_graph):
     auto_layout = auto_place(flyback_graph)
     auto_map = {c.id: c for c in auto_layout.components}
     # Input left of secondary output
-    assert auto_map["V1"].x < auto_map["R1"].x
+    assert auto_map["V1"].x < auto_map["Vout"].x
 
 
 def test_llc_auto_vs_hardcoded_same_count(llc_graph):
@@ -80,4 +80,4 @@ def test_llc_auto_vs_hardcoded_same_count(llc_graph):
 def test_llc_auto_vs_hardcoded_power_flow(llc_graph):
     auto_layout = auto_place(llc_graph)
     auto_map = {c.id: c for c in auto_layout.components}
-    assert auto_map["V1"].x < auto_map["R1"].x
+    assert auto_map["V1"].x < auto_map["Vout"].x

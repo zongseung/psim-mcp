@@ -117,10 +117,10 @@ class ThreeLevelNPCGenerator(TopologyGenerator):
             make_igbt_v("SW3", 250, 180, switching_frequency=fsw, on_resistance=0.02),
             make_igbt_v("SW4", 250, 230, switching_frequency=fsw, on_resistance=0.02),
             # Gating signals (level-shifted PWM, complementary pairs)
-            make_gating("G1", 210, 90, fsw, "0,90"),
-            make_gating("G2", 210, 140, fsw, "0,180"),
-            make_gating("G3", 210, 210, fsw, "180,360"),
-            make_gating("G4", 210, 260, fsw, "90,270"),
+            make_gating("G1", 210, 90, fsw, " 0 90."),
+            make_gating("G2", 210, 140, fsw, " 0 180."),
+            make_gating("G3", 210, 210, fsw, " 180 360."),
+            make_gating("G4", 210, 260, fsw, " 90 270."),
             # Clamp diodes (cathode UP toward midpoint)
             make_diode_v("D1", 350, 160, forward_voltage=1.5),
             make_diode_v("D2", 350, 230, forward_voltage=1.5),

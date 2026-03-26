@@ -1,6 +1,5 @@
 """Tests for CircuitSpec model."""
-import pytest
-from psim_mcp.models.circuit_spec import CircuitSpec, ComponentSpec, NetSpec, CircuitMetadata, Position
+from psim_mcp.models.circuit_spec import CircuitSpec, ComponentSpec, NetSpec, CircuitMetadata
 
 # Test basic creation
 def test_circuit_spec_creation():

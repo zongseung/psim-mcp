@@ -131,6 +131,41 @@ _ANCHOR_OFFSETS: dict[tuple[str, int], dict[str, tuple[int, int]]] = {
         "dc_pos": (80, 0),
         "dc_neg": (80, 60),
     },
+    # Thyristor: DIR=0
+    # Ports: anode(x,y) cathode(x,y+50) gate(x-20,y+30)
+    ("Thyristor", 0): {
+        "anode": (0, 0), "pin1": (0, 0),
+        "cathode": (0, 50), "pin2": (0, 50),
+        "gate": (-20, 30),
+    },
+    # Center_Tap_Transformer: DIR=0
+    # Ports: pri1(x,y) pri2(x,y+80) sec1(x+80,y) center_tap(x+80,y+40) sec2(x+80,y+80)
+    ("Center_Tap_Transformer", 0): {
+        "primary1": (0, 0), "primary_in": (0, 0),
+        "primary2": (0, 80), "primary_out": (0, 80),
+        "secondary1": (80, 0), "secondary_in": (80, 0),
+        "center_tap": (80, 40),
+        "secondary2": (80, 80), "secondary_out": (80, 80),
+    },
+    # Induction_Motor: DIR=0
+    # Ports: phase_a(x,y) phase_b(x,y+30) phase_c(x,y+60)
+    ("Induction_Motor", 0): {
+        "phase_a": (0, 0), "pin1": (0, 0),
+        "phase_b": (0, 30), "pin2": (0, 30),
+        "phase_c": (0, 60), "pin3": (0, 60),
+    },
+    # PMSM: DIR=0 (same layout as Induction_Motor)
+    ("PMSM", 0): {
+        "phase_a": (0, 0), "pin1": (0, 0),
+        "phase_b": (0, 30), "pin2": (0, 30),
+        "phase_c": (0, 60), "pin3": (0, 60),
+    },
+    # BLDC_Motor: DIR=0 (same layout as Induction_Motor)
+    ("BLDC_Motor", 0): {
+        "phase_a": (0, 0), "pin1": (0, 0),
+        "phase_b": (0, 30), "pin2": (0, 30),
+        "phase_c": (0, 60), "pin3": (0, 60),
+    },
 }
 
 

@@ -142,13 +142,13 @@ class EVOBCGenerator(TopologyGenerator):
             # PFC boost stage
             make_inductor("L_pfc", 220, 100, l_pfc, current_flag=1),
             make_mosfet_v("SW_pfc", 300, 100, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G_pfc", 280, 170, fsw, f"0,{int(d_pfc * 360)}"),
+            make_gating("G_pfc", 280, 170, fsw, f" 0 {int(d_pfc * 360)}."),
             make_diode_h("D_pfc", 320, 100, forward_voltage=0.7),
             # DC link capacitor
             make_capacitor("C_dc", 400, 100, c_dc),
             # Buck charger stage
             make_mosfet_h("SW_buck", 450, 100, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G_buck", 480, 170, fsw, f"0,{int(d_buck * 360)}"),
+            make_gating("G_buck", 480, 170, fsw, f" 0 {int(d_buck * 360)}."),
             make_diode_h("D_buck", 500, 150, forward_voltage=0.7),
             make_inductor("L_buck", 550, 100, l_buck, current_flag=1),
             make_capacitor("C_out", 630, 100, c_out),

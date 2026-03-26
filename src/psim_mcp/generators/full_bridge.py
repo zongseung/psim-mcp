@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import math
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class FullBridgeInverterGenerator(TopologyGenerator):
@@ -26,6 +31,10 @@ class FullBridgeInverterGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["vout_target", "iout", "fsw", "load_resistance", "modulation_index"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.full_bridge import synthesize_full_bridge
+        return synthesize_full_bridge(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -191,9 +200,8 @@ class FullBridgeInverterGenerator(TopologyGenerator):
         nets = [
             {"name": "net_vdc_high", "pins": ["V1.positive", "SW1.drain", "SW2.drain"]},
             {"name": "net_left_mid", "pins": ["Lf.pin1", "SW1.source", "SW3.drain"]},
-            {"name": "net_right_mid", "pins": ["R1.pin1", "SW2.source", "SW4.drain"]},
-            {"name": "net_lf_out", "pins": ["Lf.pin2", "Cf.positive"]},
-            {"name": "net_load_return", "pins": ["Cf.negative", "R1.pin2"]},
+            {"name": "net_lf_out", "pins": ["Lf.pin2", "Cf.positive", "R1.pin1"]},
+            {"name": "net_right_mid", "pins": ["Cf.negative", "R1.pin2", "SW2.source", "SW4.drain"]},
             {"name": "net_gnd", "pins": ["V1.negative", "GND1.pin1", "SW3.source", "SW4.source"]},
             {"name": "net_gate1", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_gate2", "pins": ["G2.output", "SW2.gate"]},

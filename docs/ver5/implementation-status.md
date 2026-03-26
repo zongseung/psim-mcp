@@ -1,243 +1,247 @@
 # ver5 Implementation Status
 
-작성일: 2026-03-25
-기준 커밋: `a3d738f`
-검증 기준: `uv run pytest tests/unit` (821 passed) + 코드 레벨 E2E + `py_compile`
+Updated: 2026-03-26
+Baseline: `uv run pytest tests/unit` (1002 passed) + real-mode PSIM E2E (13/25 topologies)
 
-이 문서는 `docs/ver5/` 기획 문서와 현재 코드 구현 상태를 대조한 최신 상태 문서다.
-
----
-
-## 전체 요약
-
-| 영역 | 상태 | 메모 |
-|------|------|------|
-| Phase 1. Generator 분해 | 구현 완료 | synthesis model/sizing/synthesize 경계, feature flag 도입 |
-| Phase 2. CircuitGraph | 구현 완료 | graph 모델, builder, validator, topology synthesizer, capability 체크 |
-| Phase 3. Layout Engine | 구현 완료 | 알고리즘 auto-layout, constraint solver, 29 topology 지원 |
-| Phase 4. Routing | 대부분 구현 | trunk/branch, crossing minimization, bridge wire_segments 직접 소비 |
-| Phase 5. Intent Resolution | 대부분 구현 | V2 intent pipeline, versioned session, feature flag 연동 |
-| Registry/Metadata Ownership | 구현 완료 | 8개 registry 파일 존재, auto_placer에서 소비 |
-| Renderer/Bridge Consumer화 | 대부분 구현 | renderer는 layout/wire_segments 소비, bridge는 wire_segments 직접 소비 |
+This document tracks the current state of the ver5 canonical pipeline against the planning documents in `docs/ver5/`.
 
 ---
 
-## 검증 결과
+## Summary
 
-### 확인한 사실 (코드 실행으로 검증)
-
-- `uv run pytest tests/unit` — 821 passed, 0 failed
-- buck/flyback/llc E2E 파이프라인 통과 (intent → graph → layout → routing → materialize → SVG)
-- 서비스 레벨: `preview_circuit()`에서 graph/layout/routing/wire_segments 전부 저장됨
-- `confirm_circuit()`, `create_circuit_direct()` mock 모드 성공
-- bridge_script.py JSON IPC 통신 정상 (PSIM API stdout 오염 차단)
-
-### 이 문서에서 직접 검증하지 못한 것
-
-- topology별 실제 PSIM 생성 성공률 (real 모드 E2E)
-- 성능 수치 (SVG 렌더링 시간, 시뮬레이션 속도)
+| Area | Completion | Notes |
+|------|-----------|-------|
+| Phase 1. Generator Decomposition | 95% | 28/29 topologies have synthesizers; pv_grid_tied remains legacy-only |
+| Phase 2. CircuitGraph | 85% | Graph model, builder, validator, 28 topology synthesizers |
+| Phase 3. Layout Engine | 90% | 100% algorithmic auto_place; no hardcoded strategies active |
+| Phase 4. Routing | 70% | Trunk-and-branch + crossing minimization; no cost-function or symmetry-aware routing |
+| Phase 5. Intent Resolution | 75% | V2 pipeline active by default; no multi-hop clarification |
+| Simulation Feedback | 50% | Waveform rendering, simview exposure; optimization service incomplete |
+| Cross-cutting (versioning, metrics) | 60% | Quality gate metrics incomplete (4/8+); no canonical model versioning |
 
 ---
 
-## Phase 1. Generator 분해
+## Quantitative Snapshot
 
-### 구현됨
+| Metric | Value |
+|--------|-------|
+| Unit tests passing | 1002 |
+| Registered MCP tools | 17 |
+| Total topologies (topology_metadata.py) | 29 |
+| Topologies with `synthesize: "new"` | 28 (only `pv_grid_tied` is `"none"`) |
+| PSIM real-mode simulation success | 13/25 tested |
+| Data registries implemented | 8/8 |
+| Layout algorithm coverage | 100% algorithmic (auto_place) |
+| Topology-specific routing strategies | 3 (buck, flyback, llc) |
 
-- synthesis transition model — `src/psim_mcp/synthesis/models.py`
-- sizing logic 분리 — `src/psim_mcp/synthesis/sizing.py`
-- generator의 `synthesize()` 경계 — `src/psim_mcp/generators/base.py` + topology별 구현
-- preview payload version 필드 — `circuit_design_service.py`
-- feature flag 기반 topology on/off — `config.py:50-54` (5개 flag)
-- capability matrix runtime 반영 — `circuit_design_service.py:143`
+---
 
-### 부분 구현
+## PSIM Real-Mode Simulation Results (13/25)
 
-- `SimulationService`는 enriched `circuit_spec` 소비 가능하지만 compatibility service 성격 유지
+**Working** (13):
+buck, boost, flyback, buck_boost, sepic, cuk, forward, llc, cc_cv_charger, bidirectional_buck_boost, dab, pv_mppt_boost, ev_obc
+
+**Failing** (12 -- floating node errors):
+full_bridge, push_pull, thyristor_rectifier, boost_pfc, totem_pole_pfc, three_level_npc, pv_grid_tied, bldc_drive, pmsm_foc_drive, induction_motor_vf, half_bridge, diode_bridge_rectifier
+
+**Not tested** (4):
+vienna_rectifier, interleaved_boost, stacked_buck, resonant_llc_full_bridge
+
+---
+
+## Phase 1. Generator Decomposition
+
+### Implemented
+
+- Synthesis transition model -- `synthesis/models.py`
+- Sizing logic separation -- `synthesis/sizing.py`
+- Generator `synthesize()` boundary -- `generators/base.py` + 28 topology implementations
+- Preview payload version field -- `circuit_design_service.py`
+- Feature flag topology on/off -- `config.py` (5 flags)
+- Capability matrix runtime reflection -- `circuit_design_service.py`
+- All 13 remaining legacy topologies migrated to canonical pipeline (commit `2f38bda`)
+
+### Remaining
+
+- `pv_grid_tied` has no synthesizer (`synthesize="none"`)
+- `SimulationService` consumes enriched `circuit_spec` but retains compatibility-service character
 
 ---
 
 ## Phase 2. CircuitGraph
 
-### 구현됨
+### Implemented
 
-- `GraphComponent`, `GraphNet`, `FunctionalBlock`, `DesignDecisionTrace`, `CircuitGraph`
-  - `src/psim_mcp/synthesis/graph.py`
-- graph builder helpers — `src/psim_mcp/synthesis/graph_builders.py`
-- graph validator — `src/psim_mcp/validators/graph.py`
-- buck/flyback/llc graph synthesizer — `src/psim_mcp/synthesis/topologies/*.py`
-- preview payload의 graph 저장/복원 — `circuit_design_service.py`
-- capability matrix에서 graph 지원 여부 체크 — `circuit_design_service.py:143`
+- `GraphComponent`, `GraphNet`, `FunctionalBlock`, `DesignDecisionTrace`, `CircuitGraph` -- `synthesis/graph.py`
+- Graph builder helpers -- `synthesis/graph_builders.py`
+- Graph validator -- `validators/graph.py`
+- 28 topology graph synthesizers -- `synthesis/topologies/*.py`
+- Preview payload graph save/restore -- `circuit_design_service.py`
+- Capability matrix graph support check -- `circuit_design_service.py`
 
-### 부분 구현
+### Remaining
 
-- graph validation은 존재하지만 block-level semantic validation은 아직 얕다.
+- Graph validator `_REQUIRED_ROLES` only covers 3/28 topologies
+- Block-level semantic validation is shallow
 
 ---
 
 ## Phase 3. Layout Engine
 
-### 구현됨
+### Implemented
 
-- `SchematicLayout`, `LayoutComponent`, `LayoutRegion`, `LayoutConstraint` — `layout/models.py`
-- 알고리즘 auto-layout 엔진 — `layout/auto_placer.py`
-  - block 기반 region 할당
-  - role 기반 component 배치 (registry-driven)
-  - force-directed 미세 조정 — `layout/force_directed.py`
-  - grid snap (PSIM 50px)
-  - constraint enforcement — `layout/constraint_solver.py:21` (`enforce_all()` dispatcher, 7개 kind)
-  - symbol variant 선택 (symbol_registry에서 동적 빌드)
-- `generate_layout()` — `layout/engine.py` (모든 topology에 auto_place fallback)
-- `materialize_to_legacy()` — `layout/materialize.py`
-- service preview/store에 layout 저장 — `circuit_design_service.py`
-- SVG renderer가 `layout` + `wire_segments` 소비 — `svg_renderer.py`
-- `data/symbol_registry.py` — 심볼 variant, pin anchor, bounding box
-- `data/layout_strategy_registry.py` — 배치 규칙, role 분류 (규칙 기반 추론 + override), PLACEMENT_ROWS
+- `SchematicLayout`, `LayoutComponent`, `LayoutRegion`, `LayoutConstraint` -- `layout/models.py`
+- Algorithmic auto-layout engine -- `layout/auto_placer.py`
+  - Block-based region assignment
+  - Role-based component placement (registry-driven)
+  - Force-directed fine adjustment -- `layout/force_directed.py`
+  - Grid snap (PSIM 50px)
+  - Constraint enforcement -- `layout/constraint_solver.py` (7 constraint kinds)
+  - Symbol variant selection from `symbol_registry`
+- `generate_layout()` -- `layout/engine.py` (all topologies use auto_place)
+- `materialize_to_legacy()` -- `layout/materialize.py`
+  - 5 component types added: Thyristor, Center_Tap_Transformer, motors
+- Service preview/store layout persistence
+- SVG renderer consumes `layout` + `wire_segments`
+- `data/symbol_registry.py` -- symbol variants, pin anchors, bounding boxes
+- `data/layout_strategy_registry.py` -- placement rules, role classification, PLACEMENT_ROWS
 
-### 부분 구현
+### Remaining
 
-- renderer는 layout을 소비하지만 legacy component dict 기반 렌더링도 유지
-- 하드코딩 reference strategy는 `layout/strategies/_reference/`로 이동 (프로덕션 미사용)
+- Hardcoded reference strategies moved to `layout/strategies/_reference/` (not used in production)
+- Renderer retains legacy component-dict rendering path as fallback
 
 ---
 
 ## Phase 4. Routing
 
-### 구현됨
+### Implemented
 
-- `WireRouting`, `RoutedSegment`, `JunctionPoint`, `RoutingPreference` — `routing/models.py`
-- `generate_routing()` — `routing/engine.py`
-- pin anchor resolution — `routing/anchors.py`
-- trunk-and-branch routing — `routing/trunk_branch.py`
-- crossing minimization — `routing/trunk_branch.py:332` (`minimize_crossings()`)
-- routing metrics — `routing/metrics.py`
-- topology별 routing strategy — `routing/strategies/buck.py`, `flyback.py`, `llc.py`
-- preview payload의 routing / wire_segments 저장 — `circuit_design_service.py`
-- SVG는 `wire_segments` 우선 소비 — `svg_renderer.py`
-- bridge는 `wire_segments`가 있으면 좌표 기반 직접 WIRE 생성 — `bridge_script.py:872`
-- `SimulationService.create_circuit()`도 routing/wire_segments 소비 가능 — `simulation_service.py`
-- `data/routing_policy_registry.py` — topology별 routing 정책
+- `WireRouting`, `RoutedSegment`, `JunctionPoint`, `RoutingPreference` -- `routing/models.py`
+- `generate_routing()` -- `routing/engine.py`
+- Pin anchor resolution -- `routing/anchors.py`
+  - Port generation from position added for legacy generators
+- Trunk-and-branch routing -- `routing/trunk_branch.py`
+- Crossing minimization -- `routing/trunk_branch.py` (`minimize_crossings()`)
+- Routing metrics -- `routing/metrics.py`
+- Topology-specific routing strategies: `routing/strategies/buck.py`, `flyback.py`, `llc.py`
+- Preview payload routing/wire_segments persistence
+- SVG consumes `wire_segments` first
+- Bridge generates coordinate-based WIRE elements from `wire_segments`
+- `data/routing_policy_registry.py` -- per-topology routing policies
 
-### 부분 구현
+### Remaining
 
-- bridge 내부 `_route_wire()` fallback 경로가 남아 있음 (wire_segments 없을 때만 사용)
-- layer-aware / symmetry-aware routing은 모델은 있으나 전략에서 깊게 활용하지 않음
+- No cost-function-based routing
+- No region-aware or symmetry-aware routing (models exist, strategies do not use them deeply)
+- Bridge internal `_route_wire` fallback retained for legacy compatibility
 
 ---
 
 ## Phase 5. Intent Resolution
 
-### 구현됨
+### Implemented
 
-- `intent/` 계층 — `extractors.py`, `ranker.py`, `clarification.py`, `spec_builder.py`, `models.py`
-- `CircuitDesignService._resolve_intent_v2()` — `circuit_design_service.py`
-- `design_circuit()`의 V2-first, legacy fallback 구조
-- 기존 action contract 유지 — `confirm_intent`, `need_specs`, `suggest_candidates`
-- `candidate_scores`, `decision_trace` 응답 확장
-- design session payload versioning — `_make_design_session_payload()` 모든 저장 지점에서 사용
-- `_build_need_specs_response()`도 versioned session 사용 — `circuit_design_service.py:1406`
-- feature flag `PSIM_INTENT_PIPELINE_V2` — `config.py:50`
-- `continue_design()` v1/v2 normalize — `circuit_design_service.py`
+- `intent/` hierarchy: `extractors.py`, `ranker.py`, `clarification.py`, `spec_builder.py`, `models.py`
+- `CircuitDesignService._resolve_intent_v2()` -- V2 pipeline active by default
+- `design_circuit()` V2-first with legacy fallback
+- Action contract: `confirm_intent`, `need_specs`, `suggest_candidates`
+- Response extensions: `candidate_scores`, `decision_trace`
+- Design session payload versioning
+- Feature flag `PSIM_INTENT_PIPELINE_V2`
+- `continue_design()` v1/v2 normalization
+- Spec alias normalization: `vout` -> `vout_target`, `iout` -> `iout_target`
+- Single-pass clarification
 
-### 부분 구현
+### Remaining
 
-- multi-hop clarification (질문 → 답변 → 재평가) 미구현
-- clarification 결과를 service action으로 완전히 승격하는 경로 미구현
+- Multi-hop clarification (question -> answer -> re-evaluate -> re-question) not implemented
+- Clarification results not fully promoted to service actions
 
 ---
 
-## Registry / Ownership
+## Data Registries (8/8)
 
-### 구현됨 (8개 registry)
+| File | Purpose | Consumed by |
+|------|---------|-------------|
+| `topology_metadata.py` | 29 topologies: required_fields, block_order, layout_family | service, auto_placer |
+| `component_library.py` | 40+ component types with pin definitions | auto_placer, materialize |
+| `symbol_registry.py` | Symbol variants, pin anchors, bounding boxes | auto_placer, renderer |
+| `layout_strategy_registry.py` | Placement rules, role classification, PLACEMENT_ROWS | auto_placer |
+| `routing_policy_registry.py` | Per-topology routing policies | routing strategies |
+| `design_rule_registry.py` | Design constraints, defaults, feasibility | reference data |
+| `bridge_mapping_registry.py` | PSIM type mapping, parameter map | bridge_script |
+| `capability_matrix.py` | Topology x feature support matrix | service pipeline |
 
-| 파일 | 역할 | auto_placer/service 소비 |
-|------|------|------------------------|
-| `data/topology_metadata.py` | topology 속성 (29개), required_blocks/roles/nets | Yes |
-| `data/component_library.py` | 부품 핀/파라미터 (40+) | Yes |
-| `data/symbol_registry.py` | 심볼 variant, pin anchor, bounding box | Yes (auto_placer) |
-| `data/layout_strategy_registry.py` | 배치 규칙, role 분류, PLACEMENT_ROWS | Yes (auto_placer) |
-| `data/routing_policy_registry.py` | topology별 routing 정책 | Yes (routing strategies) |
-| `data/design_rule_registry.py` | 설계 규칙, default값, feasibility | 참조 가능 |
-| `data/bridge_mapping_registry.py` | PSIM 타입 매핑, parameter map | Yes (bridge_script) |
-| `data/capability_matrix.py` | topology × feature 지원 상태 | Yes (service pipeline) |
+### Remaining
 
-### 부분 구현
-
-- `design_rule_registry.py`는 존재하지만 sizing 로직이 registry에서 직접 호출되지는 않음 (참조 데이터)
-- registry 간 cross-validation (예: topology_metadata의 required_blocks가 실제 graph와 일치하는지) 자동 검증 없음
+- `design_rule_registry.py` exists but sizing logic does not call it directly
+- No automated cross-validation between registries (e.g., topology_metadata required_blocks vs. actual graph)
 
 ---
 
 ## Service Integration
 
-### Entrypoint별 canonical pipeline 적용 상태
+### Entrypoint canonical pipeline status
 
-| Entrypoint | 상태 | graph 저장 | layout 저장 | routing 저장 |
-|------------|------|-----------|------------|-------------|
-| `design_circuit()` → `_auto_generate_preview()` | 구현 | Yes | Yes | Yes |
-| `preview_circuit()` | 구현 | Yes | Yes | Yes |
-| `confirm_circuit()` | 구현 | graph/layout rematerialize | — | — |
-| `create_circuit_direct()` | 구현 | synthesis-first | — | — |
-| `SimulationService.create_circuit()` | 부분 구현 | enriched spec 소비 가능 | — | — |
+| Entrypoint | Status | Graph | Layout | Routing |
+|------------|--------|-------|--------|---------|
+| `design_circuit()` -> `_auto_generate_preview()` | Implemented | Yes | Yes | Yes |
+| `preview_circuit()` | Implemented | Yes | Yes | Yes |
+| `confirm_circuit()` | Implemented | Rematerialize | -- | -- |
+| `create_circuit_direct()` | Implemented | Synthesis-first | -- | -- |
+| `SimulationService.create_circuit()` | Partial | Enriched spec | -- | -- |
 
-### Preview payload 필드
+### Preview payload fields
 
 `payload_kind`, `payload_version`, `components`, `connections`, `nets`, `wire_segments`, `graph`, `layout`, `routing`
 
-### Design session payload
+---
 
-- 모든 저장 지점에서 `_make_design_session_payload()` 사용 (versioned)
-- `continue_design()` v1/v2 normalize 지원
+## Key Issues Fixed (2026-03-26)
+
+- GATING `Switching_Points` format fixed across all generators (comma -> space+period)
+- 5 circuit topology connection bugs fixed (buck_boost, full_bridge, half_bridge, push_pull, boost_pfc)
+- SVG file accumulation fixed (cross-topology cleanup + TTL-based disk deletion)
+- Waveform `time_step` hardcoding fixed (topology-specific lookup from `simulation_defaults.py`)
+- Spec alias normalization added (vout -> vout_target, iout -> iout_target)
+- Port generation from position added for legacy generators
+- `test_expired` flaky test fixed (time mock)
+- 5 component types added to `materialize.py` and `anchors.py` (Thyristor, Center_Tap_Transformer, motors)
+- `matplotlib` added as dependency for waveform rendering
+- `tool_handler` now exposes exception details to LLM
+- `run_simulation` and `analyze_simulation` now expose `simview` parameter
+- Save path validation before creating PSIM schematics (commit `d1dc7d3`)
 
 ---
 
-## Renderer / Bridge Consumer 전환
+## Known Gaps
 
-### SVG Renderer
-
-- `layout` 입력 지원, `wire_segments` 우선 렌더링
-- `layout → component position merge` 구현
-- legacy component dict 기반 심볼 렌더링은 유지 (symbol_registry 참조 가능하지만 renderer가 직접 읽지는 않음)
-
-### Bridge
-
-- `wire_segments` 있으면 좌표 기반 직접 WIRE 생성 (`_suppress_stdout` 보호)
-- 없으면 기존 `connections` fallback (`_route_wire` + `_resolve_pin_positions`)
-- bridge 내부 fallback 코드는 legacy 호환을 위해 유지
+1. **Phase 4 routing**: No cost-function routing, no region-aware or symmetry-aware routing
+2. **Phase 5 clarification**: No multi-hop clarification loop
+3. **Graph validator**: `_REQUIRED_ROLES` only covers 3/28 topologies
+4. **Canonical model versioning**: Not implemented
+5. **Quality gate metrics**: Incomplete (4/8+ tracked)
+6. **Optimization service**: Optuna-based service incomplete
+7. **12 topologies fail PSIM simulation**: Floating node errors in full_bridge, push_pull, thyristor_rectifier, boost_pfc, totem_pole_pfc, three_level_npc, pv_grid_tied, bldc_drive, pmsm_foc_drive, induction_motor_vf, half_bridge, diode_bridge_rectifier
+8. **Registry cross-validation**: No automated consistency checks between topology_metadata, graph, and layout_strategy
 
 ---
 
-## 남은 작업
+## Verification
 
-1. **실제 PSIM E2E 검증** — real 모드에서 buck/flyback/llc 생성 → 시뮬레이션 성공 확인
-2. **multi-hop clarification** — 질문 → 답변 → 재평가 → 재질문 흐름
-3. **나머지 26개 topology synthesize()** — 현재 buck/flyback/llc만 new path, 나머지는 legacy
-4. **renderer symbol_registry 직접 소비** — SVG renderer가 registry에서 심볼 정의를 직접 읽는 구조
-5. **registry cross-validation** — topology_metadata ↔ graph ↔ layout_strategy 자동 일치 검증
-
----
-
-## 검증 방법
-
-| 방법 | 결과 |
-|------|------|
-| `uv run pytest tests/unit -q` | 821 passed |
-| Buck E2E (intent → SVG) | 8 comp, 5 net, 3 block, 8 seg, 5546 char SVG |
-| Flyback E2E | 8 comp, 7 net, 5 block, 10 seg, 6567 char SVG |
-| LLC E2E | 14 comp, 11 net, 7 block, 19 seg, 9864 char SVG |
-| Service preview graph/layout 저장 | buck/flyback/llc 전부 OK |
-| `py_compile` | 전 소스 통과 |
-| Bridge JSON IPC | 정상 (stdout 오염 차단) |
+| Method | Result |
+|--------|--------|
+| `uv run pytest tests/unit -q` | 1002 passed |
+| PSIM real-mode E2E | 13/25 topologies simulate successfully |
+| Buck E2E (intent -> SVG) | 8 comp, 5 net, 3 block, 8 seg |
+| Flyback E2E | 8 comp, 7 net, 5 block, 10 seg |
+| LLC E2E | 14 comp, 11 net, 7 block, 19 seg |
+| Service preview graph/layout save | All canonical topologies OK |
+| Bridge JSON IPC | Normal (stdout pollution blocked) |
 
 ---
 
-## 결론
+## Conclusion
 
-ver5 canonical pipeline은 buck/flyback/llc 범위에서 **구현 완료 + 코드 레벨 검증 완료** 상태다.
-
-- Phase 1~3: 구현 완료
-- Phase 4~5: 대부분 구현 (고급 routing 품질, multi-hop clarification 제외)
-- Registry/ownership: 8개 파일 전부 존재, 대부분 소비 경로 연결
-- 서비스 통합: 4개 entrypoint 전부 canonical pipeline 우선, legacy fallback 유지
-- 테스트: 821개 통과, E2E 3 topology 검증
-
-남은 리스크는 **구조 부족이 아니라 실행 검증 부족**이다. 특히 real 모드 PSIM E2E와 나머지 topology 확장이 다음 단계다.
+The ver5 canonical pipeline covers 28/29 topologies with synthesizers and 100% algorithmic layout. 13 topologies are verified end-to-end through real PSIM simulation. The primary remaining risk is not structural gaps but simulation-level correctness for the 12 failing topologies (floating node errors requiring connection debugging) and the absence of advanced routing and multi-hop clarification features.

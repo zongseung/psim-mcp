@@ -45,6 +45,7 @@ class TopologySynthesisResult:
     metadata: dict[str, object] = field(default_factory=dict)
     simulation: dict[str, object] = field(default_factory=dict)
     design: dict[str, object] = field(default_factory=dict)
+    schema_version: str = "1.0"
 
 
 @dataclass

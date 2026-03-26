@@ -110,7 +110,8 @@ def test_buck_to_legacy_segments_format():
     routing = generate_routing(graph, layout)
     legacy = routing.to_legacy_segments()
 
-    assert len(legacy) == len(routing.segments)
+    # Legacy count >= original segments because trunks are split at junctions
+    assert len(legacy) >= len(routing.segments)
     for seg in legacy:
         assert "id" in seg
         assert "net" in seg

@@ -5,6 +5,7 @@ description = "MCP server for Altair PSIM simulation automation via Claude Deskt
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "matplotlib>=3.10.8",
     "mcp>=1.26.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
@@ -26,6 +27,11 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 norecursedirs = ["tests/smoke"]
+markers = [
+    "integration: Full-stack integration tests (deselect with -m 'not integration')",
+    "real_psim: Opt-in tests that require a real PSIM installation on Windows",
+    "acceptance: Given/When/Then acceptance scenarios backed by simulation results",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -37,3 +43,8 @@ packages = ["src/psim_mcp"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# Intentional: constants/patterns defined before imports that depend on them
+"src/psim_mcp/layout/auto_placer.py" = ["E402"]
+"src/psim_mcp/parsers/intent_parser.py" = ["E402"]

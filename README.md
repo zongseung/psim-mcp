@@ -2,7 +2,7 @@
 
 Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSIM으로 시뮬레이션하는 MCP 서버.
 
-**15개 Tool** | **821개 테스트** | **130개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리**
+**17개 Tool** | **1013개 테스트** | **139개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리**
 
 ```
 "buck converter 48V to 12V 5A"
@@ -15,11 +15,22 @@ Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSI
 
 - **자연어 회로 설계** — 한국어/영어로 회로를 설명하면 topology 자동 선택, 파라미터 계산, 회로도 생성
 - **29개 전력전자 topology** — Buck, Boost, Flyback, LLC, Full-Bridge, 3-Phase Inverter, BLDC Drive 등
+- **15개 topology PSIM 시뮬레이션 검증 완료** — 설계 → .psimsch 생성 → 시뮬레이션 → 파형 출력 전체 파이프라인
 - **알고리즘 기반 자동 배치** — 좌표 하드코딩 없이 CircuitGraph에서 schematic layout 자동 생성
+- **Pin-aware 와이어 라우팅** — L-shape 꺾임점이 다른 핀과 충돌하지 않도록 자동 우회
 - **SVG + ASCII 미리보기** — 생성 전 회로도 확인, 수정, 확정 (브라우저 자동 열기)
-- **PSIM 연동** — 확정된 회로를 `.psimsch` 파일로 생성, 시뮬레이션 실행, 결과 분석
+- **PSIM Simview 파형** — 시뮬레이션 후 Simview에서 자동으로 파형 그래프 표시
 - **대화형 설계 루프** — `design_circuit` → 질문 → `continue_design` → 미리보기 → `confirm_circuit`
 - **Mock 모드** — PSIM 없이 개발/테스트 가능 (macOS, Linux 포함)
+
+---
+
+## PSIM 시뮬레이션 검증 현황
+
+| 상태 | topology (15/25) |
+|------|-----------------|
+| **검증 완료** | buck, boost, flyback, buck_boost, sepic, cuk, forward, llc, cc_cv_charger, bidirectional_buck_boost, dab, pv_mppt_boost, ev_obc, diode_bridge_rectifier, boost_pfc |
+| 검증 진행 중 | half_bridge, full_bridge, push_pull, thyristor_rectifier, totem_pole_pfc, three_level_npc, bldc_drive, pmsm_foc_drive, induction_motor_vf, pv_grid_tied |
 
 ---
 
@@ -39,6 +50,7 @@ uv sync --all-extras
 | [uv](https://docs.astral.sh/uv/) | 필수 | 패키지 관리 |
 | Claude Desktop | 필수 | MCP 클라이언트 |
 | Altair PSIM 2026 | 선택 | 실제 회로 생성/시뮬레이션 시 필요 |
+| matplotlib | 선택 | 파형 PNG 렌더링 (`uv add matplotlib`) |
 
 ---
 
@@ -83,47 +95,61 @@ uv sync --all-extras
 }
 ```
 
-Claude Desktop을 **완전 종료** 후 재실행하면 15개 tool이 표시됩니다.
+Claude Desktop을 **완전 종료** 후 재실행하면 17개 tool이 표시됩니다.
 
 ---
 
 ## 사용법
 
-Claude Desktop에서 자연어로 요청:
+### Claude Desktop에서 프롬프트 예시
 
 ```
-buck converter 48V 입력 12V 출력 5A
-
-flyback 310V 입력 5V 출력 2A 어댑터
-
-LLC 공진 컨버터 400V에서 24V 1kW
-
-충전기 48V 배터리 10A
-
-양방향 DC-DC 48V to 400V
-
-절연형 보조전원 설계해줘
-
-3상 인버터 회로 만들어줘
+design_circuit 도구로 buck converter vin=48 vout_target=12 iout=5 설계하고,
+confirm_circuit으로 PSIM 파일 생성한 후,
+run_simulation simview=true로 파형 보여줘.
 ```
+
+### 다양한 topology 예시
+
+```
+design_circuit으로 boost converter vin=12 vout_target=48 iout=2 만들고 confirm 후 시뮬레이션
+
+design_circuit으로 flyback converter vin=400 vout_target=24 iout=3 설계해서 시뮬레이션까지
+
+design_circuit으로 llc converter vin=400 vout_target=48 iout=10 만들고 PSIM 파형 보여줘
+
+design_circuit으로 sepic converter vin=12 vout_target=24 iout=1 설계하고 시뮬레이션
+
+design_circuit으로 ev_obc vin=220 vout_target=400 설계하고 시뮬레이션
+
+design_circuit으로 pv_mppt_boost 설계해서 PSIM에서 돌려줘
+```
+
+### 핵심 규칙
+
+| 규칙 | 이유 |
+|------|------|
+| `vout` 말고 **`vout_target`** 사용 | generator가 이 키를 인식 |
+| **`design_circuit` → `confirm_circuit` → `run_simulation`** 순서 명시 | LLM이 단계를 건너뛰지 않게 |
+| `simview=true` 추가 | PSIM Simview에서 파형 자동 열림 |
 
 ### 설계 흐름
 
 ```
-1. design_circuit("buck 48V to 12V 5A")
+1. design_circuit("buck converter vin=48 vout_target=12 iout=5")
    → topology 선택, 파라미터 계산, SVG 미리보기 자동 생성
    → preview_token 반환
 
-2. confirm_circuit(preview_token, save_path="./buck.psimsch")
-   → PSIM .psimsch 파일 생성
+2. confirm_circuit(preview_token, save_path="output/buck.psimsch")
+   → PSIM .psimsch 파일 생성 + PSIM GUI 자동 실행
 
-3. run_simulation(project_path="./buck.psimsch")
-   → 시뮬레이션 실행, 파형 데이터 반환
+3. run_simulation(simview=true)
+   → 시뮬레이션 실행 + PSIM Simview에서 파형 표시
 ```
 
 ---
 
-## MCP 도구 (15개)
+## MCP 도구 (17개)
 
 ### 회로 설계
 
@@ -132,7 +158,7 @@ LLC 공진 컨버터 400V에서 24V 1kW
 | `design_circuit` | 자연어 → 회로 설계 (topology 선택 + auto preview) |
 | `continue_design` | 추가 정보 입력하여 설계 계속 (세션 토큰 기반) |
 | `preview_circuit` | 회로 미리보기 (SVG + ASCII) |
-| `confirm_circuit` | 미리보기 확정 → .psimsch 생성 |
+| `confirm_circuit` | 미리보기 확정 → .psimsch 생성 + PSIM 자동 실행 |
 | `create_circuit` | 미리보기 없이 직접 생성 |
 | `get_component_library` | 부품 라이브러리 조회 (40+ 부품) |
 | `list_circuit_templates` | 회로 템플릿 목록 (29개, 9 카테고리) |
@@ -145,10 +171,17 @@ LLC 공진 컨버터 400V에서 24V 1kW
 | `get_project_info` | 프로젝트 구조 조회 |
 | `set_parameter` | 컴포넌트 파라미터 변경 |
 | `sweep_parameter` | 파라미터 스윕 시뮬레이션 |
-| `run_simulation` | 시뮬레이션 실행 |
+| `run_simulation` | 시뮬레이션 실행 (simview=true로 Simview 자동 열기) |
 | `export_results` | 결과 내보내기 (JSON/CSV) |
 | `compare_results` | 시뮬레이션 결과 비교 |
 | `get_status` | 서버/PSIM 상태 확인 |
+
+### 분석
+
+| 도구 | 설명 |
+|------|------|
+| `analyze_simulation` | 시뮬레이션 실행 + 토폴로지별 자동 분석 + 파형 PNG 생성 |
+| `optimize_circuit` | 베이지안 최적화로 회로 파라미터 자동 튜닝 |
 
 ---
 
@@ -185,7 +218,7 @@ LLC 공진 컨버터 400V에서 24V 1kW
   → SVG renderer / PSIM bridge
 ```
 
-Legacy 경로 (generator/template)는 fallback으로 유지됩니다. Canonical pipeline이 실패하면 자동으로 legacy 경로를 사용합니다.
+Generator 경로 (ports + nets 포함)가 우선 사용되며, 합성 파이프라인은 graph/layout 메타데이터를 보충합니다.
 
 ### Dual Python 환경
 
@@ -203,55 +236,14 @@ Claude Desktop ─stdio─→ MCP Server (Python 3.12+)
 
 PSIM API(`psimapipy`)는 별도 Python 프로세스에서 실행됩니다. 두 프로세스 사이는 JSON IPC로 통신합니다.
 
-### 프로젝트 구조
+### Pin-aware Wire Routing
 
-```
-src/psim_mcp/
-├── intent/              # 자연어 → IntentModel → CanonicalSpec
-│   ├── extractors.py    #   도메인 제약 추출
-│   ├── ranker.py        #   topology 후보 점수화
-│   ├── clarification.py #   추가 정보 필요 여부 판단
-│   └── spec_builder.py  #   canonical spec 조립
-│
-├── synthesis/           # CircuitGraph 합성
-│   ├── graph.py         #   CircuitGraph, GraphComponent, GraphNet, FunctionalBlock
-│   ├── graph_builders.py#   make_component(), make_net(), make_block()
-│   ├── sizing.py        #   topology별 파라미터 계산 (duty, L, C, ...)
-│   └── topologies/      #   buck, flyback, llc graph synthesizer
-│
-├── layout/              # 알고리즘 기반 자동 배치
-│   ├── auto_placer.py   #   block 할당 → role 배치 → force-directed → grid snap
-│   ├── force_directed.py#   스프링 기반 위치 미세 조정
-│   ├── constraint_solver.py # 범용 constraint dispatcher (7개 kind)
-│   ├── engine.py        #   generate_layout() 디스패처
-│   └── materialize.py   #   SchematicLayout → legacy 포맷 변환
-│
-├── routing/             # trunk/branch 라우팅
-│   ├── engine.py        #   generate_routing() 디스패처
-│   ├── trunk_branch.py  #   net role 기반 trunk/branch 알고리즘
-│   ├── anchors.py       #   핀 좌표 해석
-│   ├── metrics.py       #   crossing/duplicate/wire_length 측정
-│   └── strategies/      #   topology별 라우팅 전략
-│
-├── generators/          # 29개 topology generator (generate + synthesize)
-├── validators/          # 구조/전기/파라미터/graph 검증
-├── services/            # CircuitDesignService, SimulationService
-├── adapters/            # Mock/Real PSIM 어댑터
-├── bridge/              # PSIM Python 3.8 IPC bridge
-├── data/                # 메타데이터 레지스트리 (8개)
-│   ├── topology_metadata.py        # topology 속성 (29개)
-│   ├── component_library.py        # 부품 핀/파라미터 (40+)
-│   ├── symbol_registry.py          # 심볼 variant/앵커
-│   ├── layout_strategy_registry.py # 배치 규칙/role 분류 (선언적)
-│   ├── routing_policy_registry.py  # 라우팅 정책
-│   ├── design_rule_registry.py     # 설계 규칙/default값
-│   ├── bridge_mapping_registry.py  # PSIM 타입 매핑
-│   └── capability_matrix.py        # topology × feature 지원 상태
-├── parsers/             # intent_parser (legacy), keyword_map, unit_parser
-├── tools/               # 15개 MCP 도구 핸들러
-├── utils/               # SVG renderer, ASCII renderer
-└── shared/              # state_store, audit, response builder
-```
+PSIM은 와이어 **끝점(endpoint)**에서만 전기적 연결을 인식합니다. L-shape 와이어의 꺾임점이 다른 컴포넌트 핀과 겹치면 의도하지 않은 단락이 발생합니다.
+
+`_route_wire`는 모든 핀 위치를 알고:
+1. **H-first L-shape**: 꺾임점이 안전하면 수평→수직
+2. **V-first L-shape**: H-first 꺾임점이 핀과 겹기면 수직→수평
+3. **Z-shape detour**: 양쪽 꺾임점 모두 충돌 시 중간 오프셋 경유
 
 ---
 
@@ -277,14 +269,8 @@ src/psim_mcp/
 ## 개발
 
 ```bash
-# 테스트 (821개)
+# 단위 테스트 (1013개)
 uv run pytest tests/unit -q
-
-# 단일 파일
-uv run pytest tests/unit/test_circuit_design_service.py -v
-
-# 키워드 매칭
-uv run pytest tests/unit -k "test_buck" -v
 
 # 린트 + 포맷
 uv run ruff check src/ tests/
@@ -301,23 +287,7 @@ uv run mcp dev src/psim_mcp/server.py
 3. `data/topology_metadata.py` — 메타데이터 항목 추가 (required_fields, block_order, layout_family 등)
 4. `generators/__init__.py` — registry 등록
 
-**Layout과 routing은 자동 처리됩니다:**
-- `auto_placer.py`가 block/role 기반으로 배치 자동 생성
-- Role 이름 규칙만 따르면 placement/direction 분류 자동
-- 규칙: `layout_strategy_registry.py` 상단 주석 참조
-
-### Role 네이밍 규칙
-
-| 키워드 | placement | direction |
-|--------|-----------|-----------|
-| `ground`, `gnd` | ground (rail) | 0 |
-| `gate`, `drive`, `pwm`, `controller` | control (하단) | 0 |
-| `capacitor`, `cap` | shunt (전력 경로 아래) | 90 (수직) |
-| `switch`, `source`, `inductor`, `transformer`, `rectifier` | power_path (상단) | 0 (기본) |
-| `high_side`, `low_side` | power_path | 0 (수직 스위치) |
-| `load` | shunt | 90 |
-
-예외는 `_PLACEMENT_OVERRIDES` / `_DIRECTION_OVERRIDES`에 등록. 자세한 규칙은 `layout_strategy_registry.py` 참조.
+**Layout과 routing은 자동 처리됩니다.**
 
 ---
 
@@ -329,11 +299,8 @@ uv run mcp dev src/psim_mcp/server.py
 |------|------|
 | `prd-and-architecture-*.md` | 최상위 PRD + 아키텍처 |
 | `phase-execution-plan.md` | Phase 1~5 실행 계획 |
-| `phase-1~5-*.md` | 각 Phase 상세 설계 |
-| `algorithmic-layout-plan.md` | 알고리즘 레이아웃 설계 + 업계 조사 |
-| `implementation-status.md` | 구현 현황 감사 |
-| `circuit-metadata-schema.md` | 메타데이터 스키마 |
-| `metadata-to-code-ownership-map.md` | 메타데이터 ownership |
+| `phase-4-routing-fix-plan.md` | PSIM 와이어 연결 문제 해결 기획서 |
+| `implementation-status.md` | 구현 현황 (2026-03-26 기준) |
 
 ---
 
@@ -344,7 +311,6 @@ uv run mcp dev src/psim_mcp/server.py
 - **출력 보안**: LLM 컨텍스트 sanitization, 50KB 응답 크기 제한
 - **subprocess 보안**: `shell=False`, JSON stdin 전달, 환경 격리
 - **감사 로깅**: SHA-256 입력 해싱, 4개 로그 파일 분리 (server, psim, security, tools)
-- **Bridge stdout 보호**: PSIM API stdout 오염 차단 (`_suppress_stdout`)
 
 ---
 

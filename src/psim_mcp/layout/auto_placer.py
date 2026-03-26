@@ -39,6 +39,7 @@ from psim_mcp.data.layout_strategy_registry import (
     get_layout_defaults,
     get_placement_rows,
     get_role_direction,
+    get_role_placement,
     get_role_row,
 )
 
@@ -78,7 +79,6 @@ def auto_place(
     preferences: dict[str, object] | None = None,
 ) -> SchematicLayout:
     """Generate SchematicLayout from CircuitGraph algorithmically."""
-    prefs = preferences or {}
     strategy = _load_strategy(graph.topology)
     layout_defaults = get_layout_defaults()
 
@@ -111,6 +111,9 @@ def auto_place(
 
     # 5b. Re-snap after constraint enforcement (shifts may break grid)
     _snap_to_grid(components)
+
+    # 5c. Separate overlapping components (grid snap can merge positions)
+    _separate_overlapping(components, graph)
 
     # 6. Select symbol variants
     _assign_symbol_variants(components, graph)
@@ -216,7 +219,6 @@ def _find_isolation_boundary(
     if not strategy.get("primary_secondary_split", False):
         return set()
 
-    secondary_keywords = {"secondary", "output", "rectifier"}
     primary_keywords = {"primary", "input", "switch", "half_bridge", "resonant",
                         "magnetizing", "magnetic", "transformer"}
 
@@ -348,6 +350,83 @@ def _compute_position_in_region(
     x = region.x + cursors[cursor_key]
     cursors[cursor_key] += component_spacing
     return x, y
+
+
+def _separate_overlapping(
+    components: list[LayoutComponent],
+    graph: CircuitGraph,
+) -> None:
+    """Separate components whose pin positions would collide in PSIM.
+
+    PSIM auto-connects pins at the same coordinate, so pin overlap
+    between components on *different* nets creates unwanted shorts.
+    This function checks both component-level and pin-level overlaps
+    and nudges the lower-priority component down by one grid step.
+    """
+    from psim_mcp.routing.anchors import _ANCHOR_OFFSETS
+
+    def _get_pin_positions(c: LayoutComponent) -> set[tuple[int, int]]:
+        gc = graph.get_component(c.id)
+        if gc is None:
+            return {(c.x, c.y)}
+        offsets = _ANCHOR_OFFSETS.get((gc.type, c.direction))
+        if offsets is None:
+            offsets = _ANCHOR_OFFSETS.get((gc.type, 0), {})
+        if not offsets:
+            return {(c.x, c.y)}
+        return {(c.x + dx, c.y + dy) for dx, dy in offsets.values()}
+
+    def _should_move_down(c: LayoutComponent) -> bool:
+        gc = graph.get_component(c.id)
+        role = gc.role if gc else ""
+        return get_role_placement(role) in ("ground", "control", "shunt")
+
+    # Build net membership: pin_pos -> set of net_ids
+    from collections import defaultdict
+    pin_to_nets: dict[str, set[str]] = defaultdict(set)
+    for net in graph.nets:
+        for pin in net.pins:
+            comp_id = pin.split(".")[0]
+            pin_to_nets[comp_id].add(net.id)
+
+    max_passes = 3
+    for _ in range(max_passes):
+        moved = False
+        all_pins: dict[tuple[int, int], LayoutComponent] = {}
+
+        for c in components:
+            pins = _get_pin_positions(c)
+            collision = False
+            for pin_pos in pins:
+                if pin_pos in all_pins:
+                    other = all_pins[pin_pos]
+                    # Only separate if they're on different nets
+                    nets_c = pin_to_nets.get(c.id, set())
+                    nets_o = pin_to_nets.get(other.id, set())
+                    if not nets_c or not nets_o or nets_c != nets_o:
+                        collision = True
+                        break
+
+            if collision:
+                if _should_move_down(c):
+                    c.y += GRID
+                else:
+                    # Move the other component down if possible
+                    if _should_move_down(other):
+                        other.y += GRID
+                    else:
+                        c.y += GRID
+                moved = True
+                # Re-snap
+                c.y = round(c.y / GRID) * GRID
+
+            # Register all pins
+            for pin_pos in _get_pin_positions(c):
+                if pin_pos not in all_pins:
+                    all_pins[pin_pos] = c
+
+        if not moved:
+            break
 
 
 def _snap_to_grid(components: list[LayoutComponent]) -> None:

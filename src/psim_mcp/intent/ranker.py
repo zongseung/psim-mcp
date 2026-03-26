@@ -16,7 +16,6 @@ def rank_topologies(intent: IntentModel) -> list[TopologyCandidate]:
     Only includes candidates with score > 0.
     """
     from psim_mcp.data.topology_metadata import TOPOLOGY_METADATA
-    from psim_mcp.parsers.keyword_map import TOPOLOGY_KEYWORDS, USE_CASE_MAP
 
     candidates = []
 

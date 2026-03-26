@@ -88,7 +88,8 @@ def try_synthesize_and_layout(
     except (KeyError, Exception):
         return None
 
-    if generator.missing_fields(specs or {}):
+    specs = dict(specs or {})
+    if generator.missing_fields(specs):
         return None
 
     try:

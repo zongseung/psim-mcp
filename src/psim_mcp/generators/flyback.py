@@ -115,7 +115,7 @@ class FlybackGenerator(TopologyGenerator):
                 np_turns=1, ns_turns=round(n, 6), magnetizing_inductance=round(lm, 9),
             ),
             make_mosfet_v("SW1", 200, 130, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G1", 160, 160, fsw, f"0,{int(duty * 360)}"),
+            make_gating("G1", 160, 160, fsw, f" 0 {int(duty * 360)}."),
             make_diode_h("D1", 270, 80, forward_voltage=0.7),
             make_capacitor("C1", 320, 80, cout),
             make_resistor("R1", 370, 80, r_load, voltage_flag=1),

@@ -180,7 +180,7 @@ def _find_voltage_contexts(text: str) -> list[tuple[float, str | None]]:
 
     Returns list of (value, role) where role is 'vin', 'vout_target', or None.
     """
-    from psim_mcp.parsers.unit_parser import _FULL_PATTERN, _resolve_prefix, _resolve_category
+    from psim_mcp.parsers.unit_parser import _FULL_PATTERN, _resolve_category
 
     results: list[tuple[float, str | None]] = []
 

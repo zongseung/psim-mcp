@@ -66,13 +66,15 @@ class TestPreviewPayloadStructure:
         payload = _get_stored_payload(service, token)
         assert payload["payload_version"] == "v1"
 
-    async def test_payload_has_wire_segments(self, service):
-        """wire_segments must be present in preview for SVG compatibility."""
+    async def test_payload_has_wire_segments_or_nets(self, service):
+        """wire_segments or nets must be present for wiring."""
         result = await _create_buck_preview(service)
         assert result["success"] is True
         token = result["data"]["preview_token"]
         payload = _get_stored_payload(service, token)
-        assert "wire_segments" in payload
+        has_wire_segments = "wire_segments" in payload
+        has_nets = bool(payload.get("nets"))
+        assert has_wire_segments or has_nets
 
     async def test_payload_has_components_and_nets(self, service):
         result = await _create_buck_preview(service)

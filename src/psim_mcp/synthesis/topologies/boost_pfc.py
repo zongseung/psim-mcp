@@ -61,7 +61,7 @@ def synthesize_boost_pfc(requirements: dict) -> CircuitGraph:
             block_ids=["ac_input"],
         ),
         make_component(
-            "BR1", "Diode_Bridge",
+            "BR1", "DiodeBridge",
             role="diode_bridge",
             parameters={"forward_voltage": 0.7},
             block_ids=["input_rectifier"],

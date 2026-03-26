@@ -328,6 +328,7 @@ class MockPsimAdapter(BasePsimAdapter):
         wire_segments: list[dict] | None = None,
         simulation_settings: dict | None = None,
         psim_template: dict | None = None,
+        nets: list[dict] | None = None,
     ) -> dict:
         """Mock circuit creation — stores the circuit as the current project."""
         import copy

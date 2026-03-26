@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_vdc,
     make_ground,
@@ -24,11 +29,15 @@ class CCCVChargerGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vin", "vbat", "charge_current"]
+        return ["vin", "vout_target"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["fsw", "ripple_ratio", "voltage_ripple_ratio"]
+        return ["vbat", "iout", "charge_current", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.cc_cv_charger import synthesize_cc_cv_charger
+        return synthesize_cc_cv_charger(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -40,8 +49,8 @@ class CCCVChargerGenerator(TopologyGenerator):
             raise ValueError(f"Missing required fields: {missing}")
 
         vin: float = float(requirements["vin"])
-        vbat: float = float(requirements["vbat"])
-        i_charge: float = float(requirements["charge_current"])
+        vbat: float = float(requirements.get("vbat", requirements.get("vout_target", vin * 0.5)))
+        i_charge: float = float(requirements.get("charge_current", requirements.get("iout", 1.0)))
         fsw: float = float(requirements.get("fsw", 50_000))
         ripple_ratio: float = float(requirements.get("ripple_ratio", 0.3))
         vripple_ratio: float = float(requirements.get("voltage_ripple_ratio", 0.01))
@@ -68,7 +77,7 @@ class CCCVChargerGenerator(TopologyGenerator):
             make_vdc("V1", 120, 100, vin),
             make_ground("GND1", 120, 150),
             make_mosfet_h("SW1", 150, 100, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G1", 180, 170, fsw, f"0,{int(duty * 360)}"),
+            make_gating("G1", 180, 170, fsw, f" 0 {int(duty * 360)}."),
             make_diode_v("D1", 220, 150, forward_voltage=0.7),
             make_inductor("L1", 250, 100, inductance, current_flag=1),
             make_capacitor("C1", 300, 100, capacitance),

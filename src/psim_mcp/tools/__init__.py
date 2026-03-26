@@ -37,8 +37,11 @@ def tool_handler(tool_name: str):
             try:
                 result = await fn(*args, **kwargs)
                 return encode_response(result)
-            except Exception:
+            except Exception as e:
                 logger.exception("Tool error in %s", tool_name)
-                return format_tool_error()
+                return format_tool_error(
+                    code="INTERNAL_ERROR",
+                    message=f"내부 오류: {type(e).__name__}: {e}",
+                )
         return wrapper
     return decorator

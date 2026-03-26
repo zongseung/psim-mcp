@@ -47,7 +47,7 @@ def synthesize_diode_bridge_rectifier(requirements: dict) -> CircuitGraph:
             block_ids=["ac_source"],
         ),
         make_component(
-            "BR1", "Diode_Bridge",
+            "BR1", "DiodeBridge",
             role="diode_bridge",
             parameters={"forward_voltage": 0.7},
             block_ids=["diode_bridge"],

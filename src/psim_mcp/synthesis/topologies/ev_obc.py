@@ -67,7 +67,7 @@ def synthesize_ev_obc(requirements: dict) -> CircuitGraph:
             block_ids=["ac_input"],
         ),
         make_component(
-            "BR1", "Diode_Bridge",
+            "BR1", "DiodeBridge",
             role="input_rectifier",
             parameters={"forward_voltage": 0.7},
             block_ids=["ac_input"],

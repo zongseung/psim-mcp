@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class BoostGenerator(TopologyGenerator):
@@ -19,6 +24,10 @@ class BoostGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.boost import synthesize_boost
+        return synthesize_boost(requirements)
 
     # ------------------------------------------------------------------
     # Design

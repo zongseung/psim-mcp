@@ -49,7 +49,9 @@ class TestToLegacySegments:
 
     def test_correct_count(self, sample_routing, sample_segments):
         legacy = sample_routing.to_legacy_segments()
-        assert len(legacy) == len(sample_segments)
+        # Trunk (120,150)→(350,150) is split at junction (220,150) into 2 sub-segs.
+        # So 3 original segments become 4 legacy segments.
+        assert len(legacy) == 4
 
     def test_each_segment_has_id(self, sample_routing):
         for seg in sample_routing.to_legacy_segments():
@@ -75,14 +77,21 @@ class TestToLegacySegments:
         """RoutedSegment.net_id should map to legacy 'net' key."""
         legacy = sample_routing.to_legacy_segments()
         assert legacy[0]["net"] == "net_gnd"
-        assert legacy[2]["net"] == "net_out"
+        # Trunk split at junction adds a sub-segment, so net_out is at index 3
+        assert legacy[3]["net"] == "net_out"
 
     def test_coordinate_values_preserved(self, sample_routing):
         legacy = sample_routing.to_legacy_segments()
+        # Trunk is split at junction (220,150): first sub-segment is (120,150)→(220,150)
         assert legacy[0]["x1"] == 120
         assert legacy[0]["y1"] == 150
-        assert legacy[0]["x2"] == 350
+        assert legacy[0]["x2"] == 220
         assert legacy[0]["y2"] == 150
+        # Second sub-segment is (220,150)→(350,150)
+        assert legacy[1]["x1"] == 220
+        assert legacy[1]["y1"] == 150
+        assert legacy[1]["x2"] == 350
+        assert legacy[1]["y2"] == 150
 
     def test_empty_routing_produces_empty_list(self):
         routing = WireRouting(topology="buck", segments=[])

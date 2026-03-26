@@ -94,6 +94,9 @@ def test_routing_quality_report_keys():
         RoutedSegment(id="s1", net_id="n1", x1=0, y1=0, x2=100, y2=0),
     ])
     report = routing_quality_report(routing)
-    assert set(report.keys()) == {"crossings", "duplicates", "total_length", "junctions", "segment_count"}
+    assert set(report.keys()) == {
+        "crossings", "duplicates", "total_length", "junctions", "segment_count",
+        "unconnected_pins", "orphan_nets", "detour_ratio",
+    }
     assert report["segment_count"] == 1
     assert report["total_length"] == 100

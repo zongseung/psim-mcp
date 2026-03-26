@@ -123,12 +123,13 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
     def _sync_shutdown_adapter():
         try:
             loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(adapter.shutdown())
-            else:
-                loop.run_until_complete(adapter.shutdown())
+            if not loop.is_closed():
+                if loop.is_running():
+                    loop.create_task(adapter.shutdown())
+                else:
+                    loop.run_until_complete(adapter.shutdown())
         except Exception:
-            _shutdown_logger.debug("Adapter shutdown during atexit (best-effort)", exc_info=True)
+            pass  # best-effort shutdown, silently ignore all errors
 
     atexit.register(_sync_shutdown_adapter)
 
@@ -138,6 +139,7 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
     app._psim_service = services["_legacy"]  # type: ignore[attr-defined]
     app._adapter = adapter  # type: ignore[attr-defined]
 
+    app._services = services  # type: ignore[attr-defined]
     register_all_tools(app, services)
     return app
 

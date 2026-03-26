@@ -87,18 +87,18 @@ class PVGridTiedGenerator(TopologyGenerator):
             # Phase A leg
             make_igbt_v("Q_AH", 200, 80, switching_frequency=fsw, on_resistance=0.02),
             make_igbt_v("Q_AL", 200, 160, switching_frequency=fsw, on_resistance=0.02),
-            make_gating("G_AH", 160, 110, f_grid, "0,180"),
-            make_gating("G_AL", 160, 190, f_grid, "180,360"),
+            make_gating("G_AH", 160, 110, f_grid, " 0 180."),
+            make_gating("G_AL", 160, 190, f_grid, " 180 360."),
             # Phase B leg
             make_igbt_v("Q_BH", 350, 80, switching_frequency=fsw, on_resistance=0.02),
             make_igbt_v("Q_BL", 350, 160, switching_frequency=fsw, on_resistance=0.02),
-            make_gating("G_BH", 310, 110, f_grid, "120,300"),
-            make_gating("G_BL", 310, 190, f_grid, "300,480"),
+            make_gating("G_BH", 310, 110, f_grid, " 120 300."),
+            make_gating("G_BL", 310, 190, f_grid, " 300 480."),
             # Phase C leg
             make_igbt_v("Q_CH", 500, 80, switching_frequency=fsw, on_resistance=0.02),
             make_igbt_v("Q_CL", 500, 160, switching_frequency=fsw, on_resistance=0.02),
-            make_gating("G_CH", 460, 110, f_grid, "240,420"),
-            make_gating("G_CL", 460, 190, f_grid, "60,240"),
+            make_gating("G_CH", 460, 110, f_grid, " 240 420."),
+            make_gating("G_CL", 460, 190, f_grid, " 60 240."),
             # L filters (one per phase)
             make_inductor("La", 250, 130, l_filter),
             make_inductor("Lb", 400, 130, l_filter),

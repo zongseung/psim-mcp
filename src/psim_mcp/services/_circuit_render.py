@@ -69,13 +69,77 @@ def nets_to_connections_simple(nets: list[dict]) -> list[dict]:
     return connections
 
 
+def _generate_ports_from_position(comp_type: str, x: int, y: int, direction: int = 0) -> list[int]:
+    """Generate PSIM PORTS list from a single position coordinate.
+
+    When legacy generators only provide ``position: {x, y}`` instead of a
+    full ``ports`` list, this function calculates pin coordinates using
+    standard PSIM component dimensions.
+    """
+    # Standard PSIM component pin spacing
+    _PIN_OFFSETS: dict[str, list[tuple[int, int]]] = {
+        # 2-pin vertical (positive top, negative bottom)
+        "DC_Source":  [(0, 0), (0, 50)],
+        "AC_Source":  [(0, 0), (0, 50)],
+        "Battery":    [(0, 0), (0, 50)],
+        "Capacitor":  [(0, 0), (0, 50)],
+        # 2-pin horizontal
+        "Inductor":   [(0, 0), (50, 0)],
+        "Resistor":   [(0, 0), (50, 0)],
+        # 3-pin (drain/source vertical, gate offset)
+        "MOSFET":    [(0, 0), (0, 50), (-20, 30)],
+        "IGBT":      [(0, 0), (0, 50), (-20, 30)],
+        "Thyristor": [(0, 0), (0, 50), (-20, 30)],
+        # 2-pin vertical (anode top, cathode bottom)
+        "Diode":         [(0, 0), (0, 50)],
+        "Schottky_Diode": [(0, 0), (0, 50)],
+        # 1-pin
+        "Ground":        [(0, 0)],
+        "Voltage_Probe": [(0, 0)],
+        # PWM / Gating
+        "PWM_Generator": [(0, 0)],
+        "GATING":        [(0, 0)],
+        # 4-pin bridge
+        "DiodeBridge": [(0, 0), (0, 60), (80, 0), (80, 60)],
+        # Transformers
+        "Transformer":      [(0, 0), (0, 50), (80, 0), (80, 50)],
+        "IdealTransformer": [(0, 0), (0, 50), (80, 0), (80, 50)],
+        "Center_Tap_Transformer": [(0, 0), (0, 50), (0, 100), (80, 0), (80, 50), (80, 100)],
+        # Motors (3-phase terminals)
+        "Induction_Motor": [(0, 0), (0, 50), (0, 100)],
+        "PMSM":            [(0, 0), (0, 50), (0, 100)],
+        "BLDC_Motor":      [(0, 0), (0, 50), (0, 100)],
+    }
+
+    offsets = _PIN_OFFSETS.get(comp_type, [(0, 0)])
+    ports: list[int] = []
+    for dx, dy in offsets:
+        ports.extend([x + dx, y + dy])
+    return ports
+
+
 def enrich_components_for_bridge(components: list[dict]) -> list[dict]:
-    """Attach bridge-facing metadata expected by the real adapter."""
+    """Attach bridge-facing metadata expected by the real adapter.
+
+    In addition to resolving the PSIM element type, this function generates
+    a ``ports`` list for components that only have a ``position`` dict.
+    Without ``ports``, the bridge cannot resolve pin positions for wiring.
+    """
     enriched: list[dict] = []
     for component in components:
         item = dict(component)
         item_type = str(item.get("type", ""))
         item["psim_element_type"] = resolve_psim_element_type(item_type)
+
+        # Generate ports from position if not already present
+        if not item.get("ports"):
+            pos = item.get("position", {})
+            if isinstance(pos, dict) and ("x" in pos or "y" in pos):
+                x = int(pos.get("x", 0))
+                y = int(pos.get("y", 0))
+                direction = int(item.get("direction", 0))
+                item["ports"] = _generate_ports_from_position(item_type, x, y, direction)
+
         enriched.append(item)
     return enriched
 
@@ -123,11 +187,12 @@ def render_and_store(
     content_hash = hashlib.sha256(svg_content.encode()).hexdigest()[:8]
     svg_path = os.path.join(svg_dir, f"psim_preview_{circuit_type}_{content_hash}.svg")
 
-    # Remove stale previews for this topology before writing a new one so that
-    # temp dir does not accumulate duplicate SVG files across design iterations.
+    # Remove stale previews across ALL topologies before writing a new one so
+    # that temp dir does not accumulate SVG files across design iterations.
     import glob as _glob
 
-    for stale in _glob.glob(os.path.join(svg_dir, f"psim_preview_{circuit_type}_*.svg")):
+    all_previews = _glob.glob(os.path.join(svg_dir, "psim_preview_*.svg"))
+    for stale in all_previews:
         if stale != svg_path:
             try:
                 os.remove(stale)

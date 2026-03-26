@@ -22,9 +22,140 @@ class GraphValidationIssue:
 
 # Required roles per topology (at least one component must have each role).
 _REQUIRED_ROLES: dict[str, list[str]] = {
-    "buck": ["input_source", "ground_ref", "main_switch", "output_inductor", "load"],
-    "flyback": ["input_source", "ground_ref", "isolation_transformer", "primary_switch", "load"],
-    "llc": ["input_source", "ground_ref", "high_side_switch", "low_side_switch", "isolation_transformer", "load"],
+    "buck": [
+        "input_source", "ground_ref", "main_switch", "gate_drive",
+        "freewheel_diode", "output_inductor", "output_capacitor", "load",
+    ],
+    "boost": [
+        "input_source", "ground_ref", "output_inductor", "main_switch",
+        "gate_drive", "boost_diode", "output_capacitor", "load",
+    ],
+    "buck_boost": [
+        "input_source", "ground_ref", "main_switch", "gate_drive",
+        "freewheel_diode", "output_inductor", "output_capacitor", "load",
+    ],
+    "flyback": [
+        "input_source", "ground_ref", "isolation_transformer", "primary_switch",
+        "gate_drive", "secondary_rectifier", "output_capacitor", "load",
+    ],
+    "forward": [
+        "input_source", "ground_ref", "isolation_transformer", "primary_switch",
+        "gate_drive", "secondary_rectifier", "freewheel_diode",
+        "output_inductor", "output_capacitor", "load",
+        "clamp_diode", "clamp_resistor", "clamp_capacitor",
+    ],
+    "llc": [
+        "input_source", "ground_ref", "high_side_switch", "low_side_switch",
+        "high_side_gate", "low_side_gate", "isolation_transformer",
+        "resonant_inductor", "resonant_capacitor", "magnetizing_inductor",
+        "output_rectifier", "output_capacitor", "load", "secondary_ground_ref",
+    ],
+    "half_bridge": [
+        "input_source", "ground_ref", "high_side_switch", "low_side_switch",
+        "gate_drive_high", "gate_drive_low", "dc_bus_cap_high", "dc_bus_cap_low",
+        "output_filter_inductor", "output_filter_capacitor", "load",
+    ],
+    "full_bridge": [
+        "input_source", "ground_ref",
+        "switch_leg_a_high", "switch_leg_a_low",
+        "switch_leg_b_high", "switch_leg_b_low",
+        "gate_drive_leg_a_high", "gate_drive_leg_a_low",
+        "gate_drive_leg_b_high", "gate_drive_leg_b_low",
+        "output_filter_inductor", "output_filter_capacitor", "load",
+    ],
+    "cuk": [
+        "input_source", "ground_ref", "input_inductor", "main_switch",
+        "gate_drive", "coupling_capacitor", "output_diode",
+        "output_inductor", "output_capacitor", "load",
+    ],
+    "sepic": [
+        "input_source", "ground_ref", "input_inductor", "main_switch",
+        "gate_drive", "coupling_capacitor", "output_diode",
+        "output_inductor", "output_capacitor", "load",
+    ],
+    "push_pull": [
+        "input_source", "ground_ref", "primary_switch_a", "primary_switch_b",
+        "gate_drive_a", "gate_drive_b", "center_tap_transformer",
+        "secondary_rectifier", "output_inductor", "output_capacitor", "load",
+    ],
+    "phase_shifted_full_bridge": [
+        "input_source", "ground_ref", "primary_bridge_switches", "gate_drive",
+        "isolation_transformer", "secondary_rectifier",
+        "output_inductor", "output_capacitor", "load",
+    ],
+    "dab": [
+        "input_source", "ground_ref", "primary_bridge_switches",
+        "secondary_bridge_switches", "gate_drive", "isolation_transformer",
+        "series_inductor", "output_capacitor", "load", "secondary_gnd_ref",
+    ],
+    "bidirectional_buck_boost": [
+        "input_source", "ground_ref", "high_side_switch", "low_side_switch",
+        "gate_drive_high", "gate_drive_low", "inductor",
+        "capacitor_high", "capacitor_low", "load",
+    ],
+    "boost_pfc": [
+        "ac_source", "ground_ref", "diode_bridge", "boost_inductor",
+        "boost_switch", "gate_drive", "boost_diode",
+        "output_capacitor", "load",
+    ],
+    "totem_pole_pfc": [
+        "ac_source", "ground_ref", "boost_inductor",
+        "high_freq_switch_a", "high_freq_switch_b",
+        "low_freq_switch_a", "low_freq_switch_b",
+        "hf_gate_drive", "lf_gate_drive",
+        "output_capacitor", "load",
+    ],
+    "diode_bridge_rectifier": [
+        "ac_source", "ground_ref", "diode_bridge",
+        "output_capacitor", "load",
+    ],
+    "thyristor_rectifier": [
+        "ac_source", "ground_ref", "thyristors",
+        "output_inductor", "output_capacitor", "load",
+    ],
+    "cc_cv_charger": [
+        "input_source", "ground_ref", "main_switch", "gate_drive",
+        "freewheel_diode", "output_inductor", "output_capacitor", "battery",
+    ],
+    "three_phase_inverter": [
+        "input_source", "ground_ref", "gate_drive",
+        "switch_a_high", "switch_a_low",
+        "switch_b_high", "switch_b_low",
+        "switch_c_high", "switch_c_low", "load",
+    ],
+    "three_level_npc": [
+        "input_source", "ground_ref", "npc_switches", "clamping_diodes",
+        "gate_drive", "dc_bus_lower", "output_inductor", "load",
+    ],
+    "bldc_drive": [
+        "input_source", "ground_ref", "inverter_switches",
+        "gate_drive", "bldc_motor",
+    ],
+    "pmsm_foc_drive": [
+        "input_source", "ground_ref", "inverter_switches",
+        "gate_drive", "foc_controller", "pmsm_motor",
+    ],
+    "induction_motor_vf": [
+        "input_source", "ground_ref", "inverter_switches",
+        "gate_drive", "induction_motor",
+    ],
+    "lc_filter": [
+        "input_source", "ground_ref", "inductor", "capacitor", "load",
+    ],
+    "lcl_filter": [
+        "input_source", "ground_ref", "inductor_1", "inductor_2",
+        "capacitor", "load",
+    ],
+    "pv_mppt_boost": [
+        "pv_source", "ground_ref", "boost_inductor", "boost_switch",
+        "gate_drive", "boost_diode", "output_capacitor", "load",
+    ],
+    "ev_obc": [
+        "ac_source", "ground_ref", "input_rectifier",
+        "pfc_inductor", "pfc_switch", "pfc_boost_diode",
+        "dc_link_capacitor", "gate_drive", "isolation_transformer",
+        "output_rectifier", "output_capacitor", "battery", "secondary_gnd_ref",
+    ],
 }
 
 

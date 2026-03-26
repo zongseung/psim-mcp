@@ -52,21 +52,37 @@ def _generic_route(
 
     This wraps the existing routing logic pattern: resolve pin positions,
     then route each net independently using trunk-and-branch strategy.
+
+    Pin positions belonging to OTHER nets are passed as ``avoid_positions``
+    so that wire segments do not accidentally pass through foreign pins,
+    which PSIM would interpret as false connections.
     """
     prefs = preferences or RoutingPreference()
     pin_pos = resolve_pin_positions(graph, layout)
+
+    # Pre-compute per-net pin position sets for collision avoidance.
+    net_pin_positions: dict[str, list[tuple[int, int]]] = {}
+    all_pin_positions: set[tuple[int, int]] = set()
+    for net in graph.nets:
+        pins = [pin_pos[p] for p in net.pins if p in pin_pos]
+        net_pin_positions[net.id] = pins
+        all_pin_positions.update(pins)
 
     per_net_segments: list[list[RoutedSegment]] = []
     all_junctions = []
     seg_counter = 1
 
     for net in graph.nets:
-        pins = [pin_pos[p] for p in net.pins if p in pin_pos]
+        pins = net_pin_positions.get(net.id, [])
         if len(pins) < 2:
             continue
 
+        # Positions of pins NOT in this net — segments must avoid these.
+        own_positions = set(pins)
+        avoid = all_pin_positions - own_positions
+
         segs, juncs = route_net_trunk_branch(
-            net.id, pins, net.role, seg_counter,
+            net.id, pins, net.role, seg_counter, avoid,
         )
         per_net_segments.append(segs)
         all_junctions.extend(juncs)

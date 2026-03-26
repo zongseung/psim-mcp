@@ -1,11 +1,9 @@
 """Unit tests for ProjectService."""
 
-from pathlib import Path
 
 import pytest
 
 from psim_mcp.services.project_service import ProjectService
-from psim_mcp.config import AppConfig
 
 
 @pytest.fixture

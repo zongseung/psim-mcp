@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
-import pytest
 
 from psim_mcp.services.validators import (
     validate_simulation_options,

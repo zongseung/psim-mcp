@@ -117,13 +117,13 @@ class DABGenerator(TopologyGenerator):
             # Bridge 1 — left leg
             make_mosfet_v("SW1", 200, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW3", 200, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G1", 160, 110, fsw, "0,180"),
-            make_gating("G3", 160, 190, fsw, "180,360"),
+            make_gating("G1", 160, 110, fsw, " 0 180."),
+            make_gating("G3", 160, 190, fsw, " 180 360."),
             # Bridge 1 — right leg
             make_mosfet_v("SW2", 350, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW4", 350, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G2", 330, 110, fsw, "180,360"),
-            make_gating("G4", 330, 190, fsw, "0,180"),
+            make_gating("G2", 330, 110, fsw, " 180 360."),
+            make_gating("G4", 330, 190, fsw, " 0 180."),
             # Series inductor + transformer
             make_inductor("Ls", 420, 130, ls, current_flag=1),
             make_ideal_transformer(
@@ -135,13 +135,13 @@ class DABGenerator(TopologyGenerator):
             # Bridge 2 — left leg
             make_mosfet_v("SW5", 620, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW7", 620, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G5", 600, 110, fsw, f"{b2_on},{b2_off}"),
-            make_gating("G7", 600, 190, fsw, f"{b2_comp_on},{b2_comp_off}"),
+            make_gating("G5", 600, 110, fsw, f" {b2_on} {b2_off}."),
+            make_gating("G7", 600, 190, fsw, f" {b2_comp_on} {b2_comp_off}."),
             # Bridge 2 — right leg
             make_mosfet_v("SW6", 770, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW8", 770, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G6", 750, 110, fsw, f"{b2_comp_on},{b2_comp_off}"),
-            make_gating("G8", 750, 190, fsw, f"{b2_on},{b2_off}"),
+            make_gating("G6", 750, 110, fsw, f" {b2_comp_on} {b2_comp_off}."),
+            make_gating("G8", 750, 190, fsw, f" {b2_on} {b2_off}."),
             # Load
             make_resistor("R1", 850, 80, r_load, voltage_flag=1),
             make_ground("GND2", 850, 290),

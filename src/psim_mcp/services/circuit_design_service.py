@@ -139,14 +139,35 @@ def _merge_simulation_settings(
 
 
 def _get_allowed_save_dirs(config: AppConfig | None) -> list[str] | None:
-    """Resolve allowed output roots for new schematic files."""
+    """Resolve allowed output roots for new schematic files.
+
+    Only restricts when ``allowed_project_dirs`` is explicitly configured.
+    In real mode without an explicit whitelist, saves are unrestricted so
+    that users can save to any valid path (e.g. Documents, Desktop).
+    """
     if config is None:
         return None
     if config.allowed_project_dirs:
         return config.allowed_project_dirs
-    if config.psim_mode == "real" and config.psim_project_dir is not None:
-        return [str(config.psim_project_dir)]
     return None
+
+
+def _build_save_path_suggestion(
+    config: AppConfig | None,
+    topology: str = "circuit",
+) -> str:
+    """Describe valid save roots and provide a safe example path."""
+    allowed_dirs = _get_allowed_save_dirs(config)
+    if not allowed_dirs:
+        return "Use a valid .psimsch path."
+
+    example_root = allowed_dirs[-1]
+    example_path = os.path.join(example_root, f"{topology}.psimsch")
+    roots = ", ".join(allowed_dirs)
+    return (
+        f"Use a .psimsch path under one of the configured save roots: {roots}. "
+        f"Example: {example_path}"
+    )
 
 
 # ===========================================================================
@@ -577,15 +598,27 @@ class CircuitDesignService:
                 }
 
         if synth_result is not None:
-            resolved_components = synth_result["components"]
-            resolved_connections = []
-            resolved_nets = synth_result["nets"]
-            generation_mode = "generator"
+            # Always capture graph/layout/routing from synthesis for
+            # the preview payload (needed by confirm_circuit for
+            # materialization and by tests asserting canonical path).
             synth_graph = synth_result["graph"]
             synth_layout = synth_result["layout"]
             synth_routing = synth_result.get("wire_routing")
+
+            # Use synthesis output (components with layout positions,
+            # nets from graph, and wire_segments from routing engine).
+            # The bridge supplements wire_segments with pin-based wiring
+            # from nets to fill any routing gaps.
+            resolved_components = synth_result["components"]
+            resolved_nets = synth_result["nets"]
+            resolved_connections = []
             if synth_routing is not None:
                 wire_segments = synth_routing.to_legacy_segments()
+
+            generation_mode = "generator"
+            # Reset legacy template so confirm_circuit uses the graph
+            # materialization path instead of the template fast path.
+            _gen_template = None
 
         if resolved_connections is None:
             resolved_connections = []
@@ -714,13 +747,19 @@ class CircuitDesignService:
                 )
 
         if graph is not None and layout is not None:
-            try:
-                from psim_mcp.layout.materialize import materialize_to_legacy
+            # Skip materialization when preview components already have
+            # ports (from the generator path).  Materialized components
+            # may produce positions that don't match the routing engine's
+            # wire segment coordinates.
+            has_ports = any(c.get("ports") for c in components)
+            if not has_ports:
+                try:
+                    from psim_mcp.layout.materialize import materialize_to_legacy
 
-                components, nets = materialize_to_legacy(graph, layout)
-                connections = []
-            except Exception:
-                logger.debug("Failed to materialize graph/layout during confirm", exc_info=True)
+                    components, nets = materialize_to_legacy(graph, layout)
+                    connections = []
+                except Exception:
+                    logger.debug("Failed to materialize graph/layout during confirm", exc_info=True)
 
         if routing is not None and not preview.get("wire_segments"):
             try:
@@ -1051,11 +1090,13 @@ class CircuitDesignService:
         if constraint_validation:
             response_data["constraint_validation"] = constraint_validation
 
+        save_path_hint = _build_save_path_suggestion(self._config, topology)
         message = (
             f"'{topology}' 회로가 자동 설계되었습니다 (token: {token}):\n\n"
             f"```\n{ascii_diagram}\n```\n\n"
             f"SVG: {svg_path}\n"
             f"확정: confirm_circuit(preview_token='{token}', save_path='...')\n"
+            f"권장 save_path: {save_path_hint}\n"
             f"수정: preview_circuit 또는 design_circuit을 다시 호출하세요."
         )
         if constraint_validation and constraint_validation.get("issues"):
@@ -1234,7 +1275,7 @@ class CircuitDesignService:
                 return ResponseBuilder.error(
                     code=save_path_validation.error_code or "VALIDATION_ERROR",
                     message=save_path_validation.error_message or "Invalid save_path.",
-                    suggestion="Use a .psimsch path under the configured project root.",
+                    suggestion=_build_save_path_suggestion(self._config, circuit_type),
                 )
 
             validation_input = {
@@ -1252,6 +1293,11 @@ class CircuitDesignService:
             bridge_components = _enrich_components_for_bridge(components)
 
             try:
+                # Pass nets alongside connections so the bridge can use
+                # star routing directly from the original net data.
+                raw_nets = (
+                    circuit_spec.get("nets", []) if circuit_spec else []
+                )
                 data = await self._adapter.create_circuit(
                     circuit_type=circuit_type,
                     components=bridge_components,
@@ -1259,6 +1305,7 @@ class CircuitDesignService:
                     wire_segments=wire_segments or None,
                     save_path=save_path,
                     simulation_settings=simulation_settings,
+                    nets=raw_nets or None,
                 )
                 return ResponseBuilder.success(
                     data,

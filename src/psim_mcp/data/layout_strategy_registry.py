@@ -440,13 +440,27 @@ ROLE_DIRECTION: dict[str, int] = _build_role_direction()
 
 
 def get_role_placement(role: str) -> str:
-    """Return placement category for a component role."""
-    return ROLE_PLACEMENT.get(role, "power_path")
+    """Return placement category for a component role.
+
+    Falls back to keyword-based inference for roles not explicitly
+    registered in ``ROLE_PLACEMENT`` (e.g. new topologies).
+    """
+    cached = ROLE_PLACEMENT.get(role)
+    if cached is not None:
+        return cached
+    return _infer_placement(role)
 
 
 def get_role_direction(role: str) -> int | None:
-    """Return preferred direction for a component role, or None if unknown."""
-    return ROLE_DIRECTION.get(role)
+    """Return preferred direction for a component role.
+
+    Falls back to keyword-based inference for roles not explicitly
+    registered in ``ROLE_DIRECTION``.
+    """
+    cached = ROLE_DIRECTION.get(role)
+    if cached is not None:
+        return cached
+    return _infer_direction(role)
 
 
 def get_layout_defaults() -> dict[str, int]:

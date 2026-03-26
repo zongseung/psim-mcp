@@ -98,18 +98,18 @@ class BLDCDriveGenerator(TopologyGenerator):
             # Phase A leg
             make_mosfet_v("SW_AH", 200, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW_AL", 200, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G_AH", 160, 110, f_elec, "0,120"),
-            make_gating("G_AL", 160, 190, f_elec, "180,300"),
+            make_gating("G_AH", 160, 110, f_elec, " 0 120."),
+            make_gating("G_AL", 160, 190, f_elec, " 180 300."),
             # Phase B leg
             make_mosfet_v("SW_BH", 350, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW_BL", 350, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G_BH", 310, 110, f_elec, "120,240"),
-            make_gating("G_BL", 310, 190, f_elec, "300,420"),
+            make_gating("G_BH", 310, 110, f_elec, " 120 240."),
+            make_gating("G_BL", 310, 190, f_elec, " 300 420."),
             # Phase C leg
             make_mosfet_v("SW_CH", 500, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW_CL", 500, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G_CH", 460, 110, f_elec, "240,360"),
-            make_gating("G_CL", 460, 190, f_elec, "60,180"),
+            make_gating("G_CH", 460, 110, f_elec, " 240 360."),
+            make_gating("G_CL", 460, 190, f_elec, " 60 180."),
             # Motor
             make_bldc_motor("M1", 620, 130,
                             poles=poles, Rs=0.1, Ls=1e-3, Ke=0.01, J=0.005),

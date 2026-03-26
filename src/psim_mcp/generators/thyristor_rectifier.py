@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
 from .layout import (
     make_ground,
@@ -16,8 +18,10 @@ from .layout import (
     make_resistor,
     make_vac,
     make_thyristor_v,
-    _build_component,
 )
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class ThyristorRectifierGenerator(TopologyGenerator):
@@ -29,11 +33,15 @@ class ThyristorRectifierGenerator(TopologyGenerator):
 
     @property
     def required_fields(self) -> list[str]:
-        return ["vac_rms"]
+        return ["vin"]
 
     @property
     def optional_fields(self) -> list[str]:
-        return ["firing_angle", "f_line", "load_resistance", "ripple_ratio"]
+        return ["vac_rms", "firing_angle", "f_line", "load_resistance", "ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.thyristor_rectifier import synthesize_thyristor_rectifier
+        return synthesize_thyristor_rectifier(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -44,7 +52,7 @@ class ThyristorRectifierGenerator(TopologyGenerator):
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        vac_rms: float = float(requirements["vac_rms"])
+        vac_rms: float = float(requirements.get("vac_rms", requirements.get("vin", 220.0)))
         alpha_deg: float = float(requirements.get("firing_angle", 30.0))
         f_line: float = float(requirements.get("f_line", 60.0))
         ripple_ratio: float = float(requirements.get("ripple_ratio", 0.1))

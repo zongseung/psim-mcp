@@ -84,11 +84,14 @@ PSIM_TYPE_MAP: dict[str, str] = {
 PARAMETER_NAME_MAP: dict[str, dict[str, str]] = {
     "DC_Source": {
         "voltage": "V1",
+        "amplitude": "V1",
         "Amplitude": "V1",
     },
     "AC_Source": {
         "voltage": "V1",
+        "amplitude": "V1",
         "Amplitude": "V1",
+        "frequency": "Freq",
         "Frequency": "Freq",
     },
     "Inductor": {
@@ -188,6 +191,12 @@ PORT_PIN_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("secondary_center",),
         ("secondary_bottom",),
     ),
+    # 3-pin semiconductors
+    "Thyristor": (("anode",), ("cathode",), ("gate",)),
+    # Motors (3-phase terminals)
+    "Induction_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
+    "PMSM": (("phase_a",), ("phase_b",), ("phase_c",)),
+    "BLDC_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
 }
 
 

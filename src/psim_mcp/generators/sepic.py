@@ -7,7 +7,12 @@ continuous input current.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class SepicGenerator(TopologyGenerator):
@@ -24,6 +29,10 @@ class SepicGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.sepic import synthesize_sepic
+        return synthesize_sepic(requirements)
 
     # ------------------------------------------------------------------
     # Design

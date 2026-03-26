@@ -131,7 +131,7 @@ def test_resonant_cap_left_of_inductor(llc_layout):
 
 
 def test_output_right(llc_layout):
-    r1 = llc_layout.get_component("R1")
+    r1 = llc_layout.get_component("Vout")
     sw1 = llc_layout.get_component("SW1")
     assert r1 is not None and sw1 is not None
     assert r1.x > sw1.x
@@ -152,7 +152,7 @@ def test_resonant_cap_in_resonant_region(llc_layout):
 
 
 def test_load_in_output_region(llc_layout):
-    r1 = llc_layout.get_component("R1")
+    r1 = llc_layout.get_component("Vout")
     assert r1 is not None
     assert r1.region_id == "output_filter"
 

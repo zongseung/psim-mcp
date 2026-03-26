@@ -149,6 +149,7 @@ class BasePsimAdapter(ABC):
         wire_segments: list[dict] | None = None,
         simulation_settings: dict | None = None,
         psim_template: dict | None = None,
+        nets: list[dict] | None = None,
     ) -> dict:
         """Create a new PSIM circuit schematic programmatically.
 

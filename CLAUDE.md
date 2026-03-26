@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies
 uv sync --all-extras
 
-# Run all unit tests (845 tests, ~3s)
+# Run all unit tests (885 tests, ~3s)
 uv run pytest tests/unit -q
 
 # Run a single test file
@@ -34,7 +34,7 @@ All Python operations must use `uv run`. Never use bare `python`, `pip`, or `pyt
 
 ## Verified Current Status
 
-- Unit test collection: 845 tests
+- Unit test collection: 1013 tests
 - Registered MCP tools: 17
 - Total topologies in `topology_metadata.py`: 29
 - End-to-end canonical topologies: `buck`, `flyback`, `llc`

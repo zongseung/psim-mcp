@@ -118,8 +118,10 @@ class AnalysisService:
                 signal_data = signal_result.get("signals", {})
                 if signal_data:
                     from psim_mcp.utils.waveform_renderer import render_waveforms
+                    from psim_mcp.data.simulation_defaults import get_simulation_defaults
 
-                    time_step_val = 1e-6  # default
+                    sim_defaults = get_simulation_defaults(topology)
+                    time_step_val = float(sim_defaults.get("time_step", "1E-006"))
                     waveform_path = render_waveforms(
                         signal_data,
                         time_step=time_step_val,

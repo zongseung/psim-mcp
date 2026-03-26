@@ -33,14 +33,33 @@ if TYPE_CHECKING:
 
 
 def _get_allowed_save_dirs(config: AppConfig | None) -> list[str] | None:
-    """Resolve allowed output roots for newly created schematics."""
+    """Resolve allowed output roots for newly created schematics.
+
+    Only restricts when ``allowed_project_dirs`` is explicitly configured.
+    """
     if config is None:
         return None
     if config.allowed_project_dirs:
         return config.allowed_project_dirs
-    if config.psim_mode == "real" and config.psim_project_dir is not None:
-        return [str(config.psim_project_dir)]
     return None
+
+
+def _build_save_path_suggestion(
+    config: AppConfig | None,
+    circuit_type: str = "circuit",
+) -> str:
+    """Describe valid save roots and provide a safe example path."""
+    allowed_dirs = _get_allowed_save_dirs(config)
+    if not allowed_dirs:
+        return "Use a valid .psimsch path."
+
+    example_root = allowed_dirs[-1]
+    example_path = f"{example_root}\\{circuit_type}.psimsch"
+    roots = ", ".join(allowed_dirs)
+    return (
+        f"Use a .psimsch path under one of the configured save roots: {roots}. "
+        f"Example: {example_path}"
+    )
 
 
 class SimulationService:
@@ -371,7 +390,7 @@ class SimulationService:
                 return ResponseBuilder.error(
                     code=save_path_validation.error_code or "VALIDATION_ERROR",
                     message=save_path_validation.error_message or "Invalid save_path.",
-                    suggestion="Use a .psimsch path under the configured project root.",
+                    suggestion=_build_save_path_suggestion(self._config, circuit_type),
                 )
 
             validation_input = {

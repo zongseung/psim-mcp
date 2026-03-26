@@ -50,7 +50,31 @@ def try_generate(
     except (KeyError, Exception):
         return None, [], [], "template_fallback", None, None, None, None
 
-    req = specs or {}
+    req = dict(specs or {})
+
+    # Normalize common spec aliases so generators always receive the
+    # canonical field names they expect.  LLMs and tool callers often
+    # use short forms (e.g. ``vout`` instead of ``vout_target``).
+    # Bidirectional aliases: generators are inconsistent — some use
+    # ``vout_target`` while ``push_pull`` uses plain ``iout``.  Map in
+    # both directions so the caller's choice always works.
+    _FORWARD_ALIASES = {
+        "vout": "vout_target",
+        "iout": "iout_target",
+        "vin_rms": "vac_rms",
+        "vin": "vdc",          # pv_grid_tied expects vdc
+    }
+    _REVERSE_ALIASES = {
+        "iout_target": "iout",  # push_pull expects plain iout
+        "vdc": "vin",
+    }
+    for alias, canonical in _FORWARD_ALIASES.items():
+        if alias in req and canonical not in req:
+            req[canonical] = req[alias]
+    for alias, canonical in _REVERSE_ALIASES.items():
+        if alias in req and canonical not in req:
+            req[canonical] = req[alias]
+
     if generator.missing_fields(req):
         return None, [], [], "template_fallback", None, None, None, None
 

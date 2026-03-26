@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
+import time
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +19,33 @@ from psim_mcp.config import AppConfig
 _BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent / "bridge" / "bridge_script.py")
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Circuit breaker & resilience constants
+# ---------------------------------------------------------------------------
+_MAX_CONSECUTIVE_FAILURES = 5
+_CIRCUIT_BREAKER_COOLDOWN = 30.0  # seconds before HALF_OPEN probe
+_LOCK_ACQUIRE_TIMEOUT = 10.0     # seconds to wait for asyncio.Lock
+_MAX_RESTARTS = 10               # lifetime restart cap
+
+
+class CircuitState(Enum):
+    """Three-state circuit breaker model (Nygard, *Release It!*)."""
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+@dataclasses.dataclass
+class BridgeMetrics:
+    """Observable operational metrics for the bridge subprocess."""
+    restart_count: int = 0
+    total_calls: int = 0
+    failure_count: int = 0
+    consecutive_failures: int = 0
+    circuit_state: str = "closed"
+    last_error: str | None = None
+    last_error_time: float | None = None
 
 
 class RealPsimAdapter(BasePsimAdapter):
@@ -35,6 +65,13 @@ class RealPsimAdapter(BasePsimAdapter):
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()  # 동시 호출 방지
         self._stderr_task: asyncio.Task | None = None
+
+        # Circuit breaker state
+        self._circuit_state: CircuitState = CircuitState.CLOSED
+        self._circuit_opened_at: float | None = None
+        self._consecutive_failures: int = 0
+        self._total_restarts: int = 0
+        self._metrics = BridgeMetrics()
 
         # Startup validation: bridge script must exist
         if not Path(self._bridge_script).is_file():
@@ -82,6 +119,68 @@ class RealPsimAdapter(BasePsimAdapter):
         return env
 
     # ------------------------------------------------------------------
+    # Circuit breaker
+    # ------------------------------------------------------------------
+
+    def _check_circuit_breaker(self) -> None:
+        """Raise if the circuit breaker is open and cooldown has not elapsed."""
+        if self._circuit_state is CircuitState.CLOSED:
+            return
+        if self._circuit_state is CircuitState.OPEN:
+            elapsed = time.monotonic() - (self._circuit_opened_at or 0.0)
+            if elapsed >= _CIRCUIT_BREAKER_COOLDOWN:
+                logger.info("Circuit breaker cooldown elapsed, transitioning to HALF_OPEN")
+                self._circuit_state = CircuitState.HALF_OPEN
+                self._metrics.circuit_state = CircuitState.HALF_OPEN.value
+                return
+            raise RuntimeError(
+                f"Circuit breaker is OPEN — bridge failed {self._consecutive_failures} "
+                f"consecutive times. Retry after {_CIRCUIT_BREAKER_COOLDOWN - elapsed:.0f}s."
+            )
+        # HALF_OPEN: allow one probe call through
+
+    def _record_success(self) -> None:
+        """Reset failure counters on a successful bridge call."""
+        self._consecutive_failures = 0
+        self._metrics.consecutive_failures = 0
+        if self._circuit_state is CircuitState.HALF_OPEN:
+            logger.info("Probe call succeeded, circuit breaker → CLOSED")
+            self._circuit_state = CircuitState.CLOSED
+            self._circuit_opened_at = None
+            self._metrics.circuit_state = CircuitState.CLOSED.value
+
+    def _record_failure(self, error: str) -> None:
+        """Increment failure counters; open circuit breaker if threshold reached."""
+        self._consecutive_failures += 1
+        self._metrics.consecutive_failures = self._consecutive_failures
+        self._metrics.failure_count += 1
+        self._metrics.last_error = error
+        self._metrics.last_error_time = time.monotonic()
+
+        if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+            logger.error(
+                "Bridge failed %d consecutive times — opening circuit breaker",
+                self._consecutive_failures,
+            )
+            self._circuit_state = CircuitState.OPEN
+            self._circuit_opened_at = time.monotonic()
+            self._metrics.circuit_state = CircuitState.OPEN.value
+
+    def get_metrics(self) -> dict:
+        """Return a snapshot of operational metrics."""
+        return dataclasses.asdict(self._metrics)
+
+    async def health_check(self) -> dict:
+        """Proactive health assessment of the bridge subprocess."""
+        process_alive = self._process is not None and self._process.returncode is None
+        return {
+            "healthy": self._circuit_state is CircuitState.CLOSED and process_alive,
+            "circuit_state": self._circuit_state.value,
+            "process_alive": process_alive,
+            "metrics": self.get_metrics(),
+        }
+
+    # ------------------------------------------------------------------
     # Internal bridge call
     # ------------------------------------------------------------------
 
@@ -90,7 +189,20 @@ class RealPsimAdapter(BasePsimAdapter):
         if self._process is not None and self._process.returncode is None:
             return self._process
 
-        logger.info("Starting new bridge process: %s %s", self._python_exe, self._bridge_script)
+        if self._total_restarts >= _MAX_RESTARTS:
+            raise RuntimeError(
+                f"Bridge exceeded max restart limit ({_MAX_RESTARTS}). "
+                "Manual intervention required — check PSIM installation and bridge_script.py."
+            )
+
+        self._total_restarts += 1
+        self._metrics.restart_count = self._total_restarts
+
+        logger.info(
+            "Starting bridge process (%d/%d): %s %s",
+            self._total_restarts, _MAX_RESTARTS,
+            self._python_exe, self._bridge_script,
+        )
         cmd = [self._python_exe, self._bridge_script]
 
         try:
@@ -138,13 +250,27 @@ class RealPsimAdapter(BasePsimAdapter):
 
         Raises:
             TimeoutError: If the response exceeds the configured timeout.
-            RuntimeError: If the bridge process dies or returns invalid JSON.
+            RuntimeError: If the bridge process dies, returns invalid JSON,
+                or the circuit breaker is open.
         """
-        payload = json.dumps({"action": action, "params": params or {}})
+        self._metrics.total_calls += 1
+        self._check_circuit_breaker()
 
+        payload = json.dumps({"action": action, "params": params or {}})
         logger.debug("Bridge call: action=%s params=%s", action, params)
 
-        async with self._lock:
+        # Acquire lock with timeout to prevent deadlock
+        try:
+            await asyncio.wait_for(self._lock.acquire(), timeout=_LOCK_ACQUIRE_TIMEOUT)
+        except asyncio.TimeoutError:
+            error_msg = (
+                f"Could not acquire bridge lock within {_LOCK_ACQUIRE_TIMEOUT}s "
+                f"for action '{action}' — a previous call may be hung."
+            )
+            self._record_failure(error_msg)
+            raise RuntimeError(error_msg) from None
+
+        try:
             proc = await self._ensure_bridge()
 
             # Bridge 프로세스가 종료된 경우 자동 재시작
@@ -172,34 +298,44 @@ class RealPsimAdapter(BasePsimAdapter):
                 )
             except asyncio.TimeoutError:
                 logger.error("Bridge call timed out: action=%s", action)
-                # 타임아웃 시 프로세스를 종료하고 다음 호출에서 재시작
                 try:
                     proc.kill()
                 except ProcessLookupError:
                     pass
                 self._process = None
-                raise TimeoutError(
-                    f"PSIM bridge timed out after {self._timeout}s for action '{action}'"
-                ) from None
+                error_msg = f"PSIM bridge timed out after {self._timeout}s for action '{action}'"
+                self._record_failure(error_msg)
+                raise TimeoutError(error_msg) from None
 
             if not raw:
-                # 빈 응답 = 프로세스가 종료됨
                 logger.error("Bridge returned empty response (process may have crashed)")
                 self._process = None
-                raise RuntimeError(
+                error_msg = (
                     f"PSIM bridge returned empty response for action '{action}'. "
                     "The bridge process may have crashed."
                 )
+                self._record_failure(error_msg)
+                raise RuntimeError(error_msg)
 
             try:
                 result = json.loads(raw.decode())
             except json.JSONDecodeError as exc:
                 logger.error("Bridge returned invalid JSON: %s", raw[:500])
-                raise RuntimeError(
-                    f"PSIM bridge returned invalid JSON for action '{action}': {exc}"
-                ) from exc
+                error_msg = f"PSIM bridge returned invalid JSON for action '{action}': {exc}"
+                self._record_failure(error_msg)
+                raise RuntimeError(error_msg) from exc
 
+            self._record_success()
             return result
+
+        except (RuntimeError, TimeoutError):
+            # Already recorded by failure handlers above; re-raise
+            raise
+        except Exception as exc:
+            self._record_failure(str(exc))
+            raise
+        finally:
+            self._lock.release()
 
     async def shutdown(self) -> None:
         """MCP 서버 종료 시 Bridge 프로세스를 정리한다."""
@@ -226,7 +362,8 @@ class RealPsimAdapter(BasePsimAdapter):
     async def open_project(self, path: str) -> dict:
         """Open a PSIM project via the bridge."""
         result = await self._call_bridge("open_project", {"path": path})
-        self._project_open = True
+        if result.get("success", False):
+            self._project_open = True
         return result
 
     async def set_parameter(
@@ -322,6 +459,7 @@ class RealPsimAdapter(BasePsimAdapter):
         wire_segments: list[dict] | None = None,
         simulation_settings: dict | None = None,
         psim_template: dict | None = None,
+        nets: list[dict] | None = None,
     ) -> dict:
         """Create a circuit schematic via the bridge (uses psimapipy)."""
         params: dict = {
@@ -331,9 +469,11 @@ class RealPsimAdapter(BasePsimAdapter):
             "wire_segments": wire_segments,
             "save_path": save_path,
             "simulation_settings": simulation_settings,
+            "nets": nets,
         }
         if psim_template:
             params["psim_template"] = psim_template
         result = await self._call_bridge("create_circuit", params)
-        self._project_open = True
+        if result.get("success", False):
+            self._project_open = True
         return result

@@ -105,6 +105,22 @@ def _ports_diode_bridge(x: int, y: int, direction: int) -> list[int]:
     return [x, y, x, y + 60, x + 80, y, x + 80, y + 60]
 
 
+def _ports_thyristor(x: int, y: int, direction: int) -> list[int]:
+    """Thyristor: anode(x,y) cathode(x,y+50) gate(x-20,y+30)."""
+    return [x, y, x, y + 50, x - 20, y + 30]
+
+
+def _ports_center_tap_transformer(x: int, y: int, direction: int) -> list[int]:
+    """Center_Tap_Transformer: pri1(x,y) pri2(x,y+80) sec1(x+80,y) center_tap(x+80,y+40) sec2(x+80,y+80)."""
+    sx = x + 80
+    return [x, y, x, y + 80, sx, y, sx, y + 40, sx, y + 80]
+
+
+def _ports_three_phase_motor(x: int, y: int, direction: int) -> list[int]:
+    """3-phase motor: phase_a(x,y) phase_b(x,y+30) phase_c(x,y+60)."""
+    return [x, y, x, y + 30, x, y + 60]
+
+
 _PORT_CALCULATORS: dict[str, object] = {
     "DC_Source": _ports_dc_source,
     "AC_Source": _ports_ac_source,
@@ -119,6 +135,11 @@ _PORT_CALCULATORS: dict[str, object] = {
     "Transformer": _ports_transformer,
     "IdealTransformer": _ports_ideal_transformer,
     "DiodeBridge": _ports_diode_bridge,
+    "Thyristor": _ports_thyristor,
+    "Center_Tap_Transformer": _ports_center_tap_transformer,
+    "Induction_Motor": _ports_three_phase_motor,
+    "PMSM": _ports_three_phase_motor,
+    "BLDC_Motor": _ports_three_phase_motor,
 }
 
 # Two-pin passives that need position2

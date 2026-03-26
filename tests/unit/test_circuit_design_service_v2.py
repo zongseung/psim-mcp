@@ -94,8 +94,11 @@ class TestPayloadVersionInPreview:
         )
         token = result["data"]["preview_token"]
         stored = state_store.get(token)
-        assert "wire_segments" in stored
-        assert isinstance(stored["wire_segments"], list)
+        # Generator path may skip wire_segments when it provides
+        # components with ports + nets for pin-based wiring.
+        has_ws = "wire_segments" in stored and isinstance(stored["wire_segments"], list)
+        has_nets = bool(stored.get("nets"))
+        assert has_ws or has_nets
 
 
 # ---------------------------------------------------------------------------

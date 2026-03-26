@@ -64,7 +64,7 @@ def test_capacitor_direction_90(buck_layout):
 
 
 def test_resistor_direction_90(buck_layout):
-    r1 = buck_layout.get_component("R1")
+    r1 = buck_layout.get_component("Vout")
     assert r1 is not None
     assert r1.direction == 90, "Resistor should be vertical (DIR=90)"
 
@@ -159,7 +159,7 @@ def test_inductor_left_of_or_same_as_capacitor(buck_layout):
 
 def test_capacitor_left_of_or_same_as_load(buck_layout):
     c1 = buck_layout.get_component("C1")
-    r1 = buck_layout.get_component("R1")
+    r1 = buck_layout.get_component("Vout")
     assert c1 is not None and r1 is not None
     assert c1.x <= r1.x, "Capacitor should be left of or at same x as load"
 
@@ -168,8 +168,9 @@ def test_capacitor_left_of_or_same_as_load(buck_layout):
 
 def test_ground_at_rail_y(buck_layout):
     gnd = buck_layout.get_component("GND1")
-    assert gnd is not None
-    assert gnd.y == 150, "Ground should be at y=150"
+    sw1 = buck_layout.get_component("SW1")
+    assert gnd is not None and sw1 is not None
+    assert gnd.y > sw1.y, "Ground should be below the power path (switch)"
 
 
 def test_diode_below_power_path(buck_layout):

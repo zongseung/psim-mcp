@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class BuckBoostGenerator(TopologyGenerator):
@@ -19,6 +24,10 @@ class BuckBoostGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.buck_boost import synthesize_buck_boost
+        return synthesize_buck_boost(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -44,9 +53,9 @@ class BuckBoostGenerator(TopologyGenerator):
         capacitance = iout * duty / (fsw * vripple_ratio * vout) if vout else 100e-6
         r_load = vout / iout if iout else 10.0
 
-        # Buck-boost (inverting): V1+ -> SW1(drain->source) -> L1 -> output(-)
-        # D1 freewheels from GND(anode) to SW-L junction(cathode)
-        # Output: C1||R1 from L1.pin2 to GND
+        # Inverting buck-boost: V1+ -> SW1(drain->source) -> L1 -> GND
+        # D1: cathode at SW-L junction, anode at negative output node
+        # Output (inverted): C1||R1 from GND(+) to D1.anode(-)
         #
         # Layout follows verified buck pattern (DIR=270 horizontal MOSFET):
         #   VDC(120,100)-(120,150) -> MOSFET drain(150,100) source(200,100) gate(180,120)
@@ -114,12 +123,16 @@ class BuckBoostGenerator(TopologyGenerator):
             },
         ]
 
+        # Inverting buck-boost topology:
+        #   SW ON:  Vin+ -> SW drain->source -> L pin1->pin2 -> GND (inductor charges)
+        #   SW OFF: L discharges through D (cathode=SW-L junction, anode=output-)
+        #   Output is inverted: C1-/R1.pin2 = negative output, C1+/R1.pin1 = GND
         nets = [
             {"name": "net_vin_sw", "pins": ["V1.positive", "SW1.drain"]},
-            {"name": "net_sw_d_l", "pins": ["SW1.source", "D1.cathode", "L1.pin1"]},
+            {"name": "net_sw_l", "pins": ["SW1.source", "L1.pin1", "D1.cathode"]},
             {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
-            {"name": "net_out", "pins": ["L1.pin2", "C1.positive", "R1.pin1"]},
-            {"name": "net_gnd", "pins": ["V1.negative", "GND1.pin1", "D1.anode", "C1.negative", "R1.pin2"]},
+            {"name": "net_gnd", "pins": ["L1.pin2", "V1.negative", "GND1.pin1", "C1.positive", "R1.pin1"]},
+            {"name": "net_out_neg", "pins": ["D1.anode", "C1.negative", "R1.pin2"]},
         ]
 
         return {

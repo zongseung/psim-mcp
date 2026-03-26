@@ -38,15 +38,43 @@ NET_ROLE_TRUNK_AXIS: dict[str, str] = {
 }
 
 
+def _segment_has_collision(
+    x1: int, y1: int, x2: int, y2: int,
+    avoid: set[tuple[int, int]],
+) -> bool:
+    """Check if a segment passes through any position in *avoid*.
+
+    Only checks positions strictly between endpoints (touching endpoints
+    is fine -- those belong to the current net's own pins).
+    """
+    if not avoid:
+        return False
+    if x1 == x2:
+        # Vertical segment
+        lo, hi = min(y1, y2), max(y1, y2)
+        for ax, ay in avoid:
+            if ax == x1 and lo < ay < hi:
+                return True
+    elif y1 == y2:
+        # Horizontal segment
+        lo, hi = min(x1, x2), max(x1, x2)
+        for ax, ay in avoid:
+            if ay == y1 and lo < ax < hi:
+                return True
+    return False
+
+
 def _route_two_pin_direct(
     net_id: str,
     p1: tuple[int, int],
     p2: tuple[int, int],
     seg_id_start: int,
+    avoid_positions: set[tuple[int, int]] | None = None,
 ) -> tuple[list[RoutedSegment], list[JunctionPoint]]:
     """Route a 2-pin net with an L-shaped orthogonal path."""
     x1, y1 = p1
     x2, y2 = p2
+    avoid = avoid_positions or set()
     segments: list[RoutedSegment] = []
 
     if x1 == x2 and y1 == y2:
@@ -54,26 +82,96 @@ def _route_two_pin_direct(
 
     if x1 == x2 or y1 == y2:
         # Already aligned: single straight segment
-        segments.append(RoutedSegment(
-            id=f"seg_{seg_id_start}",
-            net_id=net_id,
-            x1=x1, y1=y1, x2=x2, y2=y2,
-            role="direct",
-        ))
+        if _segment_has_collision(x1, y1, x2, y2, avoid):
+            # Offset via L-shape to avoid the collision
+            if y1 == y2:
+                # Horizontal -- detour vertically
+                mid_y = y1 + PIN_SPACING
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start}", net_id=net_id,
+                    x1=x1, y1=y1, x2=x1, y2=mid_y, role="direct",
+                ))
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start + 1}", net_id=net_id,
+                    x1=x1, y1=mid_y, x2=x2, y2=mid_y, role="direct",
+                ))
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start + 2}", net_id=net_id,
+                    x1=x2, y1=mid_y, x2=x2, y2=y2, role="direct",
+                ))
+            else:
+                # Vertical -- detour horizontally
+                mid_x = x1 + PIN_SPACING
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start}", net_id=net_id,
+                    x1=x1, y1=y1, x2=mid_x, y2=y1, role="direct",
+                ))
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start + 1}", net_id=net_id,
+                    x1=mid_x, y1=y1, x2=mid_x, y2=y2, role="direct",
+                ))
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start + 2}", net_id=net_id,
+                    x1=mid_x, y1=y2, x2=x2, y2=y2, role="direct",
+                ))
+        else:
+            segments.append(RoutedSegment(
+                id=f"seg_{seg_id_start}",
+                net_id=net_id,
+                x1=x1, y1=y1, x2=x2, y2=y2,
+                role="direct",
+            ))
     else:
         # L-shape: horizontal first, then vertical
-        segments.append(RoutedSegment(
-            id=f"seg_{seg_id_start}",
-            net_id=net_id,
-            x1=x1, y1=y1, x2=x2, y2=y1,
-            role="direct",
-        ))
-        segments.append(RoutedSegment(
-            id=f"seg_{seg_id_start + 1}",
-            net_id=net_id,
-            x1=x2, y1=y1, x2=x2, y2=y2,
-            role="direct",
-        ))
+        h_seg_collision = _segment_has_collision(x1, y1, x2, y1, avoid)
+        v_seg_collision = _segment_has_collision(x2, y1, x2, y2, avoid)
+
+        if not h_seg_collision and not v_seg_collision:
+            # Default L-shape: horizontal then vertical
+            segments.append(RoutedSegment(
+                id=f"seg_{seg_id_start}",
+                net_id=net_id,
+                x1=x1, y1=y1, x2=x2, y2=y1,
+                role="direct",
+            ))
+            segments.append(RoutedSegment(
+                id=f"seg_{seg_id_start + 1}",
+                net_id=net_id,
+                x1=x2, y1=y1, x2=x2, y2=y2,
+                role="direct",
+            ))
+        else:
+            # Try alternative L-shape: vertical first, then horizontal
+            v_alt_collision = _segment_has_collision(x1, y1, x1, y2, avoid)
+            h_alt_collision = _segment_has_collision(x1, y2, x2, y2, avoid)
+            if not v_alt_collision and not h_alt_collision:
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start}",
+                    net_id=net_id,
+                    x1=x1, y1=y1, x2=x1, y2=y2,
+                    role="direct",
+                ))
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start + 1}",
+                    net_id=net_id,
+                    x1=x1, y1=y2, x2=x2, y2=y2,
+                    role="direct",
+                ))
+            else:
+                # Both L-shapes collide; use offset U-shape detour
+                mid_y = min(y1, y2) - PIN_SPACING
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start}", net_id=net_id,
+                    x1=x1, y1=y1, x2=x1, y2=mid_y, role="direct",
+                ))
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start + 1}", net_id=net_id,
+                    x1=x1, y1=mid_y, x2=x2, y2=mid_y, role="direct",
+                ))
+                segments.append(RoutedSegment(
+                    id=f"seg_{seg_id_start + 2}", net_id=net_id,
+                    x1=x2, y1=mid_y, x2=x2, y2=y2, role="direct",
+                ))
     return segments, []
 
 
@@ -81,14 +179,30 @@ def _route_horizontal_trunk(
     net_id: str,
     pin_positions: list[tuple[int, int]],
     seg_id_start: int,
+    avoid_positions: set[tuple[int, int]] | None = None,
 ) -> tuple[list[RoutedSegment], list[JunctionPoint]]:
-    """Route with a horizontal trunk at the median Y of all pins."""
+    """Route with a horizontal trunk at the median Y of all pins.
+
+    If *avoid_positions* is given, the trunk Y is shifted in PIN_SPACING
+    increments until no segment passes through a foreign pin.
+    """
+    avoid = avoid_positions or set()
     ys = [p[1] for p in pin_positions]
     trunk_y = int(median(ys))
 
     xs = sorted(p[0] for p in pin_positions)
     min_x = xs[0]
     max_x = xs[-1]
+
+    # Shift trunk_y to avoid foreign pins on the trunk line
+    if avoid and min_x != max_x:
+        max_shift = 5  # limit iterations
+        shift = 0
+        while shift < max_shift and _segment_has_collision(
+            min_x, trunk_y, max_x, trunk_y, avoid
+        ):
+            trunk_y += PIN_SPACING
+            shift += 1
 
     segments: list[RoutedSegment] = []
     junctions: list[JunctionPoint] = []
@@ -114,13 +228,32 @@ def _route_horizontal_trunk(
             continue
 
         # Vertical branch from pin to trunk
-        segments.append(RoutedSegment(
-            id=f"seg_{sid}",
-            net_id=net_id,
-            x1=px, y1=py, x2=px, y2=trunk_y,
-            role="branch",
-        ))
-        sid += 1
+        if _segment_has_collision(px, py, px, trunk_y, avoid):
+            # Offset the branch horizontally to avoid collision
+            offset_x = px + PIN_SPACING
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}", net_id=net_id,
+                x1=px, y1=py, x2=offset_x, y2=py, role="branch",
+            ))
+            sid += 1
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}", net_id=net_id,
+                x1=offset_x, y1=py, x2=offset_x, y2=trunk_y, role="branch",
+            ))
+            sid += 1
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}", net_id=net_id,
+                x1=offset_x, y1=trunk_y, x2=px, y2=trunk_y, role="branch",
+            ))
+            sid += 1
+        else:
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}",
+                net_id=net_id,
+                x1=px, y1=py, x2=px, y2=trunk_y,
+                role="branch",
+            ))
+            sid += 1
         junctions.append(JunctionPoint(x=px, y=trunk_y, net_id=net_id))
 
     return segments, junctions
@@ -130,14 +263,30 @@ def _route_vertical_trunk(
     net_id: str,
     pin_positions: list[tuple[int, int]],
     seg_id_start: int,
+    avoid_positions: set[tuple[int, int]] | None = None,
 ) -> tuple[list[RoutedSegment], list[JunctionPoint]]:
-    """Route with a vertical trunk at the median X of all pins."""
+    """Route with a vertical trunk at the median X of all pins.
+
+    If *avoid_positions* is given, the trunk X is shifted in PIN_SPACING
+    increments until no segment passes through a foreign pin.
+    """
+    avoid = avoid_positions or set()
     xs = [p[0] for p in pin_positions]
     trunk_x = int(median(xs))
 
     ys = sorted(p[1] for p in pin_positions)
     min_y = ys[0]
     max_y = ys[-1]
+
+    # Shift trunk_x to avoid foreign pins on the trunk line
+    if avoid and min_y != max_y:
+        max_shift = 5
+        shift = 0
+        while shift < max_shift and _segment_has_collision(
+            trunk_x, min_y, trunk_x, max_y, avoid
+        ):
+            trunk_x += PIN_SPACING
+            shift += 1
 
     segments: list[RoutedSegment] = []
     junctions: list[JunctionPoint] = []
@@ -161,13 +310,32 @@ def _route_vertical_trunk(
             continue
 
         # Horizontal branch from pin to trunk
-        segments.append(RoutedSegment(
-            id=f"seg_{sid}",
-            net_id=net_id,
-            x1=px, y1=py, x2=trunk_x, y2=py,
-            role="branch",
-        ))
-        sid += 1
+        if _segment_has_collision(px, py, trunk_x, py, avoid):
+            # Offset the branch vertically to avoid collision
+            offset_y = py + PIN_SPACING
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}", net_id=net_id,
+                x1=px, y1=py, x2=px, y2=offset_y, role="branch",
+            ))
+            sid += 1
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}", net_id=net_id,
+                x1=px, y1=offset_y, x2=trunk_x, y2=offset_y, role="branch",
+            ))
+            sid += 1
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}", net_id=net_id,
+                x1=trunk_x, y1=offset_y, x2=trunk_x, y2=py, role="branch",
+            ))
+            sid += 1
+        else:
+            segments.append(RoutedSegment(
+                id=f"seg_{sid}",
+                net_id=net_id,
+                x1=px, y1=py, x2=trunk_x, y2=py,
+                role="branch",
+            ))
+            sid += 1
         junctions.append(JunctionPoint(x=trunk_x, y=py, net_id=net_id))
 
     return segments, junctions
@@ -178,6 +346,7 @@ def route_net_trunk_branch(
     pin_positions: list[tuple[int, int]],
     net_role: str | None = None,
     segment_id_start: int = 1,
+    avoid_positions: set[tuple[int, int]] | None = None,
 ) -> tuple[list[RoutedSegment], list[JunctionPoint]]:
     """Route a single net using trunk-and-branch strategy.
 
@@ -192,6 +361,10 @@ def route_net_trunk_branch(
         Determines trunk axis preference.
     segment_id_start:
         Starting counter for segment IDs.
+    avoid_positions:
+        Set of (x, y) pin positions belonging to OTHER nets.  Segments
+        must not pass through these positions to prevent false
+        connections in PSIM.
 
     Returns
     -------
@@ -205,10 +378,13 @@ def route_net_trunk_branch(
     if len(unique_positions) < 2:
         return [], []
 
+    avoid = avoid_positions or set()
+
     # 2-pin net: always direct L-shape
     if len(unique_positions) == 2:
         return _route_two_pin_direct(
-            net_id, unique_positions[0], unique_positions[1], segment_id_start,
+            net_id, unique_positions[0], unique_positions[1],
+            segment_id_start, avoid,
         )
 
     # 3+ pin net: determine trunk axis from role
@@ -221,7 +397,8 @@ def route_net_trunk_branch(
         sid = segment_id_start
         for i in range(len(unique_positions) - 1):
             segs, juncs = _route_two_pin_direct(
-                net_id, unique_positions[i], unique_positions[i + 1], sid,
+                net_id, unique_positions[i], unique_positions[i + 1],
+                sid, avoid,
             )
             all_segments.extend(segs)
             all_junctions.extend(juncs)
@@ -229,10 +406,14 @@ def route_net_trunk_branch(
         return all_segments, all_junctions
 
     if axis == "vertical":
-        return _route_vertical_trunk(net_id, unique_positions, segment_id_start)
+        return _route_vertical_trunk(
+            net_id, unique_positions, segment_id_start, avoid,
+        )
 
     # Default: horizontal trunk
-    return _route_horizontal_trunk(net_id, unique_positions, segment_id_start)
+    return _route_horizontal_trunk(
+        net_id, unique_positions, segment_id_start, avoid,
+    )
 
 
 # ---------------------------------------------------------------------------

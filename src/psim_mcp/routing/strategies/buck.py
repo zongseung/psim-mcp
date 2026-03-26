@@ -28,17 +28,26 @@ class BuckRoutingStrategy:
         routing_policy = get_routing_policy("buck") or {}
         net_layers = routing_policy.get("net_layers", {})
 
+        # Pre-compute per-net pin positions for collision avoidance.
+        net_pin_positions: dict[str, list[tuple[int, int]]] = {}
+        all_pin_positions: set[tuple[int, int]] = set()
+        for net in graph.nets:
+            pins = [pin_pos[p] for p in net.pins if p in pin_pos]
+            net_pin_positions[net.id] = pins
+            all_pin_positions.update(pins)
+
         per_net_segments: list[list[RoutedSegment]] = []
         all_junctions = []
         seg_counter = 1
 
         for net in graph.nets:
-            pins = [pin_pos[p] for p in net.pins if p in pin_pos]
+            pins = net_pin_positions.get(net.id, [])
             if len(pins) < 2:
                 continue
 
+            avoid = all_pin_positions - set(pins)
             segs, juncs = route_net_trunk_branch(
-                net.id, pins, net.role, seg_counter,
+                net.id, pins, net.role, seg_counter, avoid,
             )
 
             # Tag layer metadata

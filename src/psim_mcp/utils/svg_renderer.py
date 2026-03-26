@@ -368,9 +368,8 @@ def _render_two_terminal_with_ports(comp: dict, label: str, kind: str) -> str:
     if len(ports) < 4:
         return ""
     x1, y1, x2, y2 = ports[:4]
-    cid = comp.get("id", "?")
     horizontal = y1 == y2
-    parts = [f'<g transform="translate(0,0)">']
+    parts = ['<g transform="translate(0,0)">']
     parts.append(_pin_dot(x1, y1))
     parts.append(_pin_dot(x2, y2))
     if horizontal:
@@ -428,8 +427,6 @@ def _render_switch_with_ports(comp: dict) -> str:
     label = _label(cid, comp.get("parameters", {}), "switching_frequency", "Hz")
     midx = (drain_x + source_x) // 2
     midy = (drain_y + source_y) // 2
-    left = min(drain_x, source_x) + 10 if drain_y == source_y else drain_x - 12
-    top = min(drain_y, source_y) + 10 if drain_x == source_x else drain_y - 12
     if drain_x == source_x:
         body = f'<rect x="{drain_x - 14}" y="{min(drain_y, source_y) + 12}" width="28" height="{abs(source_y - drain_y) - 24}" rx="3" fill="#e8f4fd" stroke="#333" stroke-width="2"/>'
         leads = _line(drain_x, drain_y, drain_x, min(drain_y, source_y) + 12) + _line(source_x, max(drain_y, source_y) - 12, source_x, source_y)

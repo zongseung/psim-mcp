@@ -18,7 +18,12 @@ from __future__ import annotations
 
 import math
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_capacitor,
     make_diode_bridge,
@@ -46,6 +51,10 @@ class BoostPFCGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["vout_target", "power", "fsw", "ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.boost_pfc import synthesize_boost_pfc
+        return synthesize_boost_pfc(requirements)
 
     # ------------------------------------------------------------------
     # Design
@@ -123,10 +132,11 @@ class BoostPFCGenerator(TopologyGenerator):
             make_diode_bridge("BR1", 120, 100),
             make_inductor("L1", 220, 100, inductance),
             make_mosfet_v("SW1", 300, 100, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G1", 280, 170, fsw, f"0,{int(d_max * 360)}"),
+            make_gating("G1", 280, 170, fsw, f" 0 {int(d_max * 360)}."),
             make_diode_h("D1", 320, 100, forward_voltage=0.7),
             make_capacitor("Cout", 400, 100, cout),
             make_resistor("R1", 450, 100, r_load, voltage_flag=1),
+            make_ground("GND2", 400, 160),
         ]
 
         nets = [
@@ -138,9 +148,10 @@ class BoostPFCGenerator(TopologyGenerator):
             {"name": "net_l_sw_d", "pins": ["L1.pin2", "SW1.drain", "D1.anode"]},
             {"name": "net_gate", "pins": ["G1.output", "SW1.gate"]},
             {"name": "net_d_out", "pins": ["D1.cathode", "Cout.positive", "R1.pin1"]},
-            # GND bus: bridge DC-, MOSFET source, Cout-, R1.pin2
+            # GND bus: bridge DC-, MOSFET source, Cout-, R1.pin2, GND2
             {"name": "net_gnd", "pins": [
                 "BR1.dc_neg", "SW1.source", "Cout.negative", "R1.pin2",
+                "GND2.pin1",
             ]},
         ]
 

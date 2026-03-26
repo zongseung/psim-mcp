@@ -82,7 +82,7 @@ def test_output_cap_right_of_diode(flyback_layout):
 
 def test_load_right_of_or_same_as_cap(flyback_layout):
     c1 = flyback_layout.get_component("C1")
-    r1 = flyback_layout.get_component("R1")
+    r1 = flyback_layout.get_component("Vout")
     assert c1 is not None and r1 is not None
     assert r1.x >= c1.x
 

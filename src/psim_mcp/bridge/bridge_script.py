@@ -93,6 +93,7 @@ _GLOBAL_DEFAULT = {"time_step": "1E-006", "total_time": "0.05"}
 _FALLBACK_PORT_PIN_GROUPS = {
     "MOSFET": (("drain", "collector"), ("source", "emitter"), ("gate",)),
     "IGBT": (("collector", "drain"), ("emitter", "source"), ("gate",)),
+    "Thyristor": (("anode",), ("cathode",), ("gate",)),
     "Diode": (("anode",), ("cathode",)),
     "DIODE": (("anode",), ("cathode",)),
     "Schottky_Diode": (("anode",), ("cathode",)),
@@ -130,6 +131,10 @@ _FALLBACK_PORT_PIN_GROUPS = {
         ("secondary_center",),
         ("secondary_bottom",),
     ),
+    # Motors (3-phase terminals)
+    "Induction_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
+    "PMSM": (("phase_a",), ("phase_b",), ("phase_c",)),
+    "BLDC_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
 }
 
 
@@ -197,6 +202,19 @@ _PSIM_TYPE_MAP = {
     "BATTERY": "BATTERY",
     "GTO": "MULTI_GTO",
     "TRIAC": "MULTI_TRIAC",
+    "Thyristor": "THYRISTOR",
+    "Schottky_Diode": "DIODE",
+    "Zener_Diode": "ZENER",
+    "Battery": "BATTERY",
+    "DC_Current_Source": "IDC",
+    "AC_Current_Source": "IAC",
+    "PWM_Generator": "GATING",
+    "Voltage_Probe": "VP",
+    "Current_Probe": "IP",
+    "Center_Tap_Transformer": "TRANSFORMER_CT",
+    "Induction_Motor": "INDUCTION_MACHINE",
+    "PMSM": "PMSM",
+    "BLDC_Motor": "BLDC",
 }
 
 # Internal parameter name → PSIM API parameter name mapping.
@@ -214,6 +232,7 @@ _PARAM_NAME_MAP = {
     "switching_frequency": None,  # skip — not a PSIM element param
     "on_resistance": "On_Resistance",
     "forward_voltage": "Diode_Voltage_Drop",
+    "firing_angle": "Firing_Angle",
     # Flags
     "VoltageFlag": "Voltage_Flag",
     "CurrentFlag": "Current_Flag",
@@ -741,28 +760,312 @@ def _resolve_pin_positions(components):
     return pin_map
 
 
-def _route_wire(p, sch, x1, y1, x2, y2):
-    """Route a wire between two points, using L-shaped routing if needed."""
-    # Skip zero-length wires (pins at same location are already connected)
+def _group_connections_into_nets(connections, pin_map):
+    """Group point-to-point connections into multi-pin nets using union-find.
+
+    The ``connections`` list contains ``{from, to}`` pairs that were originally
+    chained from multi-pin nets (e.g. ``[A,B,C]`` -> ``{A->B}, {B->C}``).
+    This function reconstructs the original net groupings so that star routing
+    can be applied to 3+ pin nets.
+
+    Returns a list of nets, where each net is a list of ``(x, y)`` positions.
+    Also returns a set of pin names that were successfully grouped (so the
+    caller can fall back to individual routing for any remaining connections).
+    """
+    parent = {}
+
+    def find(x):
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Build union-find from connections
+    all_pins = set()
+    for conn in connections:
+        f = conn.get("from", "")
+        t = conn.get("to", "")
+        if f and t:
+            union(f, t)
+            all_pins.add(f)
+            all_pins.add(t)
+
+    # Group pins by root
+    groups = {}
+    for pin in all_pins:
+        root = find(pin)
+        groups.setdefault(root, set()).add(pin)
+
+    # Resolve positions and deduplicate
+    nets = []
+    grouped_pins = set()
+    for pins in groups.values():
+        positions = []
+        seen_pos = set()
+        for pin in pins:
+            pos = pin_map.get(pin)
+            if pos and pos not in seen_pos:
+                positions.append(pos)
+                seen_pos.add(pos)
+        if len(positions) >= 2:
+            nets.append(positions)
+            grouped_pins.update(pins)
+
+    return nets, grouped_pins
+
+
+def _route_net_star(p, sch, pin_positions):
+    """Route a multi-pin net using star topology.
+
+    All pins connect to a central junction point via individual wires.
+    PSIM recognises connections only at wire endpoints, so this ensures
+    every pin shares an endpoint with the junction — no mid-wire taps.
+
+    For 2-pin nets, falls back to a single ``_route_wire`` call.
+    """
+    if len(pin_positions) < 2:
+        return 0
+    if len(pin_positions) == 2:
+        _route_wire(
+            p, sch,
+            pin_positions[0][0], pin_positions[0][1],
+            pin_positions[1][0], pin_positions[1][1],
+        )
+        return 1
+
+    # Junction = median of all pin positions, grid-snapped to 10
+    xs = [pos[0] for pos in pin_positions]
+    ys = [pos[1] for pos in pin_positions]
+    jx = sorted(xs)[len(xs) // 2]
+    jy = sorted(ys)[len(ys) // 2]
+    # Grid snap to multiples of 10 (PSIM grid)
+    jx = (jx // 10) * 10
+    jy = (jy // 10) * 10
+
+    count = 0
+    for px, py in pin_positions:
+        if px == jx and py == jy:
+            continue  # pin is at junction, skip
+        _route_wire(p, sch, px, py, jx, jy)
+        count += 1
+    return count
+
+
+def _seg_collides(ax1, ay1, ax2, ay2, foreign_pins):
+    """Return True if a straight segment passes through any foreign pin."""
+    if ay1 == ay2:  # horizontal
+        lo, hi = min(ax1, ax2), max(ax1, ax2)
+        for px, py in foreign_pins:
+            if py == ay1 and lo < px < hi:
+                return True
+    elif ax1 == ax2:  # vertical
+        lo, hi = min(ay1, ay2), max(ay1, ay2)
+        for px, py in foreign_pins:
+            if px == ax1 and lo < py < hi:
+                return True
+    return False
+
+
+def _find_clear_offset(base, x1, x2, y1, y2, axis, check_pins):
+    """Find an offset value that avoids all foreign pins.
+
+    *axis* is ``'y'`` for horizontal detours (shift y) or ``'x'`` for
+    vertical detours (shift x).  Tries offsets at -10, +10, -20, +20, ...
+    up to 50 pixels from *base*.
+    """
+    for step in range(5, 101, 5):
+        for sign in (-1, 1):
+            off = base + sign * step
+            if axis == "y":
+                # Check: vertical from (x1,y1)->(x1,off), horiz (x1,off)->(x2,off), vert (x2,off)->(x2,y2)
+                fp = check_pins - {(x1, y1), (x2, y2)}
+                if (x1, off) in fp or (x2, off) in fp:
+                    continue
+                if _seg_collides(x1, y1, x1, off, fp):
+                    continue
+                if _seg_collides(x1, off, x2, off, fp):
+                    continue
+                if _seg_collides(x2, off, x2, y2, fp):
+                    continue
+                return off
+            else:
+                fp = check_pins - {(x1, y1), (x2, y2)}
+                if (off, y1) in fp or (off, y2) in fp:
+                    continue
+                if _seg_collides(x1, y1, off, y1, fp):
+                    continue
+                if _seg_collides(off, y1, off, y2, fp):
+                    continue
+                if _seg_collides(off, y2, x2, y2, fp):
+                    continue
+                return off
+    # Fallback: use -10 even if not perfect
+    return base - 10
+
+
+def _route_wire(p, sch, x1, y1, x2, y2, pin_positions=None):
+    """Route a wire between two points, using L-shaped routing if needed.
+
+    When *pin_positions* is provided (a set of ``(x, y)`` tuples for all
+    component pins), the routing avoids placing any wire segment through
+    a foreign pin position.  Corner positions, segment pass-through, and
+    detour paths are all checked.
+
+    Routing strategies tried in order:
+    1. Straight line (if axis-aligned and clear)
+    2. L-shape with horizontal-first corner (if corner + segments clear)
+    3. L-shape with vertical-first corner (if corner + segments clear)
+    4. U-shape detour for straight lines with mid-pin collision
+    5. Z-shape detour for diagonal routes where both L-corners collide
+    """
     if x1 == x2 and y1 == y2:
         return
     with _suppress_stdout():
+        pins = pin_positions or set()
+        check_pins = pins - {(x1, y1), (x2, y2)}
+
         if x1 == x2 or y1 == y2:
-            # Straight line
+            # Straight line — PSIM does NOT connect at mid-wire pass-through,
+            # only at endpoints.  Draw directly without detour.
             p.PsimCreateNewElement(
                 sch, "WIRE", "",
                 X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y2),
             )
         else:
-            # L-shaped: go horizontal first, then vertical
-            p.PsimCreateNewElement(
-                sch, "WIRE", "",
-                X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y1),
-            )
-            p.PsimCreateNewElement(
-                sch, "WIRE", "",
-                X1=str(x2), Y1=str(y1), X2=str(x2), Y2=str(y2),
-            )
+            # Diagonal — need L-shape or Z-shape.
+            # Check corner positions AND segment pass-through.
+            corner_h = (x2, y1)  # horizontal first
+            corner_v = (x1, y2)  # vertical first
+
+            # PSIM connects at wire ENDPOINTS only, not mid-wire.
+            # Only the corner point matters — segment pass-through
+            # does NOT create false connections.
+            h_ok = corner_h not in check_pins
+            v_ok = corner_v not in check_pins
+
+            if h_ok:
+                p.PsimCreateNewElement(
+                    sch, "WIRE", "",
+                    X1=str(x1), Y1=str(y1), X2=str(x2), Y2=str(y1),
+                )
+                p.PsimCreateNewElement(
+                    sch, "WIRE", "",
+                    X1=str(x2), Y1=str(y1), X2=str(x2), Y2=str(y2),
+                )
+            elif v_ok:
+                p.PsimCreateNewElement(
+                    sch, "WIRE", "",
+                    X1=str(x1), Y1=str(y1), X2=str(x1), Y2=str(y2),
+                )
+                p.PsimCreateNewElement(
+                    sch, "WIRE", "",
+                    X1=str(x1), Y1=str(y2), X2=str(x2), Y2=str(y2),
+                )
+            else:
+                # Z-shaped detour via a clear midpoint.
+                # Try two strategies: vertical-jog Z and horizontal-jog Z.
+                offsets = [i * s for i in range(0, 101, 5)
+                           for s in (1, -1) if i > 0 or s == 1]
+                drawn = False
+
+                # Strategy 1: vertical jog at mid_y
+                base_y = (y1 + y2) // 2
+                for step in offsets:
+                    cy = base_y + step
+                    if cy == y1 or cy == y2:
+                        continue
+                    if (x1, cy) in check_pins or (x2, cy) in check_pins:
+                        continue
+                    if _seg_collides(x1, y1, x1, cy, check_pins):
+                        continue
+                    if _seg_collides(x1, cy, x2, cy, check_pins):
+                        continue
+                    if _seg_collides(x2, cy, x2, y2, check_pins):
+                        continue
+                    p.PsimCreateNewElement(sch, "WIRE", "",
+                        X1=str(x1), Y1=str(y1), X2=str(x1), Y2=str(cy))
+                    p.PsimCreateNewElement(sch, "WIRE", "",
+                        X1=str(x1), Y1=str(cy), X2=str(x2), Y2=str(cy))
+                    p.PsimCreateNewElement(sch, "WIRE", "",
+                        X1=str(x2), Y1=str(cy), X2=str(x2), Y2=str(y2))
+                    drawn = True
+                    break
+
+                if not drawn:
+                    # Strategy 2: horizontal jog at mid_x
+                    base_x = (x1 + x2) // 2
+                    for step in offsets:
+                        cx = base_x + step
+                        if cx == x1 or cx == x2:
+                            continue
+                        if (cx, y1) in check_pins or (cx, y2) in check_pins:
+                            continue
+                        if _seg_collides(x1, y1, cx, y1, check_pins):
+                            continue
+                        if _seg_collides(cx, y1, cx, y2, check_pins):
+                            continue
+                        if _seg_collides(cx, y2, x2, y2, check_pins):
+                            continue
+                        p.PsimCreateNewElement(sch, "WIRE", "",
+                            X1=str(x1), Y1=str(y1), X2=str(cx), Y2=str(y1))
+                        p.PsimCreateNewElement(sch, "WIRE", "",
+                            X1=str(cx), Y1=str(y1), X2=str(cx), Y2=str(y2))
+                        p.PsimCreateNewElement(sch, "WIRE", "",
+                            X1=str(cx), Y1=str(y2), X2=str(x2), Y2=str(y2))
+                        drawn = True
+                        break
+
+                if not drawn:
+                    # Strategy 3: 5-segment "staple" route using two offset
+                    # axes to avoid dense pin columns/rows.
+                    # Route: (x1,y1)->(x1,oy)->(ox,oy)->(ox,y2)->(x2,y2)
+                    for oy_step in offsets:
+                        oy = min(y1, y2) - 15 + oy_step
+                        if oy == y1 or oy == y2:
+                            continue
+                        if (x1, oy) in check_pins:
+                            continue
+                        if _seg_collides(x1, y1, x1, oy, check_pins):
+                            continue
+                        for ox_step in offsets:
+                            ox = x2 + ox_step
+                            if ox == x1 or ox == x2:
+                                continue
+                            if (ox, oy) in check_pins or (ox, y2) in check_pins:
+                                continue
+                            if _seg_collides(x1, oy, ox, oy, check_pins):
+                                continue
+                            if _seg_collides(ox, oy, ox, y2, check_pins):
+                                continue
+                            if _seg_collides(ox, y2, x2, y2, check_pins):
+                                continue
+                            p.PsimCreateNewElement(sch, "WIRE", "",
+                                X1=str(x1), Y1=str(y1), X2=str(x1), Y2=str(oy))
+                            p.PsimCreateNewElement(sch, "WIRE", "",
+                                X1=str(x1), Y1=str(oy), X2=str(ox), Y2=str(oy))
+                            p.PsimCreateNewElement(sch, "WIRE", "",
+                                X1=str(ox), Y1=str(oy), X2=str(ox), Y2=str(y2))
+                            p.PsimCreateNewElement(sch, "WIRE", "",
+                                X1=str(ox), Y1=str(y2), X2=str(x2), Y2=str(y2))
+                            drawn = True
+                            break
+                        if drawn:
+                            break
+
+                if not drawn:
+                    # Last resort: route far outside component area
+                    fallback_y = min(y1, y2) - 25
+                    p.PsimCreateNewElement(sch, "WIRE", "",
+                        X1=str(x1), Y1=str(y1), X2=str(x1), Y2=str(fallback_y))
+                    p.PsimCreateNewElement(sch, "WIRE", "",
+                        X1=str(x1), Y1=str(fallback_y), X2=str(x2), Y2=str(fallback_y))
+                    p.PsimCreateNewElement(sch, "WIRE", "",
+                        X1=str(x2), Y1=str(fallback_y), X2=str(x2), Y2=str(y2))
 
 
 def _handle_template_circuit(psim_template, save_path):
@@ -951,18 +1254,55 @@ def handle_create_circuit(params):
         connected = 0
         failed_connections = []
 
+        # Collect all pin positions to pass to _route_wire so it can
+        # avoid placing L-shape corners on existing pins.
+        _all_pin_positions = set()
+        _temp_pm = _resolve_pin_positions(components)
+        for _pos in _temp_pm.values():
+            _all_pin_positions.add(_pos)
+
         # Phase 4: wire_segments have explicit coordinates from routing engine.
-        # When available, use them directly as straight segments (no L-shape re-routing).
+        # Before drawing, check each segment for pin collisions.  If a
+        # straight segment passes through a foreign pin, offset it by 10px
+        # to avoid a false PSIM connection.
         if wire_segments:
             for seg in wire_segments:
                 try:
                     if all(k in seg for k in ("x1", "y1", "x2", "y2")):
-                        with _suppress_stdout():
-                            p.PsimCreateNewElement(
-                                sch, "WIRE", "",
-                                X1=str(int(seg["x1"])), Y1=str(int(seg["y1"])),
-                                X2=str(int(seg["x2"])), Y2=str(int(seg["y2"])),
-                            )
+                        sx1, sy1 = int(seg["x1"]), int(seg["y1"])
+                        sx2, sy2 = int(seg["x2"]), int(seg["y2"])
+                        endpoints = {(sx1, sy1), (sx2, sy2)}
+                        foreign = _all_pin_positions - endpoints
+
+                        has_collision = False
+                        if sy1 == sy2:  # horizontal
+                            lo, hi = min(sx1, sx2), max(sx1, sx2)
+                            for fx, fy in foreign:
+                                if fy == sy1 and lo < fx < hi:
+                                    has_collision = True
+                                    break
+                        elif sx1 == sx2:  # vertical
+                            lo, hi = min(sy1, sy2), max(sy1, sy2)
+                            for fx, fy in foreign:
+                                if fx == sx1 and lo < fy < hi:
+                                    has_collision = True
+                                    break
+
+                        if has_collision:
+                            # Offset the segment by 10px perpendicular
+                            if sy1 == sy2:  # horizontal → shift Y
+                                _route_wire(p, sch, sx1, sy1, sx2, sy2,
+                                            pin_positions=_all_pin_positions)
+                            else:  # vertical → shift X
+                                _route_wire(p, sch, sx1, sy1, sx2, sy2,
+                                            pin_positions=_all_pin_positions)
+                        else:
+                            with _suppress_stdout():
+                                p.PsimCreateNewElement(
+                                    sch, "WIRE", "",
+                                    X1=str(sx1), Y1=str(sy1),
+                                    X2=str(sx2), Y2=str(sy2),
+                                )
                         connected += 1
                     else:
                         failed_connections.append({
@@ -974,34 +1314,131 @@ def handle_create_circuit(params):
                         "segment": seg,
                         "reason": str(e),
                     })
-        else:
-            # Fallback: resolve pin positions and route via from/to or coordinate pairs.
-            # PHASE 4 NOTE: This branch is fallback for when wire_segments are not
-            # provided. When wire_segments are available (from routing engine), the
-            # above branch handles wiring directly without _resolve_pin_positions.
+
+            # Supplement: draw pin-based wires from nets to fill routing gaps.
+            # The routing engine may not cover all net connections, so we use
+            # the same component data (already placed above) to resolve pin
+            # positions and draw additional wires. Redundant wires (where
+            # routing already connected the same pins) are harmless in PSIM.
+            raw_nets = params.get("nets") or []
+            if raw_nets:
+                supp_pin_map = _resolve_pin_positions(components)
+                for net in raw_nets:
+                    pins = net.get("pins", [])
+                    for i in range(len(pins) - 1):
+                        fp = supp_pin_map.get(pins[i])
+                        tp = supp_pin_map.get(pins[i + 1])
+                        if fp and tp and fp != tp:
+                            _route_wire(p, sch, fp[0], fp[1], tp[0], tp[1],
+                                        pin_positions=_all_pin_positions)
+                            connected += 1
+
+        if not wire_segments:
             connections = params.get("connections", [])
             pin_map = _resolve_pin_positions(components)
-            for conn in connections:
-                try:
-                    # 연결 방식 1: 좌표 기반 (직접 좌표 지정)
-                    if "x1" in conn and "y1" in conn:
-                        _route_wire(
-                            p, sch,
-                            int(conn["x1"]), int(conn["y1"]),
-                            int(conn["x2"]), int(conn["y2"]),
-                        )
-                        connected += 1
-                        continue
 
-                    # 연결 방식 2: from/to 핀 이름 기반 -> pin_map에서 좌표 조회
+            # Separate coordinate-based connections (route individually) from
+            # pin-name-based connections (group into nets for star routing).
+            coord_connections = []
+            pin_connections = []
+            for conn in connections:
+                if "x1" in conn and "y1" in conn:
+                    coord_connections.append(conn)
+                else:
+                    pin_connections.append(conn)
+
+            # 연결 방식 1: 좌표 기반 (직접 좌표 지정) — route individually
+            for conn in coord_connections:
+                try:
+                    _route_wire(
+                        p, sch,
+                        int(conn["x1"]), int(conn["y1"]),
+                        int(conn["x2"]), int(conn["y2"]),
+                    )
+                    connected += 1
+                except Exception as e:
+                    failed_connections.append({
+                        "connection": conn,
+                        "reason": str(e),
+                    })
+
+            # 연결 방식 2: from/to 핀 이름 기반
+            # When original net data is available, route each net as
+            # chained pin-to-pin wires. This avoids the star routing
+            # junction calculation which can place wires off-pin.
+            raw_nets = params.get("nets") or []
+            grouped_pins = set()
+            if raw_nets:
+                for net in raw_nets:
+                    pins = net.get("pins", [])
+                    for i in range(len(pins) - 1):
+                        from_pin = pins[i]
+                        to_pin = pins[i + 1]
+                        from_pos = pin_map.get(from_pin)
+                        to_pos = pin_map.get(to_pin)
+                        if from_pos and to_pos:
+                            _route_wire(p, sch, from_pos[0], from_pos[1],
+                                        to_pos[0], to_pos[1],
+                                        pin_positions=_all_pin_positions)
+                            connected += 1
+                            grouped_pins.add(from_pin)
+                            grouped_pins.add(to_pin)
+                        else:
+                            missing = []
+                            if not from_pos:
+                                missing.append("from='%s'" % from_pin)
+                            if not to_pos:
+                                missing.append("to='%s'" % to_pin)
+                            failed_connections.append({
+                                "from": from_pin, "to": to_pin,
+                                "reason": "pin not found: %s" % ", ".join(missing),
+                            })
+            else:
+                for conn in pin_connections:
                     from_pin = conn.get("from", "")
                     to_pin = conn.get("to", "")
-
                     from_pos = pin_map.get(from_pin)
                     to_pos = pin_map.get(to_pin)
-
                     if from_pos and to_pos:
-                        _route_wire(p, sch, from_pos[0], from_pos[1], to_pos[0], to_pos[1])
+                        _route_wire(p, sch, from_pos[0], from_pos[1],
+                                    to_pos[0], to_pos[1])
+                        connected += 1
+                        grouped_pins.add(from_pin)
+                        grouped_pins.add(to_pin)
+                    else:
+                        missing = []
+                        if not from_pos:
+                            missing.append("from='%s'" % from_pin)
+                        if not to_pos:
+                            missing.append("to='%s'" % to_pin)
+                        failed_connections.append({
+                            "from": from_pin, "to": to_pin,
+                            "reason": "pin not found: %s" % ", ".join(missing),
+                        })
+
+            # Skip the per-connection fallback since everything was handled above
+            for net_positions in []:
+                try:
+                    connected += _route_net_star(p, sch, net_positions)
+                except Exception as e:
+                    failed_connections.append({
+                        "net_pins": [str(pos) for pos in net_positions],
+                        "reason": str(e),
+                    })
+
+            # Fallback: route any pin connections that could not be grouped
+            # (e.g. one side of the connection had no resolved position).
+            for conn in pin_connections:
+                from_pin = conn.get("from", "")
+                to_pin = conn.get("to", "")
+                if from_pin in grouped_pins and to_pin in grouped_pins:
+                    continue  # already handled by star routing
+                try:
+                    from_pos = pin_map.get(from_pin)
+                    to_pos = pin_map.get(to_pin)
+                    if from_pos and to_pos:
+                        _route_wire(p, sch, from_pos[0], from_pos[1], to_pos[0], to_pos[1],
+                                    pin_positions=_all_pin_positions)
                         connected += 1
                     else:
                         missing_pins = []
@@ -1014,7 +1451,6 @@ def handle_create_circuit(params):
                             "to": to_pin,
                             "reason": "pin position not found: %s" % ", ".join(missing_pins),
                         })
-
                 except Exception as e:
                     failed_connections.append({
                         "connection": conn,

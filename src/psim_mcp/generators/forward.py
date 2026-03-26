@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import re
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 from .layout import (
     make_capacitor,
     make_diode_h,
@@ -53,6 +58,10 @@ class ForwardGenerator(TopologyGenerator):
             "rectifier_diode_drop",
             "freewheel_diode_drop",
         ]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.forward import synthesize_forward
+        return synthesize_forward(requirements)
 
     @staticmethod
     def _normalize_ratio(value: float) -> float:

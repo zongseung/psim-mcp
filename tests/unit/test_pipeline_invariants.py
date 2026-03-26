@@ -82,10 +82,17 @@ class TestFallbackDoesNotSilentlyReplace:
         config = AppConfig(psim_mode="mock", _env_file=None)
         service = CircuitDesignService(adapter=MockPsimAdapter(), config=config)
 
+        # Provide topology-appropriate specs.  Boost/sepic need vout > vin.
+        _TOPO_SPECS = {
+            "boost": {"vin": 12, "vout_target": 48, "iout": 1},
+            "sepic": {"vin": 12, "vout_target": 24, "iout": 1},
+            "pv_mppt_boost": {"vin": 30},
+        }
+        specs = _TOPO_SPECS.get(topology, {"vin": 48, "vout_target": 12, "iout": 1})
         result = asyncio.get_event_loop().run_until_complete(
             service.preview_circuit(
                 circuit_type=topology,
-                specs={"vin": 48, "vout_target": 12, "iout": 1},
+                specs=specs,
             )
         )
         assert result["success"] is True

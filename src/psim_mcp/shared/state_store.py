@@ -9,10 +9,14 @@ general-purpose key-value store while maintaining full backward compatibility.
 
 from __future__ import annotations
 
+import logging
+import os
 import secrets
 import threading
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class StateStore:
@@ -57,24 +61,45 @@ class StateStore:
                 return None
             if time.monotonic() > entry["expires_at"]:
                 del self._store[token]
+                self._delete_associated_files(entry.get("data", {}))
                 return None
             return entry["data"]
 
     def delete(self, token: str) -> bool:
-        """Delete entry by *token*.  Returns ``True`` if it existed."""
+        """Delete entry by *token*.  Returns ``True`` if it existed.
+
+        Also removes any associated on-disk files (e.g. SVG previews).
+        """
         with self._lock:
-            return self._store.pop(token, None) is not None
+            entry = self._store.pop(token, None)
+            if entry is None:
+                return False
+            self._delete_associated_files(entry.get("data", {}))
+            return True
 
     def cleanup_expired(self) -> int:
         """Remove all expired entries.  Returns the number removed."""
         return self._cleanup_expired()
+
+    @staticmethod
+    def _delete_associated_files(data: dict) -> None:
+        """Remove on-disk files referenced by an expired store entry."""
+        svg_path = data.get("svg_path") if isinstance(data, dict) else None
+        if svg_path and isinstance(svg_path, str):
+            try:
+                if os.path.isfile(svg_path):
+                    os.remove(svg_path)
+                    logger.debug("Cleaned up expired SVG: %s", svg_path)
+            except OSError:
+                pass
 
     def _cleanup_expired(self) -> int:
         now = time.monotonic()
         with self._lock:
             expired = [k for k, v in self._store.items() if now > v["expires_at"]]
             for k in expired:
-                del self._store[k]
+                entry = self._store.pop(k)
+                self._delete_associated_files(entry.get("data", {}))
             return len(expired)
 
 

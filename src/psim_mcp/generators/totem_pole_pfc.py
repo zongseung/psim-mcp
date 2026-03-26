@@ -118,13 +118,13 @@ class TotemPolePFCGenerator(TopologyGenerator):
             # HF switching leg (65 kHz)
             make_mosfet_v("SW_HF1", 250, 80, switching_frequency=fsw, on_resistance=0.01),
             make_mosfet_v("SW_HF2", 250, 160, switching_frequency=fsw, on_resistance=0.01),
-            make_gating("G_HF1", 210, 110, fsw, f"0,{int(d_max * 360)}"),
-            make_gating("G_HF2", 210, 190, fsw, f"{int(d_max * 360)},360"),
+            make_gating("G_HF1", 210, 110, fsw, f" 0 {int(d_max * 360)}."),
+            make_gating("G_HF2", 210, 190, fsw, f" {int(d_max * 360)} 360."),
             # LF polarity-steering leg (line frequency)
             make_mosfet_v("SW_LF1", 400, 80, switching_frequency=f_line, on_resistance=0.01),
             make_mosfet_v("SW_LF2", 400, 160, switching_frequency=f_line, on_resistance=0.01),
-            make_gating("G_LF1", 380, 110, f_line, "0,180"),
-            make_gating("G_LF2", 380, 190, f_line, "180,360"),
+            make_gating("G_LF1", 380, 110, f_line, " 0 180."),
+            make_gating("G_LF2", 380, 190, f_line, " 180 360."),
             # Output
             make_capacitor("Cout", 500, 80, cout),
             make_resistor("R1", 550, 80, r_load, voltage_flag=1),

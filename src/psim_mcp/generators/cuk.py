@@ -7,7 +7,12 @@ inductors on both sides.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class CukGenerator(TopologyGenerator):
@@ -24,6 +29,10 @@ class CukGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.cuk import synthesize_cuk
+        return synthesize_cuk(requirements)
 
     # ------------------------------------------------------------------
     # Design

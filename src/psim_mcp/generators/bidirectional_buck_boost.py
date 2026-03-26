@@ -8,7 +8,12 @@ for battery charging/discharging and energy storage applications.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import TopologyGenerator
+
+if TYPE_CHECKING:
+    from psim_mcp.synthesis.graph import CircuitGraph
 
 
 class BidirectionalBuckBoostGenerator(TopologyGenerator):
@@ -25,6 +30,10 @@ class BidirectionalBuckBoostGenerator(TopologyGenerator):
     @property
     def optional_fields(self) -> list[str]:
         return ["iout", "fsw", "ripple_ratio", "voltage_ripple_ratio"]
+
+    def synthesize(self, requirements: dict) -> "CircuitGraph":
+        from psim_mcp.synthesis.topologies.bidirectional_buck_boost import synthesize_bidirectional_buck_boost
+        return synthesize_bidirectional_buck_boost(requirements)
 
     # ------------------------------------------------------------------
     # Design

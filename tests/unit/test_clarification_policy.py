@@ -1,7 +1,7 @@
 """Tests for clarification policy (clarification.py)."""
 
 from psim_mcp.intent.clarification import analyze_clarification_needs
-from psim_mcp.intent.models import ClarificationNeed, IntentModel, TopologyCandidate
+from psim_mcp.intent.models import IntentModel, TopologyCandidate
 
 
 class TestClarificationPolicy:

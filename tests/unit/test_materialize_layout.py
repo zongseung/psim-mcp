@@ -80,7 +80,7 @@ class TestMaterializeComponents:
 
     def test_resistor_has_position2(self, materialized):
         components, _ = materialized
-        r1 = next(c for c in components if c["id"] == "R1")
+        r1 = next(c for c in components if c["id"] == "Vout")
         assert "position2" in r1
 
     def test_mosfet_has_3_port_pairs(self, materialized):

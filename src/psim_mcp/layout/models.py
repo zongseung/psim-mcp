@@ -52,6 +52,7 @@ class SchematicLayout:
     regions: list[LayoutRegion] = field(default_factory=list)
     constraints: list[LayoutConstraint] = field(default_factory=list)
     metadata: dict[str, object] = field(default_factory=dict)
+    layout_version: str = "1.0"
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -64,6 +65,7 @@ class SchematicLayout:
             regions=[LayoutRegion(**r) for r in data.get("regions", [])],
             constraints=[LayoutConstraint(**c) for c in data.get("constraints", [])],
             metadata=data.get("metadata", {}),
+            layout_version=data.get("layout_version", "1.0"),
         )
 
     def get_component(self, component_id: str) -> LayoutComponent | None:
