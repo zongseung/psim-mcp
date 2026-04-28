@@ -315,13 +315,13 @@ async def test_decision_trace_present_v2(service):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_intent_v2_returns_legacy_dict(service):
+async def test_resolve_intent_v2_returns_legacy_dict(service):
     """_resolve_intent_v2 should return dict with all legacy keys."""
     from psim_mcp.services.circuit_design_service import _INTENT_V2_AVAILABLE
     if not _INTENT_V2_AVAILABLE:
         pytest.skip("Intent V2 not available")
 
-    result = service._resolve_intent_v2("buck converter 48V to 12V")
+    result = await service._resolve_intent_v2("buck converter 48V to 12V")
     assert isinstance(result, dict)
     assert "topology" in result
     assert "topology_candidates" in result
@@ -338,13 +338,13 @@ def test_resolve_intent_v2_returns_legacy_dict(service):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_intent_v2_no_match_returns_none_topology(service):
+async def test_resolve_intent_v2_no_match_returns_none_topology(service):
     """_resolve_intent_v2 with gibberish should return topology=None."""
     from psim_mcp.services.circuit_design_service import _INTENT_V2_AVAILABLE
     if not _INTENT_V2_AVAILABLE:
         pytest.skip("Intent V2 not available")
 
-    result = service._resolve_intent_v2("xyzzy foobar nonsense")
+    result = await service._resolve_intent_v2("xyzzy foobar nonsense")
     assert result["topology"] is None
     assert result["confidence"] == "low"
 
@@ -354,13 +354,13 @@ def test_resolve_intent_v2_no_match_returns_none_topology(service):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_intent_v2_candidate_scores_structure(service):
+async def test_resolve_intent_v2_candidate_scores_structure(service):
     """candidate_scores entries should have topology, score, reasons."""
     from psim_mcp.services.circuit_design_service import _INTENT_V2_AVAILABLE
     if not _INTENT_V2_AVAILABLE:
         pytest.skip("Intent V2 not available")
 
-    result = service._resolve_intent_v2("buck 48V 12V")
+    result = await service._resolve_intent_v2("buck 48V 12V")
     scores = result.get("candidate_scores", [])
     assert len(scores) > 0
     for entry in scores:
@@ -449,12 +449,12 @@ async def test_v2_fallback_on_exception(service, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_intent_v2_has_normalized_specs(service):
+async def test_resolve_intent_v2_has_normalized_specs(service):
     """V2 result should have normalized_specs key."""
     from psim_mcp.services.circuit_design_service import _INTENT_V2_AVAILABLE
     if not _INTENT_V2_AVAILABLE:
         pytest.skip("Intent V2 not available")
 
-    result = service._resolve_intent_v2("buck 48V 입력 12V 출력")
+    result = await service._resolve_intent_v2("buck 48V 입력 12V 출력")
     assert "normalized_specs" in result
     assert isinstance(result["normalized_specs"], dict)

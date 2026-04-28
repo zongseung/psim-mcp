@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
+import pytest
+
 from psim_mcp.data.component_library import build_port_pin_map
-from psim_mcp.utils.svg_renderer import _build_pin_positions, render_circuit_svg
+from psim_mcp.utils.svg_renderer import (
+    _build_pin_positions,
+    open_svg_in_browser,
+    render_circuit_svg,
+)
 
 
 def test_render_circuit_svg_accepts_nets_for_shared_junction():
@@ -169,3 +177,55 @@ def test_render_circuit_svg_renders_auto_gnd_when_no_ground_component_exists():
 
     assert "V1" in svg
     assert 'line x1="0" y1="0" x2="0" y2="12"' in svg
+
+
+# ---------------------------------------------------------------------------
+# Auto-open gating — opt-in via PSIM_AUTO_OPEN_PREVIEW env var
+# ---------------------------------------------------------------------------
+
+
+class TestOpenSvgGating:
+    """``open_svg_in_browser`` must be a no-op unless explicitly enabled.
+
+    Default-off keeps test runs and rapid design iterations from spawning OS
+    pop-ups for every render. Set ``PSIM_AUTO_OPEN_PREVIEW=true`` to opt in.
+    """
+
+    def test_no_open_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PSIM_AUTO_OPEN_PREVIEW", raising=False)
+        with patch("os.startfile") as startfile, \
+             patch("subprocess.Popen") as popen:
+            open_svg_in_browser(str(tmp_path / "fake.svg"))
+        startfile.assert_not_called()
+        popen.assert_not_called()
+
+    @pytest.mark.parametrize("falsy", ["", "0", "false", "no", "off", "FaLsE"])
+    def test_no_open_when_env_falsy(self, tmp_path, monkeypatch, falsy):
+        monkeypatch.setenv("PSIM_AUTO_OPEN_PREVIEW", falsy)
+        with patch("os.startfile") as startfile, \
+             patch("subprocess.Popen") as popen:
+            open_svg_in_browser(str(tmp_path / "fake.svg"))
+        startfile.assert_not_called()
+        popen.assert_not_called()
+
+    @pytest.mark.parametrize("truthy", ["1", "true", "TRUE", "yes", "on", " true "])
+    def test_opens_when_env_truthy(self, tmp_path, monkeypatch, truthy):
+        monkeypatch.setenv("PSIM_AUTO_OPEN_PREVIEW", truthy)
+        svg_path = str(tmp_path / "fake.svg")
+        # Patch all platform-specific openers; whichever fires depends on host.
+        with patch("os.startfile") as startfile, \
+             patch("subprocess.Popen") as popen:
+            open_svg_in_browser(svg_path)
+        total_calls = startfile.call_count + popen.call_count
+        assert total_calls == 1, (
+            f"Expected exactly one open call for env={truthy!r}, got "
+            f"startfile={startfile.call_count}, Popen={popen.call_count}"
+        )
+
+    def test_silent_on_open_failure(self, tmp_path, monkeypatch):
+        """Failures from os.startfile / subprocess must not propagate."""
+        monkeypatch.setenv("PSIM_AUTO_OPEN_PREVIEW", "true")
+        with patch("os.startfile", side_effect=OSError("no association")), \
+             patch("subprocess.Popen", side_effect=FileNotFoundError("no opener")):
+            # Must not raise
+            open_svg_in_browser(str(tmp_path / "fake.svg"))
