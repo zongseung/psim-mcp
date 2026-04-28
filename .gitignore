@@ -47,3 +47,7 @@ Thumbs.db
 
 /scripts
 /docs
+/claudedocs
+
+# Ad-hoc screenshots
+/docs
