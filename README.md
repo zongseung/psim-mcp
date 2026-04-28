@@ -2,7 +2,7 @@
 
 Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSIM으로 시뮬레이션하는 MCP 서버.
 
-**17개 Tool** | **1013개 테스트** | **139개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리**
+**17개 Tool** | **1075개 테스트** | **173개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리** | **LLM-native intent (regex / sampling / hybrid)**
 
 ```
 "buck converter 48V to 12V 5A"
@@ -14,6 +14,7 @@ Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSI
 ## 주요 기능
 
 - **자연어 회로 설계** — 한국어/영어로 회로를 설명하면 topology 자동 선택, 파라미터 계산, 회로도 생성
+- **LLM-native intent layer** — Strategy 패턴 기반 `IntentResolver` (regex / MCP sampling / hybrid 선택 가능)
 - **29개 전력전자 topology** — Buck, Boost, Flyback, LLC, Full-Bridge, 3-Phase Inverter, BLDC Drive 등
 - **15개 topology PSIM 시뮬레이션 검증 완료** — 설계 → .psimsch 생성 → 시뮬레이션 → 파형 출력 전체 파이프라인
 - **알고리즘 기반 자동 배치** — 좌표 하드코딩 없이 CircuitGraph에서 schematic layout 자동 생성
@@ -48,8 +49,10 @@ uv sync --all-extras
 |------|------|------|
 | Python 3.12+ | 필수 | MCP 서버 런타임 |
 | [uv](https://docs.astral.sh/uv/) | 필수 | 패키지 관리 |
+| `mcp>=1.26.0` | 필수 | sampling/elicitation 지원 (자동 설치) |
 | Claude Desktop | 필수 | MCP 클라이언트 |
 | Altair PSIM 2026 | 선택 | 실제 회로 생성/시뮬레이션 시 필요 |
+| Python 3.8/3.9 | 선택 | PSIM 브리지용 (PSIM 설치 시 동봉) |
 | matplotlib | 선택 | 파형 PNG 렌더링 (`uv add matplotlib`) |
 
 ---
@@ -72,7 +75,8 @@ uv sync --all-extras
         "PSIM_PATH": "C:\\Altair\\Altair_PSIM_2026",
         "PSIM_PYTHON_EXE": "C:\\Users\\{사용자}\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
         "PSIM_PROJECT_DIR": "C:\\Users\\{사용자}\\psim-projects",
-        "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output"
+        "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output",
+        "INTENT_RESOLVER_MODE": "regex"
       }
     }
   }
@@ -88,7 +92,8 @@ uv sync --all-extras
       "command": "uv",
       "args": ["run", "--directory", "/path/to/psim-mcp", "psim-mcp"],
       "env": {
-        "PSIM_MODE": "mock"
+        "PSIM_MODE": "mock",
+        "INTENT_RESOLVER_MODE": "regex"
       }
     }
   }
@@ -199,26 +204,68 @@ design_circuit으로 pv_mppt_boost 설계해서 PSIM에서 돌려줘
 | 배터리 | cc_cv_charger, ev_obc, bidirectional_buck_boost |
 | 필터 | lc_filter, lcl_filter |
 
+> 28개는 canonical `synthesize()` 구현, `pv_grid_tied`는 legacy template 경로 사용.
+
 ---
 
 ## 아키텍처
+
+### 디렉터리 구성
+
+```
+src/psim_mcp/
+├── server.py              # FastMCP 앱 팩토리 (create_app)
+├── config.py              # AppConfig (Pydantic settings)
+├── adapters/              # MockPsimAdapter / RealPsimAdapter
+├── bridge/                # PSIM Python 3.8/3.9 브리지 IPC
+├── data/                  # 8개 선언적 레지스트리 (topology, component, capability...)
+├── generators/            # 토폴로지별 generate() / synthesize()
+├── intent/                # 자연어 → 의도 추출 (Strategy 패턴)
+│   ├── resolver.py        #   IntentResolver ABC + RegexResolver + factory
+│   ├── sampling_resolver.py  # MCP sampling 기반 LLM 추출
+│   ├── sampling_schema.py    # Pydantic v2 응답 스키마
+│   ├── extractors.py      #   regex 기반 추출 (RegexResolver 백엔드)
+│   ├── ranker.py          #   토폴로지 후보 점수화 (결정론적 안전망)
+│   ├── spec_builder.py    #   CanonicalSpec 빌더
+│   └── clarification.py   #   누락 정보 질문 정책
+├── synthesis/             # CircuitGraph 합성 (28 토폴로지)
+├── validators/            # 구조/전기/파라미터/그래프 검증
+├── layout/                # SchematicLayout 자동 배치 (force-directed)
+├── routing/               # WireRouting (trunk-branch, pin-aware)
+├── services/              # CircuitDesign / Simulation / Project / Parameter
+├── shared/                # ResponseBuilder, StateStore (preview tokens)
+├── tools/                 # 17개 MCP 도구 (FastMCP 등록)
+└── utils/                 # SVG/ASCII 렌더러, 로깅, 경로 보안
+```
 
 ### Canonical Synthesis Pipeline
 
 ```
 자연어
-  → extract_intent()         # 도메인 제약/값 추출 (intent/)
-  → rank_topologies()        # topology 후보 점수화
-  → build_canonical_spec()   # canonical spec 생성
-  → generator.synthesize()   # CircuitGraph 합성 (synthesis/)
-  → validate_graph()         # 구조 검증 (validators/)
-  → generate_layout()        # SchematicLayout 자동 배치 (layout/)
-  → generate_routing()       # WireRouting trunk/branch (routing/)
-  → materialize_to_legacy()  # legacy 포맷 변환
+  → IntentResolver.resolve()   # regex | sampling | hybrid 전략 선택
+       ├─ RegexResolver         # extractors → ranker → spec_builder (결정론)
+       └─ SamplingResolver      # ctx.session.create_message() → LLM JSON → ranker 검증
+  → generator.synthesize()     # CircuitGraph 합성 (synthesis/)
+  → validate_graph()           # 구조 검증 (validators/)
+  → generate_layout()          # SchematicLayout 자동 배치 (layout/)
+  → generate_routing()         # WireRouting trunk/branch (routing/)
+  → materialize_to_legacy()    # legacy 포맷 변환
   → SVG renderer / PSIM bridge
 ```
 
-Generator 경로 (ports + nets 포함)가 우선 사용되며, 합성 파이프라인은 graph/layout 메타데이터를 보충합니다.
+**핵심 설계 원칙**: LLM은 의도/토폴로지 제안만, 공학 계산(인덕터·캐패시터 값, 시뮬레이션 파라미터)은 결정론적 Python이 담당. `ranker.py`가 LLM의 제안을 `topology_metadata` 룰로 검증하는 안전망 역할.
+
+### Intent Resolver Strategy
+
+`INTENT_RESOLVER_MODE` 환경 변수 또는 `AppConfig.intent_resolver_mode`로 선택:
+
+| 모드 | 백엔드 | 특성 |
+|------|--------|------|
+| `regex` (default) | `extractors.py` 정규식 28개 | 결정론적, LLM 호출 0회, CI/테스트 최적 |
+| `sampling` | MCP `ctx.session.create_message` | 의미 기반 추출, "휴대폰 충전기" 같은 자연어 인식 |
+| `hybrid` | sampling 시도 → 실패 시 regex | 프로덕션 권장 (Phase 2, 부분 구현) |
+
+`get_resolver(mode)` 팩토리에서 라우팅 — `src/psim_mcp/intent/resolver.py:172`.
 
 ### Dual Python 환경
 
@@ -258,19 +305,27 @@ PSIM은 와이어 **끝점(endpoint)**에서만 전기적 연결을 인식합니
 | `PSIM_PYTHON_EXE` | — | PSIM Python 실행 파일 경로 |
 | `PSIM_PROJECT_DIR` | — | .psimsch 저장 디렉터리 |
 | `PSIM_OUTPUT_DIR` | — | 시뮬레이션 결과 디렉터리 |
+| `INTENT_RESOLVER_MODE` | `regex` | intent 추출 전략 (`regex` / `sampling` / `hybrid`) |
+| `PSIM_INTENT_PIPELINE_V2` | `true` | V2 intent pipeline 활성화 |
+| `PSIM_SYNTHESIS_ENABLED_TOPOLOGIES` | (빈값=전체) | canonical pipeline 허용 topology (쉼표 구분) |
 | `LOG_LEVEL` | `INFO` | 로그 레벨 |
 | `SIMULATION_TIMEOUT` | `300` | 시뮬레이션 타임아웃 (초) |
 | `PREVIEW_TTL` | `3600` | 미리보기 토큰 유효시간 (초) |
-| `PSIM_SYNTHESIS_ENABLED_TOPOLOGIES` | (빈값=전체) | canonical pipeline 허용 topology (쉼표 구분) |
-| `PSIM_INTENT_PIPELINE_V2` | `true` | V2 intent pipeline 활성화 |
+| `PSIM_AUTO_OPEN_PREVIEW` | `false` | 렌더 직후 SVG를 OS 기본 뷰어로 자동 오픈 (opt-in) |
 
 ---
 
 ## 개발
 
 ```bash
-# 단위 테스트 (1013개)
+# 단위 테스트 (1075개 collected, 1074 passing)
 uv run pytest tests/unit -q
+
+# 단일 파일
+uv run pytest tests/unit/test_intent_resolver.py -v
+
+# 키워드 매칭
+uv run pytest tests/unit -k "test_sampling" -v
 
 # 린트 + 포맷
 uv run ruff check src/ tests/
@@ -279,6 +334,8 @@ uv run ruff format src/ tests/
 # MCP Inspector (Claude Desktop 없이 디버그)
 uv run mcp dev src/psim_mcp/server.py
 ```
+
+> 모든 Python 작업은 `uv run` 사용. 절대 bare `python` / `pip` 사용 금지.
 
 ### 새 topology 추가
 
@@ -289,18 +346,28 @@ uv run mcp dev src/psim_mcp/server.py
 
 **Layout과 routing은 자동 처리됩니다.**
 
+### 새 IntentResolver 추가
+
+1. `intent/my_resolver.py` — `IntentResolver` ABC 상속, `async resolve(description, ctx)` 구현
+2. `intent/resolver.py:get_resolver()` — `mode == "my_resolver"` 분기 추가
+3. `tests/unit/test_my_resolver.py` — 모킹 기반 단위 테스트
+
+반환 dict는 `RESOLVER_RESULT_KEYS` 12개 키를 모두 포함해야 함 (`intent/resolver.py:34`).
+
 ---
 
 ## 설계 문서
 
-`docs/ver5/`에 전체 설계 문서가 있습니다:
+`docs/ver5/`에 전체 설계 문서:
 
 | 문서 | 내용 |
 |------|------|
 | `prd-and-architecture-*.md` | 최상위 PRD + 아키텍처 |
 | `phase-execution-plan.md` | Phase 1~5 실행 계획 |
 | `phase-4-routing-fix-plan.md` | PSIM 와이어 연결 문제 해결 기획서 |
-| `implementation-status.md` | 구현 현황 (2026-03-26 기준) |
+| `implementation-status.md` | 구현 현황 |
+
+LLM-native intent layer 마이그레이션 설계: `claudedocs/design-llm-native-intent-2026-04-28.md`.
 
 ---
 
@@ -311,6 +378,7 @@ uv run mcp dev src/psim_mcp/server.py
 - **출력 보안**: LLM 컨텍스트 sanitization, 50KB 응답 크기 제한
 - **subprocess 보안**: `shell=False`, JSON stdin 전달, 환경 격리
 - **감사 로깅**: SHA-256 입력 해싱, 4개 로그 파일 분리 (server, psim, security, tools)
+- **LLM 응답 검증**: Sampling 모드에서 LLM 제안 토폴로지를 `TOPOLOGY_METADATA` 키로 화이트리스트 검증, 미일치 시 ranker fallback
 
 ---
 
