@@ -14,6 +14,12 @@ from .models import (
     TopologyCandidate,
 )
 from .ranker import rank_topologies
+from .resolver import IntentResolver, RegexResolver, get_resolver
+from .sampling_resolver import (
+    SamplingExtractionError,
+    SamplingResolver,
+    UnknownTopologyError,
+)
 from .spec_builder import build_canonical_spec
 
 __all__ = [
@@ -21,9 +27,15 @@ __all__ = [
     "ClarificationNeed",
     "DesignResolutionResult",
     "IntentModel",
+    "IntentResolver",
+    "RegexResolver",
+    "SamplingExtractionError",
+    "SamplingResolver",
     "TopologyCandidate",
+    "UnknownTopologyError",
     "analyze_clarification_needs",
     "build_canonical_spec",
     "extract_intent",
+    "get_resolver",
     "rank_topologies",
 ]

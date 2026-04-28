@@ -53,6 +53,12 @@ class AppConfig(BaseSettings):
     psim_layout_engine_enabled_topologies: list[str] = []
     psim_routing_enabled_topologies: list[str] = []
 
+    # --- Intent resolver strategy (Phase 0+) ---
+    # Selects the IntentResolver implementation. ``regex`` (default) preserves
+    # the deterministic pre-migration pipeline; ``sampling`` and ``hybrid`` are
+    # reserved for Phase 1. Unknown modes fall back to ``regex``.
+    intent_resolver_mode: str = "regex"
+
     # --- Security ---
     allowed_project_dirs: list[str] = []
 

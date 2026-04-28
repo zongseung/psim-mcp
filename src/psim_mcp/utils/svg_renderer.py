@@ -631,10 +631,24 @@ def render_circuit_svg(
     return "\n".join(parts)
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
 def open_svg_in_browser(svg_path: str) -> None:
+    """Open the SVG in the OS default viewer if PSIM_AUTO_OPEN_PREVIEW is set.
+
+    Default is OFF: when the MCP server is driven from Claude Desktop the
+    preview is already surfaced through the chat, and a second OS-level pop-up
+    on every design iteration is noisy (especially during tests / rapid
+    iteration). To opt in, set ``PSIM_AUTO_OPEN_PREVIEW=true`` in the env or
+    ``.env`` file.
+    """
     import os
     import platform
     import subprocess
+
+    if os.environ.get("PSIM_AUTO_OPEN_PREVIEW", "").strip().lower() not in _TRUTHY:
+        return
 
     try:
         system = platform.system()

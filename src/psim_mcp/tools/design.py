@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mcp.server.fastmcp import Context
+
 from psim_mcp.tools import tool_handler
 
 
@@ -34,8 +36,8 @@ def register_tools(mcp, service=None):
         ),
     )
     @tool_handler("design_circuit")
-    async def design_circuit(description: str) -> str:
-        return await _svc().design_circuit(description)
+    async def design_circuit(description: str, ctx: Context | None = None) -> str:
+        return await _svc().design_circuit(description, ctx=ctx)
 
     @mcp.tool(
         description=(

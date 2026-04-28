@@ -79,15 +79,12 @@ _DESIGN_SESSION_VERSION = DESIGN_SESSION_VERSION
 # ---------------------------------------------------------------------------
 
 try:
-    from psim_mcp.intent import (
-        extract_intent,
-        rank_topologies,
-        analyze_clarification_needs,
-        build_canonical_spec,
-    )
+    from psim_mcp.intent import IntentResolver, get_resolver
 
     _INTENT_V2_AVAILABLE = True
 except ImportError:
+    IntentResolver = None  # type: ignore[assignment,misc]
+    get_resolver = None  # type: ignore[assignment]
     _INTENT_V2_AVAILABLE = False
 
 
@@ -190,12 +187,26 @@ class CircuitDesignService:
         adapter: BasePsimAdapter,
         config: AppConfig,
         state_store: StateStore | None = None,
+        intent_resolver: IntentResolver | None = None,
     ) -> None:
         self._adapter = adapter
         self._config = config
         self._store = state_store or get_state_store()
         self._logger = logging.getLogger(__name__)
         self._audit = AuditMiddleware()
+
+        # Intent resolution is delegated to a strategy object so Phase 1+ can
+        # swap in LLM-driven resolvers without touching this service. When the
+        # intent module is unavailable (legacy installs), ``_intent_resolver``
+        # stays ``None`` and ``_resolve_intent_v2`` short-circuits to None
+        # which triggers the legacy ``parse_circuit_intent`` fallback.
+        if intent_resolver is not None:
+            self._intent_resolver = intent_resolver
+        elif _INTENT_V2_AVAILABLE and get_resolver is not None:
+            mode = getattr(config, "intent_resolver_mode", "regex")
+            self._intent_resolver = get_resolver(mode)
+        else:
+            self._intent_resolver = None
 
     # ------------------------------------------------------------------
     # Feature flag helpers
@@ -260,62 +271,32 @@ class CircuitDesignService:
 
         return confidence
 
-    def _resolve_intent_v2(self, description: str) -> dict | None:
-        """V2 intent pipeline. Returns legacy-compatible parsed dict, or None."""
+    async def _resolve_intent_v2(self, description: str, ctx=None) -> dict | None:
+        """V2 intent pipeline. Returns legacy-compatible parsed dict, or None.
+
+        Delegates to the configured :class:`IntentResolver` strategy. ``ctx``
+        is forwarded to the resolver so Phase 1+ LLM-backed resolvers can
+        invoke MCP sampling on the client. The regex resolver ignores it.
+        """
         if not self._is_intent_v2_enabled():
             return None
+        if self._intent_resolver is None:
+            return None
         try:
-            intent_model = extract_intent(description)
-            candidates = rank_topologies(intent_model)
-            if not candidates:
-                return {
-                    "topology": None,
-                    "topology_candidates": [],
-                    "specs": dict(intent_model.values),
-                    "normalized_specs": dict(intent_model.values),
-                    "missing_fields": [],
-                    "questions": [],
-                    "confidence": "low",
-                    "use_case": intent_model.use_case,
-                    "constraints": intent_model.constraints,
-                    "candidate_scores": [],
-                    "decision_trace": [],
-                    "resolution_version": "v2",
-                }
-            top = candidates[0]
-            spec = build_canonical_spec(intent_model, top)
-            clarifications = analyze_clarification_needs(intent_model, candidates)
-            confidence = self._determine_confidence_v2(
-                intent_model, top, spec, clarifications,
-            )
-            return {
-                "topology": top.topology,
-                "topology_candidates": [c.topology for c in candidates[:5]],
-                "specs": dict(intent_model.values),
-                "normalized_specs": dict(spec.requirements),
-                "missing_fields": spec.missing_fields,
-                "questions": [],
-                "confidence": confidence,
-                "use_case": intent_model.use_case,
-                "constraints": intent_model.constraints,
-                "candidate_scores": [
-                    {"topology": c.topology, "score": c.score, "reasons": c.reasons}
-                    for c in candidates[:5]
-                ],
-                "decision_trace": spec.decision_trace,
-                "resolution_version": "v2",
-            }
+            return await self._intent_resolver.resolve(description, ctx=ctx)
         except Exception:
             logger.debug("V2 intent resolution failed, falling back to legacy", exc_info=True)
             return None
 
-    async def design_circuit(self, description: str) -> dict:
+    async def design_circuit(self, description: str, ctx=None) -> dict:
         """Parse natural language and suggest/create a circuit.
 
         Tries V2 intent pipeline first, falls back to legacy on failure.
+        ``ctx`` is the FastMCP tool Context, forwarded to LLM-backed
+        resolvers (Phase 1+); ignored by the regex resolver.
         """
         try:
-            intent = self._resolve_intent_v2(description)
+            intent = await self._resolve_intent_v2(description, ctx=ctx)
         except Exception:
             logger.debug("V2 intent resolution raised, falling back to legacy", exc_info=True)
             intent = None
