@@ -164,15 +164,42 @@ def _match_use_case(text: str) -> tuple[str | None, list[str]]:
 # ---------------------------------------------------------------------------
 
 _VIN_CONTEXT = re.compile(
-    r"(입력|input|source|bus|소스|1차|primary|dc\s*bus|공급)",
+    r"(입력|input|source|bus|소스|1차|primary|dc\s*bus|공급"
+    r"|\bv\s*in\b|\bvin\b|v_in)",
     re.IGNORECASE,
 )
 _VOUT_CONTEXT = re.compile(
-    r"(출력|output|target|목표|2차|secondary|배터리|battery|부하측)",
+    r"(출력|output|target|목표|2차|secondary|배터리|battery|부하측"
+    r"|\bv\s*out\b|\bvout\b|v_out)",
     re.IGNORECASE,
 )
 
 _CONTEXT_WINDOW = 20  # characters to look around a voltage match
+
+
+# Tight left prefix (labelled assignment immediately before the value).
+# Two flavours: a STRICT operator form (``Vin=12V``) for ambiguous tokens
+# like ``input``/``output`` whose role flips depending on side, and a
+# LOOSE word-only form for Korean/positional labels (``입력 400V``) where
+# the keyword is always a prefix and never a suffix.
+_VIN_PREFIX = re.compile(r"\b(v_?in)\s*[=:]\s*$", re.IGNORECASE)
+_VOUT_PREFIX = re.compile(r"\b(v_?out)\s*[=:]\s*$", re.IGNORECASE)
+_VIN_PREFIX_LOOSE = re.compile(r"(입력|1차|소스|primary)\s*[=:]?\s*$", re.IGNORECASE)
+_VOUT_PREFIX_LOOSE = re.compile(
+    r"(출력|2차|부하측|목표|secondary|target)\s*[=:]?\s*$",
+    re.IGNORECASE,
+)
+
+# Tight right suffix ("12V input"): keyword sits IMMEDIATELY after the
+# unit. Anchored with ``^`` against the slice starting after the unit, so
+# the next whitespace-delimited token decides the role. Ordered so that
+# the LONGEST keyword wins (e.g. ``output`` before ``out``) — Python's
+# alternation is left-to-right, not longest-match.
+_VIN_SUFFIX = re.compile(r"^\s*[,:=]?\s*(입력|input|primary|1차)\b", re.IGNORECASE)
+_VOUT_SUFFIX = re.compile(
+    r"^\s*[,:=]?\s*(출력|output|target|목표|2차|secondary)\b",
+    re.IGNORECASE,
+)
 
 
 def _find_voltage_contexts(text: str) -> list[tuple[float, str | None]]:
@@ -181,33 +208,66 @@ def _find_voltage_contexts(text: str) -> list[tuple[float, str | None]]:
     Returns list of (value, role) where role is 'vin', 'vout_target', or None.
     """
     from psim_mcp.parsers.unit_parser import _FULL_PATTERN, _resolve_category
+    from psim_mcp.parsers.unit_parser import _resolve_prefix as _rp
 
     results: list[tuple[float, str | None]] = []
+    prev_end = 0
+    matches = list(_FULL_PATTERN.finditer(text))
 
-    for m in _FULL_PATTERN.finditer(text):
-        unit_str = m.group("unit")
-        category = _resolve_category(unit_str)
-        if category != "voltage":
+    for idx, m in enumerate(matches):
+        if _resolve_category(m.group("unit")) != "voltage":
+            prev_end = m.end()
             continue
 
-        number = float(m.group("number"))
-        prefix = m.group("prefix")
-        from psim_mcp.parsers.unit_parser import _resolve_prefix as _rp
-        multiplier = _rp(prefix)
-        value = number * multiplier
-
-        # Look at surrounding text for context clues
-        start = max(0, m.start() - _CONTEXT_WINDOW)
-        end = min(len(text), m.end() + _CONTEXT_WINDOW)
-        window = text[start:end]
-
+        value = float(m.group("number")) * _rp(m.group("prefix"))
         role: str | None = None
-        if _VIN_CONTEXT.search(window):
+
+        # Stage 1a — strict LEFT prefix ("Vin=12V" / "Vout: 48V"). Slice
+        # from the prior match's end so a downstream ``Vout=`` cannot
+        # tag this number.
+        left_ctx = text[prev_end:m.start()]
+        if _VIN_PREFIX.search(left_ctx):
             role = "vin"
-        elif _VOUT_CONTEXT.search(window):
+        elif _VOUT_PREFIX.search(left_ctx):
             role = "vout_target"
 
+        # Stage 1b — loose LEFT prefix ("입력 400V" / "primary 12V"). Only
+        # word-only labels that are NEVER used as a trailing suffix
+        # (Korean/positional). Bare ``input``/``output`` is reserved for
+        # Stage 1c so it cannot double-tag both sides of "12V input 48V".
+        if role is None:
+            if _VIN_PREFIX_LOOSE.search(left_ctx):
+                role = "vin"
+            elif _VOUT_PREFIX_LOOSE.search(left_ctx):
+                role = "vout_target"
+
+        # Stage 1c — tight RIGHT suffix ("12V input"). Slice up to the
+        # NEXT match's start so a later voltage's prefix is excluded.
+        if role is None:
+            right_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+            right_ctx = text[m.end():right_end]
+            if _VIN_SUFFIX.search(right_ctx):
+                role = "vin"
+            elif _VOUT_SUFFIX.search(right_ctx):
+                role = "vout_target"
+
+        # Stage 2 — wide-window keyword search ("12V 입력"). Consulted only
+        # when neither tight context gave a signal. Require an unambiguous
+        # window so a window holding both ``Vin`` and ``Vout`` prefixes
+        # falls through to the size-based heuristic.
+        if role is None:
+            start = max(0, m.start() - _CONTEXT_WINDOW)
+            end = min(len(text), m.end() + _CONTEXT_WINDOW)
+            window = text[start:end]
+            in_match = bool(_VIN_CONTEXT.search(window))
+            out_match = bool(_VOUT_CONTEXT.search(window))
+            if in_match and not out_match:
+                role = "vin"
+            elif out_match and not in_match:
+                role = "vout_target"
+
         results.append((value, role))
+        prev_end = m.end()
 
     return results
 
@@ -355,6 +415,17 @@ def _map_values_to_specs(
     powers = values.get("power", [])
     if powers:
         specs["power_rating"] = powers[0]
+
+    # --- Control mode detection (closed-loop / open-loop) ---
+    if text:
+        if re.search(
+            r"(폐\s*루프|closed[\s_-]*loop|피드백|feedback|voltage[\s_-]*mode|pi\s*제어)",
+            text,
+            re.IGNORECASE,
+        ):
+            specs["closed_loop"] = True
+        elif re.search(r"(개\s*루프|open[\s_-]*loop)", text, re.IGNORECASE):
+            specs["closed_loop"] = False
 
     # --- Topology-specific value detection ---
     if text:

@@ -135,7 +135,140 @@ _FALLBACK_PORT_PIN_GROUPS = {
     "Induction_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
     "PMSM": (("phase_a",), ("phase_b",), ("phase_c",)),
     "BLDC_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
+    # Closed-loop control elements (PSIM native types — see
+    # output/converted_*.py for canonical port ordering).
+    "Voltage_Sensor": (("positive",), ("negative",), ("output",)),
+    "VSEN": (("positive",), ("negative",), ("output",)),
+    "Constant": (("output",),),
+    "CONSTANT": (("output",),),
+    "Summer": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "Subtractor": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "SUM2": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "PI_Controller": (("input",), ("output",)),
+    "PI": (("input",), ("output",)),
+    "Comparator": (("positive", "in_pos"), ("negative", "in_neg"), ("output",)),
+    "COMP": (("positive", "in_pos"), ("negative", "in_neg"), ("output",)),
+    "Triangular_Source": (("positive",), ("negative",)),
+    "VTRI": (("positive",), ("negative",)),
 }
+
+
+def _compute_psim_area(psim_type, ports, direction):
+    """Derive the PSIM ``AREA`` bounding box from explicit ``PORTS``.
+
+    PSIM 2026 expects every ``PsimCreateNewElement`` call to supply an
+    ``AREA = [x1, y1, x2, y2]`` argument alongside ``PORTS``. When AREA
+    is omitted, PSIM falls back to a default that does not respect the
+    explicit pin coordinates and silently relocates pins (e.g. a
+    MULTI_MOSFET gate stub can be merged into the source rail). This
+    helper mirrors the AREA convention found in
+    ``output/converted_*.py`` so generators only need to emit PORTS.
+
+    Returns a 4-element list or ``None`` when no rule applies.
+    """
+    if not ports or len(ports) < 2:
+        return None
+
+    xs = ports[0::2]
+    ys = ports[1::2]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+
+    # 3-pin switches: pin0=drain/collector, pin1=source/emitter, pin2=gate
+    if psim_type in ("MULTI_MOSFET", "MULTI_IGBT", "THYRISTOR", "TRIAC", "GTO"):
+        if len(ports) >= 6:
+            dx, dy, sx, sy, gx, gy = ports[0], ports[1], ports[2], ports[3], ports[4], ports[5]
+            if direction in (0, 180):
+                body_x = dx
+                gate_off = abs(body_x - gx) or 20
+                return [body_x - gate_off, min(dy, sy),
+                        body_x + gate_off, max(dy, sy)]
+            else:  # 90 / 270 — body is horizontal
+                body_y = dy
+                gate_off = abs(body_y - gy) or 20
+                return [min(dx, sx), body_y - gate_off,
+                        max(dx, sx), body_y + gate_off]
+
+    # 3-pin COMP / SUM2: in+ / in- on one side, output on the other.
+    # PSIM AREA always extends 10 above/below the topmost/bottommost pin
+    # (confirmed against converted_3-level_inverter.py and
+    # converted_3-ph_PWM_rectifier_with_PFC.py reference scripts), so the
+    # symbol body has room around the 20-pixel-tall pin column.
+    if psim_type in ("COMP", "SUM2"):
+        if len(ports) >= 6:
+            return [min_x, min_y - 10, max_x, max_y + 10]
+
+    # 1-pin GATING / CONSTANT / Voltage_Probe / Current_Probe: port is on the
+    # output edge of a 40x20 (or 20x40) box that extends away from the pin.
+    if psim_type in ("GATING", "CONSTANT", "Constant", "VP", "IP",
+                     "Voltage_Probe", "Current_Probe"):
+        x, y = ports[0], ports[1]
+        if direction == 0:
+            return [x - 40, y - 10, x, y + 10]
+        if direction == 90:
+            return [x - 10, y - 40, x + 10, y]
+        if direction == 180:
+            return [x, y - 10, x + 40, y + 10]
+        # 270
+        return [x - 10, y, x + 10, y + 40]
+
+    # 1-pin Ground: port at the top, box extends downward
+    if psim_type == "Ground":
+        x, y = ports[0], ports[1]
+        if direction == 0:
+            return [x - 10, y, x + 10, y + 20]
+        if direction == 90:
+            return [x - 20, y - 10, x, y + 10]
+        if direction == 180:
+            return [x - 10, y - 20, x + 10, y]
+        return [x, y - 10, x + 20, y + 10]
+
+    # 3-pin VSEN: positive / negative on one edge, output on the other.
+    if psim_type in ("VSEN", "Voltage_Sensor"):
+        if len(ports) >= 6:
+            return [min_x, min_y, max_x, max_y]
+
+    # SIMPLECBLOCK — inputs on LEFT edge, outputs on RIGHT edge, both
+    # columns starting at AREA.top + 10 with 20px vertical spacing
+    # (confirmed against converted_cblock_buck.py). Width is fixed at
+    # ``max_x - min_x`` from the generator-supplied ports. Height
+    # extends 10px above the topmost pin and 10px below the bottommost.
+    if psim_type == "SIMPLECBLOCK":
+        if len(ports) >= 2:
+            return [min_x, min_y - 10, max_x, max_y + 10]
+
+    # ONCTRL — 2-pin (input/output) box, ~30×20 in the reference, with
+    # the body centred on the pin line. Same convention as 2-pin
+    # passives but a fixed 30-px width matches the PSIM rendering.
+    if psim_type == "ONCTRL":
+        if len(ports) >= 4:
+            if ys[0] == ys[1]:
+                return [min_x, ys[0] - 10, max_x, ys[0] + 10]
+            if xs[0] == xs[1]:
+                return [xs[0] - 10, min_y, xs[0] + 10, max_y]
+
+    # 2-pin VTRI / Triangular_Source: vertical (DC bus side rail)
+    if psim_type in ("VTRI", "Triangular_Source"):
+        if len(ports) >= 4:
+            if xs[0] == xs[1]:
+                return [xs[0] - 10, min_y, xs[0] + 10, max_y]
+            if ys[0] == ys[1]:
+                return [min_x, ys[0] - 10, max_x, ys[0] + 10]
+
+    # 2-pin PI / PI_Controller: input on one side, output on the other
+    if psim_type in ("PI", "PI_Controller"):
+        if len(ports) >= 4:
+            return [min_x, min_y - 10, max_x, max_y + 10] if min_y == max_y \
+                else [min_x - 10, min_y, max_x + 10, max_y]
+
+    # 2-pin passives + sources: AREA is perpendicular ±10 around the port line
+    if len(ports) == 4:
+        if ys[0] == ys[1]:                     # horizontal pin line
+            return [min_x, ys[0] - 10, max_x, ys[0] + 10]
+        if xs[0] == xs[1]:                     # vertical pin line
+            return [xs[0] - 10, min_y, xs[0] + 10, max_y]
+
+    return None
 
 
 def _build_port_pin_map(component):
@@ -285,12 +418,15 @@ def _get_parameter_name_mapping(component_type):
             if mapping:
                 return mapping
 
-    for candidate in candidates:
-        mapping = _PARAM_NAME_MAP.get(candidate)
-        if mapping:
-            return mapping
-
-    return {}
+    # Fallback path runs inside PSIM's Python 3.8 where the registry
+    # import fails. ``_PARAM_NAME_MAP`` is a FLAT parameter→PSIM-name
+    # translation that's effectively universal (parameter names rarely
+    # overlap across components), so we hand it back wholesale instead
+    # of treating it as a per-component lookup (the original bug —
+    # ``_PARAM_NAME_MAP.get("DC_Source")`` is always None, so every
+    # parameter passed through untranslated and PSIM silently kept its
+    # defaults).
+    return _PARAM_NAME_MAP
 
 
 def _get_simulation_defaults(topology):
@@ -1086,6 +1222,45 @@ def _handle_template_circuit(psim_template, save_path):
             os.makedirs(save_dir, exist_ok=True)
         shutil.copy2(source_path, save_path)
 
+        # Bring along auxiliary parameter / include files that sit next
+        # to the example .psimsch. PSIM resolves "%name%" placeholders
+        # at simulation time by reading these companion files, so the
+        # template only works if the .txt is copied to the same dir
+        # as the destination .psimsch.
+        sidecar_files = []
+        source_dir = os.path.dirname(source_path)
+        for sidecar_name in psim_template.get("sidecar_files", []):
+            src_side = os.path.join(source_dir, sidecar_name)
+            if os.path.isfile(src_side):
+                dst_side = os.path.join(save_dir or ".", sidecar_name)
+                shutil.copy2(src_side, dst_side)
+                sidecar_files.append(dst_side)
+
+        # Apply text substitutions to the sidecar parameter file. The
+        # caller passes ``parameter_file_overrides`` as a list of
+        # {"file": "parameters-main.txt", "find": "Vin = 5;",
+        #  "replace": "Vin = 12;"} entries. Files are UTF-16 because
+        # PSIM example .txt files use that encoding by default.
+        file_subs_applied = 0
+        for sub in psim_template.get("parameter_file_overrides", []):
+            sub_file = os.path.join(save_dir or ".", sub.get("file", ""))
+            if not os.path.isfile(sub_file):
+                continue
+            try:
+                with open(sub_file, "rb") as f:
+                    raw = f.read()
+                # PSIM sidecar files are UTF-16-LE with BOM
+                text = raw.decode("utf-16", errors="replace")
+                find = sub.get("find", "")
+                repl = sub.get("replace", "")
+                if find and find in text:
+                    text = text.replace(find, repl)
+                    with open(sub_file, "wb") as f:
+                        f.write(text.encode("utf-16"))
+                    file_subs_applied += 1
+            except Exception:
+                pass
+
         p = _get_psim()
         sch = p.PsimFileOpen(save_path)
         if not sch:
@@ -1097,6 +1272,20 @@ def _handle_template_circuit(psim_template, save_path):
                 p.PsimSetElmValue2(sch, ov["type"], ov["name"],
                                    ov["param"], str(ov["value"]))
                 applied += 1
+            except Exception:
+                pass
+
+        # Install SIMPLECBLOCK C-code overrides AFTER element parameter
+        # overrides. Each entry: {"name": "SSCB1", "code": "y1 = x1;"}.
+        # The bridge has already validated SIMPLECBLOCK element type in
+        # ``handle_create_circuit``; here we mirror the same API
+        # contract for the template path.
+        c_block_overrides = 0
+        for ov in psim_template.get("c_block_overrides", []):
+            try:
+                p.PsimSetElmValue2(sch, "SIMPLECBLOCK", ov["name"],
+                                   "CONTENT", ov["code"])
+                c_block_overrides += 1
             except Exception:
                 pass
 
@@ -1116,6 +1305,9 @@ def _handle_template_circuit(psim_template, save_path):
             "mode": "template",
             "template_source": source_rel,
             "parameters_applied": applied,
+            "parameter_file_subs_applied": file_subs_applied,
+            "c_block_overrides_applied": c_block_overrides,
+            "sidecar_files": sidecar_files,
             "status": "created",
         })
     except Exception as e:
@@ -1220,21 +1412,64 @@ def handle_create_circuit(params):
                     "_OPTIONS_": 16,
                 }
 
+                # PSIM 2026 silently relocates pins when AREA is omitted,
+                # which can short a MOSFET gate stub onto the GND rail.
+                # Compute AREA from PORTS + DIRECTION (mirrors PSIM
+                # PsimConvertToPython outputs); fall back to caller-
+                # provided ``area`` when one is supplied explicitly.
+                if "area" in comp:
+                    kwargs["AREA"] = comp["area"]
+                else:
+                    computed = _compute_psim_area(psim_type, ports_list, direction)
+                    if computed is not None:
+                        kwargs["AREA"] = computed
+
                 # MULTI_* elements require SubType="Ideal"
                 if psim_type.startswith("MULTI_"):
                     kwargs["SubType"] = "Ideal"
+
+                # SIMPLECBLOCK needs a higher _OPTIONS_ bit (0x100000)
+                # alongside the standard 0x10, plus integer _InputCount
+                # and _OutputCount that must be passed as ints, not
+                # strings. ``CONTENT`` (the C source) is set AFTER
+                # element creation via PsimSetElmValue2. Reference
+                # output/converted_cblock_buck.py uses _OPTIONS_=1048592
+                # (= 0x100010); PSIM may add bit-6 (0x40) after compile
+                # but the creation value matches the reference exactly.
+                c_code: str | None = None
+                if psim_type == "SIMPLECBLOCK":
+                    kwargs["_OPTIONS_"] = 1048592
+                    c_code = comp.get("parameters", {}).get("c_code")
+                    in_count = int(comp.get("parameters", {}).get("input_count", 1) or 1)
+                    out_count = int(comp.get("parameters", {}).get("output_count", 1) or 1)
+                    kwargs["_InputCount"] = in_count
+                    kwargs["_OutputCount"] = out_count
 
                 # Map and add parameters (내부 이름 → PSIM API 이름)
                 parameter_map = _get_parameter_name_mapping(comp_type)
                 for param_name, param_value in comp_params.items():
                     psim_name = parameter_map.get(param_name, param_name)
-                    if psim_name is not None:
-                        kwargs[psim_name] = str(param_value)
+                    if psim_name is None:
+                        continue
+                    # Skip generation-time pseudo-params already consumed
+                    # above (avoid passing them again as raw strings).
+                    if psim_type == "SIMPLECBLOCK" and param_name in (
+                        "c_code", "input_count", "output_count",
+                    ):
+                        continue
+                    kwargs[psim_name] = str(param_value)
 
                 with _suppress_stdout():
                     elem = p.PsimCreateNewElement(
                         sch, psim_type, comp_name, **kwargs
                     )
+
+                # SIMPLECBLOCK: install the C source after creation.
+                if psim_type == "SIMPLECBLOCK" and c_code:
+                    with _suppress_stdout():
+                        p.PsimSetElmValue2(
+                            sch, psim_type, comp_name, "CONTENT", c_code,
+                        )
 
                 element_map[comp_id] = {
                     "elem": elem,

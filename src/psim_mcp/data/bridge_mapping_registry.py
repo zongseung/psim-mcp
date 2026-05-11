@@ -63,6 +63,9 @@ PSIM_TYPE_MAP: dict[str, str] = {
     "PID_Controller": "PID",
     "PWM_Generator": "GATING",
     "PLL": "PLL",
+    "C_Block": "SIMPLECBLOCK",
+    "Label": "LABEL",
+    "OnCtrl": "ONCTRL",
     # Storage
     "Battery": "BATTERY",
     "Supercapacitor": "SUPERCAP",
@@ -82,42 +85,46 @@ PSIM_TYPE_MAP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 PARAMETER_NAME_MAP: dict[str, dict[str, str]] = {
+    # PSIM 2026 VDC/VAC use "Amplitude" (not "V1") — confirmed via
+    # output/converted_*.py reference scripts (e.g. converted_fullbridge.py
+    # line 96: ``Amplitude = "390"``). Sending "V1" silently no-ops and
+    # PSIM keeps its default Amplitude=100.
     "DC_Source": {
-        "voltage": "V1",
-        "amplitude": "V1",
-        "Amplitude": "V1",
+        "voltage": "Amplitude",
+        "amplitude": "Amplitude",
+        "Amplitude": "Amplitude",
     },
     "AC_Source": {
-        "voltage": "V1",
-        "amplitude": "V1",
-        "Amplitude": "V1",
+        "voltage": "Amplitude",
+        "amplitude": "Amplitude",
+        "Amplitude": "Amplitude",
         "frequency": "Freq",
         "Frequency": "Freq",
     },
     "Inductor": {
-        "inductance": "L1",
-        "Inductance": "L1",
-        "CurrentFlag": "CurrentFlag",
+        "inductance": "Inductance",
+        "Inductance": "Inductance",
+        "CurrentFlag": "Current_Flag",
     },
     "Capacitor": {
-        "capacitance": "C1",
-        "Capacitance": "C1",
+        "capacitance": "Capacitance",
+        "Capacitance": "Capacitance",
     },
     "Resistor": {
-        "resistance": "R1",
-        "Resistance": "R1",
-        "VoltageFlag": "VoltageFlag",
+        "resistance": "Resistance",
+        "Resistance": "Resistance",
+        "VoltageFlag": "Voltage_Flag",
     },
     "MOSFET": {
-        "on_resistance": "Ron",
-        "switching_frequency": "Freq",
+        "on_resistance": "On_Resistance",
+        "switching_frequency": None,  # not a PSIM MULTI_MOSFET parameter
     },
     "IGBT": {
-        "on_resistance": "Ron",
-        "switching_frequency": "Freq",
+        "on_resistance": "R_transistor",
+        "switching_frequency": None,
     },
     "Diode": {
-        "forward_voltage": "Vd",
+        "forward_voltage": "Diode_Voltage_Drop",
     },
     # Validated from PsimConvertToPython outputs:
     # - output/converted_Flyback_converter_with_peak_current_mode_control.py
@@ -138,6 +145,15 @@ PARAMETER_NAME_MAP: dict[str, dict[str, str]] = {
         "Frequency": "Frequency",
         "NoOfPoints": "No__of_Points",
         "Switching_Points": "Switching_Points",
+    },
+    # SIMPLECBLOCK creation kwargs map (the C source is NOT a creation
+    # parameter — it's set via PsimSetElmValue2 after the element is
+    # created — so ``c_code`` is intentionally not surfaced here.
+    # The bridge picks it out of the component dict separately.)
+    "C_Block": {
+        "input_count": "_InputCount",
+        "output_count": "_OutputCount",
+        "c_code": None,
     },
     "Battery": {
         "voltage": "V1",
@@ -197,6 +213,26 @@ PORT_PIN_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
     "Induction_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
     "PMSM": (("phase_a",), ("phase_b",), ("phase_c",)),
     "BLDC_Motor": (("phase_a",), ("phase_b",), ("phase_c",)),
+    # Closed-loop control elements (PSIM native types). Port ordering
+    # was confirmed from output/converted_*.py reference schematics.
+    # VSEN: PORTS=[V+, V-, Vout]; SUM2: PORTS=[in1, in2, out];
+    # COMP: PORTS=[in+, in-, out]; VTRI: PORTS=[pos, neg].
+    "Voltage_Sensor": (("positive",), ("negative",), ("output",)),
+    "VSEN": (("positive",), ("negative",), ("output",)),
+    "Constant": (("output",),),
+    "CONSTANT": (("output",),),
+    "Summer": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "Subtractor": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "SUM2": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "PI_Controller": (("input",), ("output",)),
+    "PI": (("input",), ("output",)),
+    "Comparator": (("positive", "in_pos"), ("negative", "in_neg"), ("output",)),
+    "COMP": (("positive", "in_pos"), ("negative", "in_neg"), ("output",)),
+    "Triangular_Source": (("positive",), ("negative",)),
+    "VTRI": (("positive",), ("negative",)),
+    "C_Block": (("in1",), ("in2",), ("out1",)),
+    "Label": (("pin1",),),
+    "OnCtrl": (("input",), ("output",)),
 }
 
 

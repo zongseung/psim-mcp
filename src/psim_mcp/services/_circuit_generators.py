@@ -27,10 +27,11 @@ def try_generate(
     dict | None,
     dict | None,
     dict | None,
+    list[dict],
 ]:
     """Attempt to resolve components via generator.
 
-    Returns an 8-tuple:
+    Returns a 9-tuple:
     (
         components,
         connections,
@@ -40,15 +41,21 @@ def try_generate(
         constraint_validation,
         psim_template,
         simulation_settings,
+        wire_segments,
     ).
+
+    ``wire_segments`` is the optional explicit-routing list emitted by
+    generators that need to override the default auto-router (e.g. the
+    closed-loop boost generator, which routes its control wires through
+    safe corridors to avoid GND-rail shorts). Empty when not supplied.
     """
     if components:
-        return None, [], [], "template", None, None, None, None
+        return None, [], [], "template", None, None, None, None, []
 
     try:
         generator = get_generator(circuit_type.lower())
     except (KeyError, Exception):
-        return None, [], [], "template_fallback", None, None, None, None
+        return None, [], [], "template_fallback", None, None, None, None, []
 
     req = dict(specs or {})
 
@@ -75,8 +82,19 @@ def try_generate(
         if alias in req and canonical not in req:
             req[canonical] = req[alias]
 
+    # ``control_mode`` is the user-facing way to request closed-loop
+    # control (NL parsers and humans both reach for it). Generators expect
+    # a boolean ``closed_loop`` flag instead — bridge the two so the
+    # caller's intent reaches the design path.
+    if "closed_loop" not in req:
+        cm = req.get("control_mode")
+        if isinstance(cm, str) and cm.strip().lower() in {
+            "closed_loop", "closed-loop", "closedloop", "폐루프", "pi", "voltage_pi",
+        }:
+            req["closed_loop"] = True
+
     if generator.missing_fields(req):
-        return None, [], [], "template_fallback", None, None, None, None
+        return None, [], [], "template_fallback", None, None, None, None, []
 
     try:
         gen_result = generator.generate(req)
@@ -105,6 +123,7 @@ def try_generate(
             constraint_validation,
             gen_result.get("psim_template"),
             gen_result.get("simulation"),
+            gen_result.get("wire_segments", []) or [],
         )
     except Exception as exc:
         logger.warning("Generator failed for '%s': %s", circuit_type, exc)
@@ -117,4 +136,5 @@ def try_generate(
             None,
             None,
             None,
+            [],
         )

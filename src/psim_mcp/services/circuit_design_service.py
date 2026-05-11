@@ -239,6 +239,13 @@ class CircuitDesignService:
     ) -> dict | None:
         if not self._is_synthesis_enabled_for_topology(topology, stage=stage):
             return None
+        # Closed-loop variants are only supplied by the legacy generator
+        # path. The canonical synthesizer/auto-placer does not yet know
+        # how to lay out controller elements (PI/COMP/VTRI/VSEN), so
+        # short-circuit to the legacy generate() when the caller asks
+        # for closed-loop control.
+        if specs and specs.get("closed_loop"):
+            return None
         return _try_synthesize_and_layout(topology, specs, config=self._config)
 
     # ------------------------------------------------------------------
@@ -443,7 +450,7 @@ class CircuitDesignService:
 
         self._store.delete(session_token)
 
-        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template, gen_simulation = (
+        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template, gen_simulation, _gen_wire_segments = (
             _try_generate(topology, merged_specs, None)
         )
 
@@ -531,7 +538,7 @@ class CircuitDesignService:
         if not components and specs:
             synth_result = self._try_synthesis_for_topology(circuit_type, specs, stage="preview_generator")
 
-        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template, gen_simulation = _try_generate(
+        gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template, gen_simulation, gen_wire_segments = _try_generate(
             circuit_type, specs, components,
         )
         if gen_components is not None:
@@ -539,6 +546,13 @@ class CircuitDesignService:
             resolved_connections = gen_connections
             resolved_nets = gen_nets
             generation_mode = gen_mode
+            if gen_wire_segments:
+                # Generator-supplied explicit routing overrides the
+                # bridge's default L-shape auto-router for the wires
+                # the generator could not safely express via plain
+                # nets (e.g. closed-loop boost control signals that
+                # would otherwise short to the GND rail).
+                wire_segments = gen_wire_segments
         else:
             template = _TEMPLATES.get(circuit_type.lower())
 
@@ -816,7 +830,7 @@ class CircuitDesignService:
             }
             gen_mode = "generator"
         else:
-            gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template, gen_simulation = _try_generate(
+            gen_components, gen_connections, gen_nets, gen_mode, _note, _gen_constraints, _gen_template, gen_simulation, _gen_wire_segments_unused = _try_generate(
                 circuit_type, specs, components,
             )
 
@@ -943,7 +957,7 @@ class CircuitDesignService:
                 wire_segments=synth_result.get("wire_segments"),
             )
 
-        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template, gen_simulation = (
+        gen_components, gen_connections, gen_nets, gen_mode, gen_note, gen_constraints, gen_template, gen_simulation, gen_wire_segments = (
             _try_generate(topology, specs, None)
         )
 
@@ -990,6 +1004,7 @@ class CircuitDesignService:
                 constraint_validation=gen_constraints,
                 psim_template=gen_template,
                 simulation_settings=gen_simulation,
+                wire_segments=gen_wire_segments if gen_wire_segments else None,
             )
 
         return self._no_match_response(specs)

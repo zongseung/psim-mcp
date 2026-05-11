@@ -215,6 +215,67 @@ COMPONENTS: dict[str, dict] = {
             "default_parameters": {"Frequency": 60},
             "pins": ["input", "output"],
             "psim_element_type": "PLL"},
+    # PSIM-native control elements used by closed-loop generators
+    # (e.g. boost.closed_loop=True). Type strings are the same names PSIM's
+    # API expects, so generators may emit them directly without bridge
+    # remapping. Pin orderings mirror the bridge PORT_PIN_GROUPS entries.
+    "PI": {"category": "control", "korean": "PI (연속)", "symbol": "PI",
+           "default_parameters": {"Gain": 1.0, "Time_Constant": 1e-3,
+                                  "Vlower": "-inf", "Vupper": "inf"},
+           "pins": ["input", "output"],
+           "psim_element_type": "PI"},
+    "CONSTANT": {"category": "control", "korean": "상수 (기준 신호)", "symbol": "K",
+                 "default_parameters": {"Amplitude": 1.0},
+                 "pins": ["output"],
+                 "psim_element_type": "CONSTANT"},
+    "SUM2": {"category": "control", "korean": "2입력 가산기/감산기", "symbol": "Σ",
+             "default_parameters": {"Gain_1__P_": 1, "Gain_2__N_": -1},
+             "pins": ["in1", "in2", "output"],
+             "psim_element_type": "SUM2"},
+    "COMP": {"category": "control", "korean": "비교기", "symbol": "CMP",
+             "default_parameters": {"Vlower": 0, "Vupper": 1},
+             "pins": ["positive", "negative", "output"],
+             "psim_element_type": "COMP"},
+    "VTRI": {"category": "source", "korean": "삼각파 전압원", "symbol": "△V",
+             "default_parameters": {
+                 "DC_Offset": 0.0, "Duty_Cycle": 1, "Frequency": 50000,
+                 "Phase_Delay": 0, "Tstart": 0, "V_peak_to_peak": 1,
+             },
+             "pins": ["positive", "negative"],
+             "psim_element_type": "VTRI"},
+    "VSEN": {"category": "sensor", "korean": "전압 센서", "symbol": "VSEN",
+             "default_parameters": {"Gain": 1.0},
+             "pins": ["positive", "negative", "output"],
+             "psim_element_type": "VSEN"},
+    # SIMPLECBLOCK with 2 inputs + 1 output — used by boost closed-loop
+    # to collapse the VSEN→SUM2→PI→COMP→VTRI chain into a single
+    # compiled C function. ``c_code`` is the PSIM CONTENT string; the
+    # bridge sets it via PsimSetElmValue2 after creation.
+    "C_Block": {"category": "control", "korean": "C 블록 (PI)", "symbol": "CBLK",
+                "default_parameters": {"c_code": "", "input_count": 2, "output_count": 1},
+                "pins": ["in1", "in2", "out1"],
+                "psim_element_type": "SIMPLECBLOCK"},
+    # Net label — pairs of LABEL elements with the same ``name`` merge
+    # their nodes electrically, so PSIM uses them in lieu of long
+    # routing wires for control signals (see PSIM example
+    # buck-converter-digital-control: gate signal "HB" is wired this
+    # way rather than via a multi-segment wire across the schematic).
+    "Label": {"category": "control", "korean": "라벨", "symbol": "LBL",
+              "default_parameters": {},
+              "pins": ["pin1"],
+              "psim_element_type": "LABEL"},
+    # On-off switch controller — PSIM's "soft" gate driver that converts
+    # an analog control signal (0..1, typically from a SIMPLECBLOCK
+    # output) into a switch gate command. PSIM requires this conversion
+    # step: a SIMPLECBLOCK output wired straight to a MOSFET gate
+    # leaves the gate node "floating" at simulation time. Confirmed
+    # against output/converted_cblock_buck.py:303 where ONCTRL "ON3"
+    # sits between SIMPLECBLOCK SSCB5 output and LABEL "HB" (the gate
+    # signal name).
+    "OnCtrl": {"category": "control", "korean": "온오프 컨트롤러", "symbol": "ONCTRL",
+               "default_parameters": {},
+               "pins": ["input", "output"],
+               "psim_element_type": "ONCTRL"},
 
     # === Battery ===
     "Battery": {"category": "storage", "korean": "배터리", "symbol": "BAT",
@@ -405,6 +466,26 @@ PORT_PIN_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("secondary_center",),
         ("secondary_bottom",),
     ),
+    # PSIM-native control elements (closed-loop generators).
+    "VSEN": (("positive",), ("negative",), ("output",)),
+    "Voltage_Sensor": (("positive",), ("negative",), ("output",)),
+    "CONSTANT": (("output",),),
+    "Constant": (("output",),),
+    "SUM2": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "Summer": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "Subtractor": (("in1", "input1", "pin1"), ("in2", "input2", "pin2"), ("output",)),
+    "PI": (("input",), ("output",)),
+    "PI_Controller": (("input",), ("output",)),
+    "COMP": (("positive", "in_pos"), ("negative", "in_neg"), ("output",)),
+    "Comparator": (("positive", "in_pos"), ("negative", "in_neg"), ("output",)),
+    "VTRI": (("positive",), ("negative",)),
+    "Triangular_Source": (("positive",), ("negative",)),
+    # SIMPLECBLOCK port ordering — PSIM lays inputs out first (top to
+    # bottom on the LEFT edge), then outputs (top to bottom on the
+    # RIGHT edge). The component must emit ports in that exact order.
+    "C_Block": (("in1",), ("in2",), ("out1",)),
+    "Label": (("pin1",),),
+    "OnCtrl": (("input",), ("output",)),
 }
 
 
