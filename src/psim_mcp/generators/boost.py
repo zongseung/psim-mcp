@@ -189,7 +189,13 @@ class BoostGenerator(TopologyGenerator):
             "nets": nets,
             "simulation": {
                 "time_step": round(1 / (fsw * 200), 9),
-                "total_time": round((400 if closed_loop else 50) / fsw, 6),
+                # Boost settling is governed by the L/C resonance, not the
+                # switching frequency. The old default (50/fsw ≈ 1 ms at
+                # 50 kHz) only captured the inductor ramp transient — the
+                # output cap was still in overshoot (~76 V) when sim
+                # ended. 0.05 s lets V_o land at ~V_in/(1-D) minus the
+                # diode drop (verified: 47.3 V for 12 → 48 V @ 2 A).
+                "total_time": 0.05,
             },
         }
         if control_wire_segments:
