@@ -14,11 +14,12 @@ Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSI
 ## 주요 기능
 
 - **자연어 회로 설계** — 한국어/영어로 회로를 설명하면 topology 자동 선택, 파라미터 계산, 회로도 생성
-- **LLM-native intent layer** — Strategy 패턴 기반 `IntentResolver` (regex / MCP sampling / hybrid 선택 가능)
+- **LLM-native intent layer** — Strategy 패턴 기반 `IntentResolver` (regex / MCP sampling / hybrid 선택 가능); `Vin=12V` / `12V input` / `입력 400V` 같은 명시·암묵 라벨 모두 인식
 - **29개 전력전자 topology** — Buck, Boost, Flyback, LLC, Full-Bridge, 3-Phase Inverter, BLDC Drive 등
-- **15개 topology PSIM 시뮬레이션 검증 완료** — 설계 → .psimsch 생성 → 시뮬레이션 → 파형 출력 전체 파이프라인
+- **PSIM 템플릿 기반 폐루프 제어** — Altair 검증된 reference schematic을 chassis로 가져와 파라미터 / C 블록 코드를 MCP가 주입. Boost vin=12V→vout=48V 정상상태 V<sub>o</sub>=48.07V·I<sub>o</sub>=2.003A 검증 완료
 - **알고리즘 기반 자동 배치** — 좌표 하드코딩 없이 CircuitGraph에서 schematic layout 자동 생성
 - **Pin-aware 와이어 라우팅** — L-shape 꺾임점이 다른 핀과 충돌하지 않도록 자동 우회
+- **PSIM 2026 강체 element 호환** — `MULTI_MOSFET` 게이트 / `VSEN` / `GATING` 등 PSIM이 PORTS를 강제 재배치하는 element에 대해 `AREA` 자동 산출 (이전 "gate floating" 에러 원인 해결)
 - **SVG + ASCII 미리보기** — 생성 전 회로도 확인, 수정, 확정 (브라우저 자동 열기)
 - **PSIM Simview 파형** — 시뮬레이션 후 Simview에서 자동으로 파형 그래프 표시
 - **대화형 설계 루프** — `design_circuit` → 질문 → `continue_design` → 미리보기 → `confirm_circuit`
@@ -30,8 +31,48 @@ Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSI
 
 | 상태 | topology (15/25) |
 |------|-----------------|
-| **검증 완료** | buck, boost, flyback, buck_boost, sepic, cuk, forward, llc, cc_cv_charger, bidirectional_buck_boost, dab, pv_mppt_boost, ev_obc, diode_bridge_rectifier, boost_pfc |
+| **검증 완료** (open-loop) | buck, boost, flyback, buck_boost, sepic, cuk, forward, llc, cc_cv_charger, bidirectional_buck_boost, dab, pv_mppt_boost, ev_obc, diode_bridge_rectifier, boost_pfc |
+| **검증 완료** (closed-loop) | boost (`closed_loop=True` → PSIM peak-current-mode reference, V<sub>o</sub>=48V @ 2A 정착) |
 | 검증 진행 중 | half_bridge, full_bridge, push_pull, thyristor_rectifier, totem_pole_pfc, three_level_npc, bldc_drive, pmsm_foc_drive, induction_motor_vf, pv_grid_tied |
+
+---
+
+## PSIM 템플릿 활용
+
+PSIM에 동봉된 검증된 예제 회로를 chassis로 가져와 **파라미터 / C 코드만 MCP가 갈아끼우는** 방식. 좌표 / 와이어 / element 배치를 직접 합성하는 것보다 안정적이며 PSIM 2026의 강체 element / 노드 병합 quirk을 우회합니다.
+
+`psim_template` directive를 generator가 emit하면 bridge의 `_handle_template_circuit`이 받아 sidecar 파일 복사 + 3종 override를 차례로 적용:
+
+```python
+psim_template = {
+    "source": r"examples\Power Supply Design Suite\Boost converter\Boost converter with peak current mode control.psimsch",
+
+    # (1) 동반 파라미터 파일을 dst 옆에 복사
+    "sidecar_files": ["parameters-main.txt"],
+
+    # (2) UTF-16 텍스트 치환으로 매크로 갈아끼우기 (Vin/Vo/Po/fsw 등)
+    "parameter_file_overrides": [
+        {"file": "parameters-main.txt", "find": "Vin = 5;",  "replace": "Vin = 12;"},
+        {"file": "parameters-main.txt", "find": "Vo = 12;",  "replace": "Vo = 48;"},
+        {"file": "parameters-main.txt", "find": "Po = 200;", "replace": "Po = 96;"},
+    ],
+
+    # (3) 회로 내부 element 파라미터 직접 갈아끼우기 (PsimSetElmValue2)
+    "parameter_overrides": [
+        {"type": "MULTI_RESISTOR", "name": "RL", "param": "Resistance", "value": "24"},
+    ],
+
+    # (4) SIMPLECBLOCK C 코드 통째 교체 — MCP가 LLM 생성 PI / MPC / 데드비트 로직을 주입
+    "c_block_overrides": [
+        {"name": "SSCB7", "code": "// MCP-generated PI\r\ny1 = x1 - x2;\r\n..."},
+    ],
+}
+```
+
+**활용 패턴**:
+- 검증된 토폴로지 → 파라미터만 치환 (안전·빠름)
+- 커스텀 제어기 실험 → PSIM chassis 유지하고 `c_block_overrides`로 알고리즘 주입 (iteration 빠름)
+- 혼합 → 한 회로의 SIMPLECBLOCK 일부만 선택적 override
 
 ---
 
@@ -118,6 +159,9 @@ run_simulation simview=true로 파형 보여줘.
 
 ```
 design_circuit으로 boost converter vin=12 vout_target=48 iout=2 만들고 confirm 후 시뮬레이션
+
+design_circuit으로 boost vin=12V vout=48V iout=2A 폐루프 시뮬레이션
+   ↳ "폐루프" / "closed loop" / "피드백" 키워드 감지 시 PSIM 검증된 reference로 라우팅
 
 design_circuit으로 flyback converter vin=400 vout_target=24 iout=3 설계해서 시뮬레이션까지
 
@@ -282,6 +326,13 @@ Claude Desktop ─stdio─→ MCP Server (Python 3.12+)
 ```
 
 PSIM API(`psimapipy`)는 별도 Python 프로세스에서 실행됩니다. 두 프로세스 사이는 JSON IPC로 통신합니다.
+
+Bridge는 두 가지 회로 생성 경로를 지원합니다:
+
+| 경로 | 트리거 | 동작 |
+|------|--------|------|
+| **컴포넌트 합성** | generator가 `components` / `nets` / `wire_segments`를 emit | bridge가 `PsimCreateNewElement`로 element 하나씩 만들고 wire 라우팅. `MULTI_MOSFET` / `VSEN` / `GATING` 등 강체 element에 대해 `AREA` 자동 산출 (이 값 없으면 PSIM이 PORTS를 임의 재배치) |
+| **PSIM 템플릿 복제** | generator가 `psim_template` directive를 emit | bridge가 PSIM 예제 .psimsch를 dst로 복사한 뒤 (i) sidecar 파일 자동 동반 (ii) UTF-16 텍스트 치환 (iii) element 파라미터 갈아끼우기 (iv) SIMPLECBLOCK CONTENT 통째 교체 |
 
 ### Pin-aware Wire Routing
 
