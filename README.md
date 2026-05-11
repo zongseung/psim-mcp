@@ -32,7 +32,7 @@ Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSI
 | 상태 | topology (15/25) |
 |------|-----------------|
 | **검증 완료** (open-loop) | buck, boost, flyback, buck_boost, sepic, cuk, forward, llc, cc_cv_charger, bidirectional_buck_boost, dab, pv_mppt_boost, ev_obc, diode_bridge_rectifier, boost_pfc |
-| **검증 완료** (closed-loop) | boost (`closed_loop=True` → PSIM peak-current-mode reference, V<sub>o</sub>=48V @ 2A 정착) |
+| **검증 완료** (closed-loop) | boost (`closed_loop=True` → PSIM peak-current-mode reference, V<sub>o</sub>=48V @ 2A 정착) · buck (`closed_loop=True` + 선택적 `c_code` → PSIM C-block digital reference, Claude 작성 PI 코드를 SSCB7에 install 후 시뮬) |
 | 검증 진행 중 | half_bridge, full_bridge, push_pull, thyristor_rectifier, totem_pole_pfc, three_level_npc, bldc_drive, pmsm_foc_drive, induction_motor_vf, pv_grid_tied |
 
 ---
@@ -173,6 +173,50 @@ design_circuit으로 ev_obc vin=220 vout_target=400 설계하고 시뮬레이션
 
 design_circuit으로 pv_mppt_boost 설계해서 PSIM에서 돌려줘
 ```
+
+### Claude가 C 코드를 작성해 SIMPLECBLOCK에 주입하기
+
+폐루프 토폴로지(현재 `buck`)는 PSIM 디지털 제어 reference schematic을 chassis로 가져오고, **Claude가 직접 작성한 C 코드를 그 안의 `SSCB7` 컴펜세이터에 install**합니다. 사용자는 알고리즘 의도만 자연어로 던지면 됩니다.
+
+```
+buck converter 48V→12V 2A 폐루프 시뮬 돌려줘.
+PI 컨트롤러는 네가 직접 C 코드로 짜서 SSCB7에 넣어줘. Kp=0.2, Ti=50μs로.
+```
+
+이 한 줄을 받으면 Claude가:
+
+1. `preview_circuit` description에서 SSCB7 호출 규약 (입력 `x1=IL_ref / x2=IL_sense / x3=Kp / x4=Ti / x5=Fsamp / x6=upper_limit / x7=lower_limit / x8=ap_start`, 출력 `y1=duty / y2=integ`) 을 읽고
+2. 그 시그니처에 맞춰 PI 컨트롤러 C 소스를 즉석 작성
+3. `preview_circuit(specs={..., "closed_loop": True, "c_code": "<생성한 코드>"})` 호출
+4. Generator → `psim_template.c_block_overrides` → bridge → `PsimSetElmValue2(sch, "SIMPLECBLOCK", "SSCB7", "CONTENT", code)` 로 자동 install
+5. PSIM이 Claude 작성 PI로 시뮬레이션 → Vo / IL / Duty 파형 반환
+
+직접 호출 형태로도 가능:
+
+```python
+preview_circuit(
+    circuit_type="buck",
+    specs={
+        "vin": 48, "vout_target": 12, "iout": 2,
+        "closed_loop": True,
+        "c_code": (
+            "static float integ = 0.0f;\r\n"
+            "float Kp = x3, Ti = x4, Fsamp = x5;\r\n"
+            "float A0 = Kp, A1 = Kp / (Ti * 2.0f * Fsamp);\r\n"
+            "if (x8) {\r\n"
+            "    float e = x1 - x2;\r\n"
+            "    integ += A1 * e;\r\n"
+            "    y1 = A0 * e + integ;\r\n"
+            "    if (y1 > x6) y1 = x6;\r\n"
+            "    if (y1 < x7) y1 = x7;\r\n"
+            "}\r\n"
+            "y2 = integ;\r\n"
+        ),
+    },
+)
+```
+
+> **검증 흐름**: chassis 파일에 Claude 코드 tag를 박아 `PsimConvertToPython`으로 다시 덤프해 보면 SSCB7 CONTENT에 해당 코드가 들어가 있음을 확인할 수 있습니다 (`[LLM-INJECTED-PI ...]` 태그). 즉 *Claude가 짠 코드 그대로* PSIM이 컴파일·실행합니다.
 
 ### 핵심 규칙
 
