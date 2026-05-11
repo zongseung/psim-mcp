@@ -621,9 +621,17 @@ class CircuitDesignService:
         if resolved_nets and not resolved_connections:
             resolved_connections = _convert_nets_to_connections(resolved_nets)
 
-        validation_issues, has_errors = _run_validation(
-            resolved_components, resolved_connections, resolved_nets,
-        )
+        # Skip structural validation when a PSIM template directive
+        # owns the circuit body — the chassis is Altair-validated, and
+        # validating the (intentionally empty) inline component list
+        # would otherwise reject the preview with STRUCT_EMPTY /
+        # ELEC_NO_SOURCE / ELEC_NO_LOAD.
+        if _gen_template is not None:
+            validation_issues, has_errors = [], False
+        else:
+            validation_issues, has_errors = _run_validation(
+                resolved_components, resolved_connections, resolved_nets,
+            )
 
         if has_errors:
             return {
@@ -659,30 +667,73 @@ class CircuitDesignService:
         ascii_diagram = preview["ascii_diagram"]
         svg_path = preview["svg_path"]
 
-        return {
-            "success": True,
-            "data": {
-                "ascii_diagram": ascii_diagram,
-                "svg_path": svg_path,
-                "circuit_type": circuit_type,
-                "preview_token": token,
-                "component_count": len(resolved_components),
-                "connection_count": len(resolved_connections),
-                "components": [
-                    {"id": c.get("id", "?"), "type": c.get("type", "?"), "parameters": c.get("parameters", {})}
-                    for c in resolved_components
+        # Template-mode preview: emit explicit metadata so callers see
+        # the PSIM chassis path + override summary instead of getting a
+        # silent component_count=0 response that looks like an empty
+        # circuit. Mirrors the annotation logic in _validate_and_render
+        # for the design_circuit-driven path.
+        is_template = _gen_template is not None
+        effective_mode = "psim_template" if is_template else generation_mode
+
+        data: dict[str, Any] = {
+            "ascii_diagram": ascii_diagram,
+            "svg_path": svg_path,
+            "circuit_type": circuit_type,
+            "preview_token": token,
+            "component_count": len(resolved_components),
+            "connection_count": len(resolved_connections),
+            "components": [
+                {"id": c.get("id", "?"), "type": c.get("type", "?"), "parameters": c.get("parameters", {})}
+                for c in resolved_components
+            ],
+            "validation_warnings": validation_issues,
+            "generation_mode": effective_mode,
+        }
+        if is_template:
+            data["psim_template"] = {
+                "source": _gen_template.get("source"),
+                "parameter_overrides": [
+                    f"{ov.get('type')}.{ov.get('name')}.{ov.get('param')}={ov.get('value')}"
+                    for ov in _gen_template.get("parameter_overrides", [])
                 ],
-                "validation_warnings": validation_issues,
-                "generation_mode": generation_mode,
-            },
-            "message": (
+                "parameter_file_overrides": [
+                    f"{sub.get('file')}: {sub.get('find')} → {sub.get('replace')}"
+                    for sub in _gen_template.get("parameter_file_overrides", [])
+                ],
+                "c_block_overrides": [
+                    ov.get("name")
+                    for ov in _gen_template.get("c_block_overrides", [])
+                ],
+                "note": (
+                    "component_count=0 is INTENTIONAL — confirm_circuit will "
+                    "clone the PSIM-validated chassis and apply the listed "
+                    "overrides. Do NOT pass Mode-2 components/connections; "
+                    "that defeats the template path."
+                ),
+            }
+
+            cblock_names = [ov.get("name") for ov in _gen_template.get("c_block_overrides", [])]
+            message = (
+                f"PSIM chassis 기반 폐루프 회로가 준비되었습니다 (token: {token}).\n"
+                f"  chassis: {_gen_template.get('source')}\n"
+                f"  파라미터 오버라이드: {len(_gen_template.get('parameter_overrides', []))}건, "
+                f"파일 치환 {len(_gen_template.get('parameter_file_overrides', []))}건"
+                + (f", C-block 코드 install: {', '.join(cblock_names)}" if cblock_names else "")
+                + "\n\n⚠️ component_count=0은 의도된 동작입니다. confirm_circuit이 "
+                f"chassis 파일을 통째로 복사하고 위 override를 적용합니다. "
+                f"components/connections를 따로 짜지 마세요.\n\n"
+                f"확정: confirm_circuit(preview_token='{token}', save_path='...')"
+            )
+        else:
+            message = (
                 f"'{circuit_type}' 회로 미리보기 (token: {token}):\n\n"
                 f"```\n{ascii_diagram}\n```\n\n"
                 f"SVG 파일이 브라우저에서 자동으로 열립니다: {svg_path}\n"
                 f"확정하려면 confirm_circuit(preview_token='{token}')을, "
                 f"수정하려면 preview_circuit을 다시 호출하세요."
-            ),
-        }
+            )
+
+        return {"success": True, "data": data, "message": message}
 
     # ------------------------------------------------------------------
     # Confirm & Create
@@ -1038,7 +1089,15 @@ class CircuitDesignService:
         if nets and not connections:
             connections = _convert_nets_to_connections(nets)
 
-        validation_issues, has_errors = _run_validation(components, connections, nets)
+        # Skip structural validation for the PSIM-template path — the
+        # generator emits empty inline components and lets the chassis
+        # file own the topology. Validating the (intentionally empty)
+        # list would falsely flag STRUCT_EMPTY / ELEC_NO_SOURCE /
+        # ELEC_NO_LOAD and reject the preview.
+        if psim_template is not None:
+            validation_issues, has_errors = [], False
+        else:
+            validation_issues, has_errors = _run_validation(components, connections, nets)
 
         if has_errors:
             return {
@@ -1075,6 +1134,15 @@ class CircuitDesignService:
         ascii_diagram = preview["ascii_diagram"]
         svg_path = preview["svg_path"]
 
+        # When the generator emitted a ``psim_template`` directive, the
+        # preview intentionally has zero components — the bridge will
+        # clone a PSIM-validated chassis at confirm time rather than
+        # synthesising elements from scratch. Annotate the response so
+        # downstream LLMs/tools don't misread component_count=0 as a
+        # broken circuit.
+        is_template = psim_template is not None
+        effective_mode = "psim_template" if is_template else generation_mode
+
         response_data: dict[str, Any] = {
             "ascii_diagram": ascii_diagram,
             "svg_path": svg_path,
@@ -1083,24 +1151,63 @@ class CircuitDesignService:
             "component_count": len(components),
             "specs_applied": specs,
             "intent": intent,
-            "generation_mode": generation_mode,
+            "generation_mode": effective_mode,
             "confidence": confidence,
             "validation_issues": validation_issues,
         }
+        if is_template:
+            response_data["psim_template"] = {
+                "source": psim_template.get("source"),
+                "parameter_overrides": [
+                    f"{ov.get('type')}.{ov.get('name')}.{ov.get('param')}={ov.get('value')}"
+                    for ov in psim_template.get("parameter_overrides", [])
+                ],
+                "parameter_file_overrides": [
+                    f"{sub.get('file')}: {sub.get('find')} → {sub.get('replace')}"
+                    for sub in psim_template.get("parameter_file_overrides", [])
+                ],
+                "c_block_overrides": [
+                    ov.get("name")
+                    for ov in psim_template.get("c_block_overrides", [])
+                ],
+                "note": (
+                    "component_count=0 is INTENTIONAL — confirm_circuit will "
+                    "clone the PSIM-validated chassis above, applying the "
+                    "listed overrides. Do NOT supply Mode-2 components/"
+                    "connections; that defeats the template path."
+                ),
+            }
         if generation_note:
             response_data["generation_note"] = generation_note
         if constraint_validation:
             response_data["constraint_validation"] = constraint_validation
 
         save_path_hint = _build_save_path_suggestion(self._config, topology)
-        message = (
-            f"'{topology}' 회로가 자동 설계되었습니다 (token: {token}):\n\n"
-            f"```\n{ascii_diagram}\n```\n\n"
-            f"SVG: {svg_path}\n"
-            f"확정: confirm_circuit(preview_token='{token}', save_path='...')\n"
-            f"권장 save_path: {save_path_hint}\n"
-            f"수정: preview_circuit 또는 design_circuit을 다시 호출하세요."
-        )
+        if is_template:
+            cblock_names = [ov.get("name") for ov in psim_template.get("c_block_overrides", [])]
+            template_summary = (
+                f"PSIM chassis 기반 폐루프 회로가 준비되었습니다 (token: {token}).\n"
+                f"  chassis: {psim_template.get('source')}\n"
+                f"  파라미터 오버라이드: {len(psim_template.get('parameter_overrides', []))}건, "
+                f"파일 치환 {len(psim_template.get('parameter_file_overrides', []))}건"
+                + (f", C-block 코드 install: {', '.join(cblock_names)}" if cblock_names else "")
+                + "\n\n"
+                f"⚠️ component_count=0은 의도된 동작입니다. confirm_circuit이 "
+                f"chassis 파일을 통째로 복사하고 위 override를 적용합니다. "
+                f"components/connections를 따로 짜지 마세요.\n\n"
+                f"확정: confirm_circuit(preview_token='{token}', save_path='...')\n"
+                f"권장 save_path: {save_path_hint}"
+            )
+            message = template_summary
+        else:
+            message = (
+                f"'{topology}' 회로가 자동 설계되었습니다 (token: {token}):\n\n"
+                f"```\n{ascii_diagram}\n```\n\n"
+                f"SVG: {svg_path}\n"
+                f"확정: confirm_circuit(preview_token='{token}', save_path='...')\n"
+                f"권장 save_path: {save_path_hint}\n"
+                f"수정: preview_circuit 또는 design_circuit을 다시 호출하세요."
+            )
         if constraint_validation and constraint_validation.get("issues"):
             warnings = [
                 i for i in constraint_validation["issues"]

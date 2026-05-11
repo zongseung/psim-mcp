@@ -51,3 +51,8 @@ Thumbs.db
 
 # Ad-hoc screenshots
 /docs
+/*.png
+/화면 캡처 2026-03-19 205150.png
+
+# Local frameworks
+/SuperClaude_Framework/
