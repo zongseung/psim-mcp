@@ -990,12 +990,18 @@ class CircuitDesignService:
                     note="템플릿은 있지만 의미 있는 설계를 위해 추가 정보가 필요합니다.",
                 )
 
-        if resolved_components:
+        # ``or gen_template`` lets template-only generators (e.g. boost
+        # closed-loop, which emits ``psim_template`` with an empty
+        # components list and lets the bridge clone a PSIM stock
+        # schematic) reach the render/store path. Without it the empty
+        # component list short-circuits to ``_no_match_response`` even
+        # though we have a fully-specified PSIM template ready to go.
+        if resolved_components or gen_template:
             return self._validate_and_render(
                 topology=topology,
-                components=resolved_components,
-                connections=resolved_connections,
-                nets=resolved_nets,
+                components=resolved_components or [],
+                connections=resolved_connections or [],
+                nets=resolved_nets or [],
                 specs=specs,
                 intent=intent,
                 generation_mode=generation_mode,

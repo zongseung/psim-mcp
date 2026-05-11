@@ -1266,32 +1266,48 @@ def _handle_template_circuit(psim_template, save_path):
         if not sch:
             return _error("PSIM_API_ERROR", "Failed to open template file.")
 
+        # PSIM's PsimSetElmValue/PsimSetElmValue2 print "Unable to
+        # update element..." to native stdout on failure (bypassing
+        # Python's try/except). That contaminates the bridge's
+        # JSON-line protocol — the parent adapter then fails to parse
+        # the next response. Wrap every override call in
+        # ``_suppress_stdout()`` so any PSIM-side failure stays silent.
         applied = 0
+        applied_failures = []
         for ov in psim_template.get("parameter_overrides", []):
             try:
-                p.PsimSetElmValue2(sch, ov["type"], ov["name"],
-                                   ov["param"], str(ov["value"]))
+                with _suppress_stdout():
+                    p.PsimSetElmValue2(sch, ov["type"], ov["name"],
+                                       ov["param"], str(ov["value"]))
                 applied += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                applied_failures.append({
+                    "type": ov.get("type"),
+                    "name": ov.get("name"),
+                    "param": ov.get("param"),
+                    "reason": str(exc),
+                })
 
         # Install SIMPLECBLOCK C-code overrides AFTER element parameter
         # overrides. Each entry: {"name": "SSCB1", "code": "y1 = x1;"}.
-        # The bridge has already validated SIMPLECBLOCK element type in
-        # ``handle_create_circuit``; here we mirror the same API
-        # contract for the template path.
         c_block_overrides = 0
+        c_block_failures = []
         for ov in psim_template.get("c_block_overrides", []):
             try:
-                p.PsimSetElmValue2(sch, "SIMPLECBLOCK", ov["name"],
-                                   "CONTENT", ov["code"])
+                with _suppress_stdout():
+                    p.PsimSetElmValue2(sch, "SIMPLECBLOCK", ov["name"],
+                                       "CONTENT", ov["code"])
                 c_block_overrides += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                c_block_failures.append({
+                    "name": ov.get("name"),
+                    "reason": str(exc),
+                })
 
         for key, val in psim_template.get("simulation_overrides", {}).items():
             try:
-                p.PsimSetElmValue(sch, None, key, str(val))
+                with _suppress_stdout():
+                    p.PsimSetElmValue(sch, None, key, str(val))
             except Exception:
                 pass
 
@@ -1305,8 +1321,10 @@ def _handle_template_circuit(psim_template, save_path):
             "mode": "template",
             "template_source": source_rel,
             "parameters_applied": applied,
+            "parameter_failures": applied_failures,
             "parameter_file_subs_applied": file_subs_applied,
             "c_block_overrides_applied": c_block_overrides,
+            "c_block_failures": c_block_failures,
             "sidecar_files": sidecar_files,
             "status": "created",
         })
@@ -1436,7 +1454,7 @@ def handle_create_circuit(params):
                 # output/converted_cblock_buck.py uses _OPTIONS_=1048592
                 # (= 0x100010); PSIM may add bit-6 (0x40) after compile
                 # but the creation value matches the reference exactly.
-                c_code: str | None = None
+                c_code = None  # str or None — typed loosely for Python 3.8/3.9
                 if psim_type == "SIMPLECBLOCK":
                     kwargs["_OPTIONS_"] = 1048592
                     c_code = comp.get("parameters", {}).get("c_code")

@@ -32,6 +32,13 @@ class BoostGenerator(TopologyGenerator):
             "closed_loop",
             "pi_gain",
             "pi_time_constant",
+            # Custom C-block CONTENT — the caller (typically an LLM)
+            # writes the PI / MPC / 데드비트 etc. controller source as
+            # a string and we route it to PSIM's SIMPLECBLOCK via
+            # ``c_block_overrides``. Optional; when absent the chassis
+            # runs its built-in analog controller.
+            "c_code",
+            "c_block_name",
         ]
 
     def synthesize(self, requirements: dict) -> "CircuitGraph":
@@ -141,6 +148,8 @@ class BoostGenerator(TopologyGenerator):
                 vin=vin, vout=vout, iout=iout, fsw=fsw,
                 duty=duty, inductance=inductance,
                 capacitance=capacitance, r_load=r_load,
+                c_code=requirements.get("c_code"),
+                c_block_name=requirements.get("c_block_name"),
             )
 
         (
@@ -194,6 +203,8 @@ class BoostGenerator(TopologyGenerator):
         self, *,
         vin: float, vout: float, iout: float, fsw: float,
         duty: float, inductance: float, capacitance: float, r_load: float,
+        c_code: str | None = None,
+        c_block_name: str | None = None,
     ) -> dict:
         """Hand off closed-loop boost to Altair's validated reference
         schematic by emitting a ``psim_template`` directive.
@@ -240,6 +251,19 @@ class BoostGenerator(TopologyGenerator):
             ],
         }
 
+        # Optional caller-supplied C-block CONTENT. When the LLM writes
+        # its own controller code, we forward it via the bridge's
+        # ``c_block_overrides`` channel. The bridge's
+        # ``PsimSetElmValue2(.. "CONTENT" ..)`` call is wrapped in
+        # ``try/except`` and silently no-ops when the chassis has no
+        # SIMPLECBLOCK with the named target — so passing ``c_code``
+        # is safe even on chassis that lack a C block (the analog
+        # controller still drives the simulation).
+        if c_code:
+            psim_template["c_block_overrides"] = [
+                {"name": c_block_name or "SSCB1", "code": c_code},
+            ]
+
         design_info = {
             "duty": round(duty, 6),
             "inductance": round(inductance, 9),
@@ -248,6 +272,10 @@ class BoostGenerator(TopologyGenerator):
             "po_rating": round(po, 4),
             "control_mode": "closed_loop_psim_reference",
             "template_source": psim_template["source"],
+            "c_block_overrides": (
+                [ov["name"] for ov in psim_template.get("c_block_overrides", [])]
+                or None
+            ),
         }
 
         # No inline components/nets — the schematic body is delivered
