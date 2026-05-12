@@ -393,8 +393,11 @@ class RealPsimAdapter(BasePsimAdapter):
         without the caller threading the path through every call.
         """
         result = await self._call_bridge("run_simulation", {"options": options or {}})
+        # _call_bridge returns the raw envelope ``{"success":..., "data":{...}}``
+        # — output_path lives inside ``data``, not at the top level.
         try:
-            self._last_output_path = result.get("output_path", "") or ""
+            data = result.get("data", {}) if isinstance(result, dict) else {}
+            self._last_output_path = data.get("output_path", "") or ""
         except Exception:
             pass
         return result
