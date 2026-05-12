@@ -23,8 +23,11 @@ def register_tools(mcp, service=None, adapter=None):
     @mcp.tool(
         description=(
             "시뮬레이션을 실행하고 결과를 자동 분석하여 성능 지표를 반환합니다. "
-            "파형 이미지도 생성할 수 있습니다. "
-            "open_simview=True이면 PSIM Simview에서 파형 그래프를 자동으로 엽니다."
+            "파형 PNG 이미지를 함께 생성합니다 (show_waveform=True 기본). "
+            "open_simview=True로 명시하면 PSIM Simview GUI를 추가로 띄우지만, "
+            "Windows에서 GUI 띄우기에 수십 초 걸려 MCP 호출 타임아웃에 걸릴 수 "
+            "있으므로 기본은 False입니다. 파형을 PSIM Simview에서 보고 싶으면 "
+            "별도로 run_simulation(simview=true)을 직접 호출하세요."
         ),
     )
     @tool_handler("analyze_simulation")
@@ -32,7 +35,7 @@ def register_tools(mcp, service=None, adapter=None):
         topology: str = "buck",
         targets: dict | None = None,
         show_waveform: bool = True,
-        open_simview: bool = True,
+        open_simview: bool = False,
     ) -> str:
         """Run simulation and analyze results with topology-specific metrics."""
         from psim_mcp.services.analysis_service import AnalysisService
