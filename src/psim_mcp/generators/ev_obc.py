@@ -205,7 +205,7 @@ class EVOBCGenerator(TopologyGenerator):
             "components": components,
             "nets": nets,
             "simulation": {
-                "time_step": round(1 / (fsw * 200), 9),
+                "time_step": round(1 / (fsw * 100), 9),
                 "total_time": round(3 / f_line, 6),  # 3 line cycles
             },
         }

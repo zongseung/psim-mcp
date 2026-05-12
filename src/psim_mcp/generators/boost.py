@@ -188,7 +188,7 @@ class BoostGenerator(TopologyGenerator):
             "components": components,
             "nets": nets,
             "simulation": {
-                "time_step": round(1 / (fsw * 200), 9),
+                "time_step": round(1 / (fsw * 100), 9),
                 # Boost settling is governed by the L/C resonance, not the
                 # switching frequency. The old default (50/fsw ≈ 1 ms at
                 # 50 kHz) only captured the inductor ramp transient — the

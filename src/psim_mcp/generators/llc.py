@@ -274,7 +274,7 @@ class LLCGenerator(TopologyGenerator):
                 # time_step: 200 pts/switching period for adequate waveform resolution
                 # total_time: 500 switching periods — LLC resonant tanks need ~100+ cycles
                 # to reach steady state; 500 cycles matches simulation_defaults.py (5ms @100kHz)
-                "time_step": round(1 / (fsw * 200), 9),
+                "time_step": round(1 / (fsw * 100), 9),
                 "total_time": round(500 / fsw, 6),
             },
         }

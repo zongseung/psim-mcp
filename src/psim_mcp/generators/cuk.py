@@ -197,7 +197,7 @@ class CukGenerator(TopologyGenerator):
             "components": components,
             "nets": nets,
             "simulation": {
-                "time_step": round(1 / (fsw * 200), 9),
+                "time_step": round(1 / (fsw * 100), 9),
                 "total_time": round(50 / fsw, 6),
             },
         }

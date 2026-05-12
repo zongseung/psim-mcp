@@ -2,7 +2,7 @@
 
 Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSIM으로 시뮬레이션하는 MCP 서버.
 
-**17개 Tool** | **1075개 테스트** | **173개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리** | **LLM-native intent (regex / sampling / hybrid)**
+**18개 Tool** | **1075개 테스트** | **173개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리** | **LLM-native intent (regex / sampling / hybrid)**
 
 ```
 "buck converter 48V to 12V 5A"
@@ -242,7 +242,7 @@ preview_circuit(
 
 ---
 
-## MCP 도구 (17개)
+## MCP 도구 (18개)
 
 ### 회로 설계
 
@@ -273,7 +273,8 @@ preview_circuit(
 
 | 도구 | 설명 |
 |------|------|
-| `analyze_simulation` | 시뮬레이션 실행 + 토폴로지별 자동 분석 + 파형 PNG 생성 |
+| `analyze_simulation` | 시뮬레이션 실행 + 토폴로지별 자동 분석 + 파형 PNG 생성 (PSIM Simview는 `open_simview=True`로 옵트인) |
+| `analyze_existing` | **이미 존재하는 .smv** 결과 파일을 분석만 — 시뮬을 재실행하지 않아 빠름. `analyze_simulation` 타임아웃 시 `run_simulation` → `analyze_existing` 2단계로 우회 |
 | `optimize_circuit` | 베이지안 최적화로 회로 파라미터 자동 튜닝 |
 
 ---
@@ -322,7 +323,7 @@ src/psim_mcp/
 ├── routing/               # WireRouting (trunk-branch, pin-aware)
 ├── services/              # CircuitDesign / Simulation / Project / Parameter
 ├── shared/                # ResponseBuilder, StateStore (preview tokens)
-├── tools/                 # 17개 MCP 도구 (FastMCP 등록)
+├── tools/                 # 18개 MCP 도구 (FastMCP 등록)
 └── utils/                 # SVG/ASCII 렌더러, 로깅, 경로 보안
 ```
 

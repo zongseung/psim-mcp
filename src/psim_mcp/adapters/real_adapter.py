@@ -65,6 +65,9 @@ class RealPsimAdapter(BasePsimAdapter):
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()  # 동시 호출 방지
         self._stderr_task: asyncio.Task | None = None
+        # Cache of the most recent simulation output (.smv) path so
+        # ``analyze_existing`` can auto-resolve graph_file when omitted.
+        self._last_output_path: str = ""
 
         # Circuit breaker state
         self._circuit_state: CircuitState = CircuitState.CLOSED
@@ -383,8 +386,18 @@ class RealPsimAdapter(BasePsimAdapter):
         )
 
     async def run_simulation(self, options: dict | None = None) -> dict:
-        """Run a simulation via the bridge."""
-        return await self._call_bridge("run_simulation", {"options": options or {}})
+        """Run a simulation via the bridge.
+
+        Caches the resulting ``.smv`` path on ``self._last_output_path`` so
+        downstream tools (notably ``analyze_existing``) can resolve it
+        without the caller threading the path through every call.
+        """
+        result = await self._call_bridge("run_simulation", {"options": options or {}})
+        try:
+            self._last_output_path = result.get("output_path", "") or ""
+        except Exception:
+            pass
+        return result
 
     async def export_results(
         self,

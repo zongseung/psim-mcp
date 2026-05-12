@@ -135,7 +135,8 @@
       "Bash(xargs -I{} sh -c 'strings \"{}\" 2>/dev/null | grep -l \"SIMPLECBLOCK\\\\|SimplifiedCBlock\" >/dev/null 2>&1 && echo \"{}\"')",
       "Bash(awk 'NR>=35 && NR<=200' /c/Users/new92/psim-mcp/src/psim_mcp/generators/buck.py)",
       "Bash(/c/Users/new92/AppData/Local/Programs/Python/Python39/python.exe *)",
-      "Bash(PYTHONIOENCODING=utf-8 uv run python -c ' *)"
+      "Bash(PYTHONIOENCODING=utf-8 uv run python -c ' *)",
+      "Bash(grep -E \"^[0-9a-f]{7,} HEAD@\")"
     ]
   }
 }

@@ -25,12 +25,16 @@ def test_create_app_returns_fastmcp():
     assert isinstance(app, FastMCP)
 
 
-def test_create_app_registers_17_tools():
+def test_create_app_registers_18_tools():
     """The factory must register the full tool surface including analysis tools."""
     app = create_app(AppConfig(psim_mode="mock"))
     tools = app._tool_manager._tools  # internal dict keyed by tool name
-    assert len(tools) == 17, f"Expected 17 tools, got {len(tools)}: {list(tools.keys())}"
+    # 18 = original 17 + analyze_existing (split out so analyze_simulation
+    # doesn't have to re-run the simulation whenever metrics are asked for
+    # — keeps each call under Claude Desktop's tool-call timeout window).
+    assert len(tools) == 18, f"Expected 18 tools, got {len(tools)}: {list(tools.keys())}"
     assert "analyze_simulation" in tools
+    assert "analyze_existing" in tools
     assert "optimize_circuit" in tools
 
 

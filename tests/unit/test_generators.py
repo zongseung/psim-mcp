@@ -212,7 +212,10 @@ def test_forward_generator_accepts_switching_frequency_alias():
 
     gating = next(c for c in result["components"] if c["id"] == "G1")
     assert gating["parameters"]["Frequency"] == 80_000
-    assert result["simulation"]["time_step"] == pytest.approx(round(1 / (80_000 * 200), 9))
+    # 100 samples/cycle (was 200): halved to stay under MCP tool-call
+    # timeout window when analyze_simulation chains run_simulation +
+    # compute_metrics + extract_signals + matplotlib render.
+    assert result["simulation"]["time_step"] == pytest.approx(round(1 / (80_000 * 100), 9))
 
 
 def test_forward_generator_uses_diode_compensated_duty_with_fixed_turns_ratio():
