@@ -1895,8 +1895,19 @@ def handle_compute_metrics(params):
     if res.Result == 0:
         return _error("READ_FAILED", "그래프 파일 읽기 실패")
 
+    # ONLY load signals actually referenced by the metric specs. Previously
+    # every curve was materialised into a Python list — for buck-cblock
+    # chassis (~20 signals × 1M points) PSIM's element-wise Values[] access
+    # took 4+ minutes and tripped the MCP tool-call timeout. Filtering down
+    # to (typically) 1-3 signals reduces analyze_existing to single-digit
+    # seconds.
+    needed_signal_names = {
+        spec.get("signal", "") for spec in metrics_spec if spec.get("signal")
+    }
     signal_data = {}
     for curve in res.Graph:
+        if needed_signal_names and curve.Name not in needed_signal_names:
+            continue
         signal_data[curve.Name] = list(curve.Values[:curve.Rows])
 
     results = {}
