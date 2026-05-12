@@ -1895,12 +1895,19 @@ def handle_compute_metrics(params):
     if res.Result == 0:
         return _error("READ_FAILED", "그래프 파일 읽기 실패")
 
-    # ONLY load signals actually referenced by the metric specs. Previously
-    # every curve was materialised into a Python list — for buck-cblock
-    # chassis (~20 signals × 1M points) PSIM's element-wise Values[] access
-    # took 4+ minutes and tripped the MCP tool-call timeout. Filtering down
-    # to (typically) 1-3 signals reduces analyze_existing to single-digit
-    # seconds.
+    # Capture every curve name up-front (cheap — just metadata, no Values[]
+    # traversal). ``available_signals`` is the caller's only diagnostic when
+    # metric specs don't match — e.g. the buck closed-loop chassis exports
+    # ``Vo`` / ``IL_sensed`` rather than the canonical ``V(Vout)`` / ``I(L1)``.
+    # Without this list a name mismatch makes analyze_existing look like a
+    # silent parse failure.
+    all_signal_names = [curve.Name for curve in res.Graph]
+
+    # ONLY materialise Values[] for signals actually referenced by the metric
+    # specs. For buck-cblock chassis (~20 signals × 1M points) loading every
+    # curve into a Python list took 4+ minutes and tripped the MCP tool-call
+    # timeout; filtering to the 1-3 referenced signals keeps analyze_existing
+    # in single-digit seconds.
     needed_signal_names = {
         spec.get("signal", "") for spec in metrics_spec if spec.get("signal")
     }
@@ -1943,7 +1950,8 @@ def handle_compute_metrics(params):
 
     return _success({
         "metrics": results,
-        "available_signals": list(signal_data.keys()),
+        "available_signals": all_signal_names,
+        "loaded_signals": list(signal_data.keys()),
         "graph_file": graph_file,
     })
 

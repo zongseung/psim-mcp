@@ -153,6 +153,44 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
             "output_voltage_ripple_pct": {"max": 10.0},
         },
     },
+    # Closed-loop buck routes through PSIM's stock C-block chassis
+    # (``examples\C Block\buck converter - digital control - C block.psimsch``).
+    # Signal names come from the chassis's ``VP`` probes (LABEL elements are
+    # NOT exported to .smv) — verified against
+    # ``buck_pi_sscb7_closed_loop_result.smv`` curve list.  The probes are:
+    #
+    #   ``Vo``                            — filtered output voltage
+    #   ``I(L1)``                         — inductor current (auto-named)
+    #   ``IL_analog``                     — same current via voltage probe
+    #   ``IL_digital``                    — ADC-quantised current (counts)
+    #   ``IL_sensed_analog_by_adc_gain``  — ADC code rescaled back to amps
+    #   ``IL_ref``                        — current reference (counts)
+    #   ``Duty_cycle`` / ``Integral_part``— controller internals
+    #
+    # Analysing this chassis with ``topology="buck"`` makes every metric
+    # report ``signal '...' not found`` (canonical buck expects ``V(Vout)``);
+    # callers must pass ``topology="buck_closed_loop"``.
+    "buck_closed_loop": {
+        "metrics": [
+            {"name": "output_voltage_mean", "signal": "Vo", "function": "mean"},
+            {"name": "output_voltage_ripple_pp", "signal": "Vo", "function": "ripple_pp"},
+            {"name": "output_voltage_ripple_pct", "signal": "Vo", "function": "ripple_percent"},
+            {"name": "inductor_current_mean", "signal": "I(L1)", "function": "mean"},
+            {"name": "inductor_current_ripple_pp", "signal": "I(L1)", "function": "ripple_pp"},
+            {"name": "il_sensed_mean", "signal": "IL_sensed_analog_by_adc_gain", "function": "mean"},
+            {"name": "il_ref_mean", "signal": "IL_ref", "function": "mean"},
+            {"name": "duty_mean", "signal": "Duty_cycle", "function": "mean"},
+        ],
+        "steady_state_skip": 0.5,
+        "primary_signals": [
+            "Vo", "I(L1)", "IL_sensed_analog_by_adc_gain", "IL_ref", "Duty_cycle",
+        ],
+        "tunable_params": [],
+        "acceptance_criteria": {
+            "output_voltage_mean": {"tolerance_pct": 5.0, "min_absolute": 0.5},
+            "output_voltage_ripple_pct": {"max": 10.0},
+        },
+    },
 }
 
 
