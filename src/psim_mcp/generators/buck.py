@@ -175,7 +175,14 @@ class BuckGenerator(TopologyGenerator):
             "nets": nets,
             "simulation": {
                 "time_step": round(1 / (fsw * 100), 9),
-                "total_time": round(50 / fsw, 6),
+                # Buck settling is governed by the L-C resonance + load
+                # damping, not the switching frequency. The old default
+                # (50/fsw ≈ 1 ms at 50 kHz) ended mid-transient — Vo
+                # was still ringing at ~44 V on a 12 V target (verified
+                # via fresh-bridge run, output mean over 0.5-1 ms window).
+                # 0.05 s matches simulation_defaults.py and lets Vo settle
+                # to the duty × Vin operating point.
+                "total_time": 0.05,
             },
         }
 

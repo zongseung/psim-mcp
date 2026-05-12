@@ -176,6 +176,36 @@ def _map_values_with_context(
     voltage_candidates: list[dict] = []
     mapping_confidence = "high"
 
+    # --- Explicit key=value syntax (highest priority) -----------------
+    # Engineers naturally write ``vin=48 vout_target=12 iout=5`` style.
+    # Without this short-circuit the unit_parser sees the bare ``48`` and
+    # the size-heuristic mis-assigns it (e.g. larger number → vin), or
+    # the next-token ``v`` of ``vout`` is mis-read as the unit for 48
+    # making the second voltage assignment off.  Run this BEFORE the
+    # context heuristic so explicit keys always win.
+    _kv_value_keys = {
+        "vin": "vin",
+        "vout_target": "vout_target",
+        "vout": "vout_target",  # alias
+        "iout": "iout",
+        "iout_target": "iout",  # alias
+        "fsw": "fsw",
+    }
+    if text:
+        for raw_key, norm_key in _kv_value_keys.items():
+            pat = re.compile(
+                rf"\b{raw_key}\s*[=:]\s*(-?\d+\.?\d*)\s*([kKmMuUnNpPμ])?",
+                re.IGNORECASE,
+            )
+            m = pat.search(text)
+            if m and norm_key not in specs:
+                val = float(m.group(1))
+                prefix = m.group(2)
+                if prefix:
+                    from psim_mcp.parsers.unit_parser import _resolve_prefix
+                    val *= _resolve_prefix(prefix)
+                specs[norm_key] = val
+
     # --- Voltage mapping (context-aware) ---
     voltages = values.get("voltage", [])
 
@@ -186,8 +216,10 @@ def _map_values_with_context(
         for v, role in voltage_contexts:
             voltage_candidates.append({"value": v, "role_hint": role})
 
-        vin_assigned = False
-        vout_assigned = False
+        # Treat explicit key=value matches (set above) as already assigned
+        # so size/context heuristics don't clobber them.
+        vin_assigned = "vin" in specs
+        vout_assigned = "vout_target" in specs
         no_context: list[float] = []
 
         for v, role in voltage_contexts:
@@ -233,19 +265,20 @@ def _map_values_with_context(
 
     # --- Non-voltage mappings ---
     currents = values.get("current", [])
-    if currents:
+    if currents and "iout" not in specs:
         specs["iout"] = currents[0]
 
     # --- Frequency mapping (context-aware) ---
     frequencies = values.get("frequency", [])
     if frequencies and text:
-        if len(frequencies) == 1:
-            specs["fsw"] = frequencies[0]
-        elif len(frequencies) >= 2:
-            sorted_freq = sorted(frequencies, reverse=True)
-            specs["fsw"] = sorted_freq[0]
-            specs["output_frequency"] = sorted_freq[-1]
-    elif frequencies:
+        if "fsw" not in specs:
+            if len(frequencies) == 1:
+                specs["fsw"] = frequencies[0]
+            elif len(frequencies) >= 2:
+                sorted_freq = sorted(frequencies, reverse=True)
+                specs["fsw"] = sorted_freq[0]
+                specs["output_frequency"] = sorted_freq[-1]
+    elif frequencies and "fsw" not in specs:
         specs["fsw"] = frequencies[0]
 
     resistances = values.get("resistance", [])
