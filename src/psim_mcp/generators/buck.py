@@ -252,6 +252,19 @@ class BuckGenerator(TopologyGenerator):
                 #  "param": "Amplitude",
                 #  "value": f"{iout * (2800 / 3.6):.0f}"},
             ],
+            # Chassis stock SimControl is TIMESTEP=5ns, TOTALTIME=5ms —
+            # tuned for a quick demo at the chassis's native operating
+            # point. A conservative PI re-tune (e.g. Kp=0.02 A⁻¹,
+            # Ti=1 ms) accumulates the integrator at only ~0.5 per
+            # second, so 5 ms is far too short to settle: the loop
+            # ends mid-ramp (Vo at ~5 V instead of the 18 V target,
+            # IL at ~1 A instead of 3.6 A — confirmed via signal_samples).
+            # Extending TOTALTIME to 50 ms gives the PI time to reach
+            # steady state without changing TIMESTEP (which would slow
+            # the PSIM engine — 10× longer at the same step density).
+            "simulation_overrides": {
+                "TOTALTIME": "0.05",
+            },
         }
 
         # Optional caller-supplied C-block CONTENT. Default target is
