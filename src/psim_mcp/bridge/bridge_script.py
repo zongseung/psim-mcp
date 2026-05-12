@@ -663,14 +663,23 @@ def handle_run_simulation(params):
             base = os.path.splitext(sch_path)[0]
             output_path = base + "_result.smv"
 
-        # 시뮬레이션 옵션을 kwargs로 전달
-        sim_kwargs = {"Simview": options.get("simview", 1)}
-        if "total_time" in options:
-            sim_kwargs["TotalTime"] = options["total_time"]
-        if "time_step" in options:
-            sim_kwargs["TimeStep"] = options["time_step"]
+        # ``TotalTime`` / ``TimeStep`` kwargs on PsimSimulate are silently
+        # ignored — PSIM reads those values from the schematic's
+        # "Simulation Control" element instead.  Patch the element directly
+        # (same call the chassis ``simulation_overrides`` flow uses).
+        for opt_key, sch_key in (("total_time", "TOTALTIME"),
+                                  ("time_step", "TIMESTEP")):
+            if opt_key in options:
+                try:
+                    with _suppress_stdout():
+                        p.PsimSetElmValue(sim_target, None, sch_key,
+                                          str(options[opt_key]))
+                except Exception:
+                    pass  # best-effort; sim may still run with schematic default
 
-        # 추가 파라미터 오버라이드
+        sim_kwargs = {"Simview": options.get("simview", 1)}
+
+        # Remaining (caller-supplied) overrides are forwarded as kwargs.
         for key, val in options.items():
             if key not in ("simview", "total_time", "time_step"):
                 sim_kwargs[key] = val
