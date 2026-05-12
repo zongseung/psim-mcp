@@ -111,8 +111,16 @@ class BuckGenerator(TopologyGenerator):
                     "NoOfPoints": 2,
                     "Switching_Points": f" 0 {int(duty * 360)}.",
                 },
-                "position": {"x": 180, "y": 170}, "direction": 0,
-                "ports": [180, 170],
+                # G1 sits EXACTLY on SW1.gate (180,120) — PSIM merges nodes via
+                # port coordinate match (no WIRE needed). e1c53f0 (May 11) moved
+                # G1 to y=170 on the theory that zero-length wires were the
+                # problem, but that broke buck open-loop: empirically the
+                # routed wire didn't connect to SW1.gate properly → I(L1)=0,
+                # switch dead, Vo stuck at ~Vin. Mar-26 AVOID_buck.psimsch with
+                # this coincident placement produces I(L1)≈10A at duty=25%
+                # Vin=100V → the port-merge path is the working one.
+                "position": {"x": 180, "y": 120}, "direction": 0,
+                "ports": [180, 120],
             },
             {
                 "id": "D1", "type": "Diode",
