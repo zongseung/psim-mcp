@@ -105,8 +105,12 @@ class AnalysisService:
                 if not passed:
                     all_pass = False
 
-        # 3. Waveform rendering -------------------------------------------
+        # 3. Waveform extraction + rendering ----------------------------
+        # We extract signal data once (used both for PNG rendering AND
+        # returned inline so the LLM caller has real numerical samples
+        # rather than having to fabricate a waveform from metric scalars.
         waveform_path = ""
+        signal_samples: dict = {}
         if show_waveform:
             try:
                 primary = topo_metrics.get("primary_signals", [])
@@ -127,6 +131,41 @@ class AnalysisService:
                         time_step=time_step_val,
                         title=f"{topology.upper()} Simulation Results",
                     )
+
+                    # Downsample to ~100 points per signal for the
+                    # inline payload (50 KB response cap). 2000-point
+                    # PNG stays full-resolution on disk; the LLM gets
+                    # a coarse summary that's enough to spot dynamics
+                    # without making it invent waveforms.
+                    inline_max = 100
+                    for name, values in signal_data.items():
+                        try:
+                            arr = list(values)
+                        except TypeError:
+                            arr = []
+                        n = len(arr)
+                        if n == 0:
+                            continue
+                        if n > inline_max:
+                            stride = max(1, n // inline_max)
+                            sampled = arr[::stride][:inline_max]
+                        else:
+                            sampled = arr
+                        signal_samples[name] = {
+                            "rows_total": n,
+                            "samples_returned": len(sampled),
+                            "stride": max(1, n // max(1, len(sampled))),
+                            "time_step": time_step_val,
+                            "first": float(sampled[0]) if sampled else 0.0,
+                            "last": float(sampled[-1]) if sampled else 0.0,
+                            "min": float(min(sampled)) if sampled else 0.0,
+                            "max": float(max(sampled)) if sampled else 0.0,
+                            "mean": (
+                                float(sum(sampled) / len(sampled))
+                                if sampled else 0.0
+                            ),
+                            "values": [float(v) for v in sampled],
+                        }
             except Exception:
                 logger.debug("Waveform rendering failed", exc_info=True)
 
@@ -136,4 +175,5 @@ class AnalysisService:
             "all_pass": all_pass,
             "available_signals": available_signals,
             "waveform_path": waveform_path,
+            "signal_samples": signal_samples,
         }

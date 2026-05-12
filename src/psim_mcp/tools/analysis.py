@@ -22,12 +22,13 @@ def register_tools(mcp, service=None, adapter=None):
 
     @mcp.tool(
         description=(
-            "시뮬레이션을 실행하고 결과를 자동 분석하여 성능 지표를 반환합니다. "
-            "파형 PNG 이미지를 함께 생성합니다 (show_waveform=True 기본). "
-            "open_simview=True로 명시하면 PSIM Simview GUI를 추가로 띄우지만, "
-            "Windows에서 GUI 띄우기에 수십 초 걸려 MCP 호출 타임아웃에 걸릴 수 "
-            "있으므로 기본은 False입니다. 파형을 PSIM Simview에서 보고 싶으면 "
-            "별도로 run_simulation(simview=true)을 직접 호출하세요."
+            "시뮬레이션을 실행하고 결과를 자동 분석하여 성능 지표 + 실제 신호 샘플 + 파형 PNG를 반환합니다. "
+            "open_simview=True로 명시하면 PSIM Simview GUI를 추가로 띄우지만, Windows에서 GUI 띄우기에 수십 초 걸려 "
+            "MCP 호출 타임아웃에 걸릴 수 있으므로 기본은 False입니다.\n\n"
+            "응답의 ``signal_samples`` 필드에 각 신호의 실제 시간 시리즈(최대 100점) + 통계가 들어갑니다. "
+            "**파형 설명 시 반드시 이 실데이터를 근거로 하세요**. 메트릭 스칼라(평균/리플/최종값)만으로 "
+            "지수 수렴 envelope이나 리플 형태를 추론해서 그리면 실제 PSIM 결과와 동떨어진 가짜 파형이 됩니다.\n"
+            "타임아웃 시 ``run_simulation(simview=false)`` → ``analyze_existing()`` 2단계로 우회 가능."
         ),
     )
     @tool_handler("analyze_simulation")
@@ -86,12 +87,16 @@ def register_tools(mcp, service=None, adapter=None):
 
     @mcp.tool(
         description=(
-            "이미 존재하는 .smv 결과 파일을 읽어 메트릭 + 파형 PNG를 생성합니다. "
+            "이미 존재하는 .smv 결과 파일을 읽어 메트릭 + 파형 PNG + 실제 신호 샘플을 반환합니다. "
             "시뮬레이션을 다시 돌리지 않으므로 빠릅니다 (5~10초). "
             "analyze_simulation이 타임아웃되는 경우 다음 흐름으로 우회하세요:\n"
             "  1) run_simulation(simview=false)으로 시뮬만 돌리고\n"
             "  2) analyze_existing(graph_file='...')로 분석만.\n"
-            "graph_file이 비어있으면 가장 최근 run_simulation의 output_path를 자동 사용합니다."
+            "graph_file이 비어있으면 가장 최근 run_simulation의 output_path를 자동 사용합니다.\n\n"
+            "응답의 ``signal_samples`` 필드에 각 신호의 실제 시간 시리즈(최대 100점 다운샘플) + "
+            "통계(min/max/mean/first/last/rows_total/stride/time_step)가 포함됩니다. "
+            "**파형을 사용자에게 설명할 때는 반드시 이 데이터를 근거로 하세요. "
+            "metrics의 스칼라 값만으로 파형을 재구성하지 마세요** (지수 수렴 / 리플 envelope 등을 추론으로 그리면 실제 시뮬과 동떨어진 가짜 파형이 나옵니다)."
         ),
     )
     @tool_handler("analyze_existing")
