@@ -231,20 +231,26 @@ class BuckGenerator(TopologyGenerator):
                 # transient is short (avoids long settling time).
                 {"type": "MULTI_CAPACITOR", "name": "C1",
                  "param": "Init__Cap__Voltage", "value": f"{vout:g}"},
-                # IL_ref source — chassis VDC T_step5 (Amplitude=2800
-                # stock). Gain is back-solved from the chassis's
-                # documented operating point: stock specs Vin=48 V,
-                # Vo=18 V, RLoad=5 Ω → Iout=3.6 A correspond to
-                # T_step5=2800 counts, so the effective sensor scale
-                # is 2800 / 3.6 ≈ 778 counts/A (chassis has internal
-                # current-sense amplifier gain that's much higher than
-                # the naive 4095/20 the ADC bit-width alone would
-                # suggest). Using this calibrated gain means
-                # ``iout=3.6`` maps back to T_step5=2800 (no change vs
-                # stock), and other iout values scale linearly.
-                {"type": "VDC", "name": "T_step5",
-                 "param": "Amplitude",
-                 "value": f"{iout * (2800 / 3.6):.0f}"},
+                # IL_ref source — chassis VDC T_step5 (stock=2800 counts).
+                # NOTE: empirically PsimSetElmValue2-ing this parameter
+                # destabilises the chassis even when the value matches
+                # the stock 2800 byte-for-byte (Vo diverges to 91 V at
+                # what should be a no-op write). Suspected cause:
+                # touching a chassis param triggers PSIM to invalidate
+                # an internal sample-rate / compile cache and the
+                # chassis's tightly-tuned digital control loop falls
+                # out of sync.
+                #
+                # For now we leave T_step5 untouched. Consequence:
+                # ``iout`` only affects RLoad sizing, not the current
+                # reference — so the chassis stays at its native ~3.6 A
+                # target regardless of the user's iout. Real retargeting
+                # of iout requires either a custom chassis (no PsimSet
+                # quirk) or finding which other element actually owns
+                # the reference signal.
+                # {"type": "VDC", "name": "T_step5",
+                #  "param": "Amplitude",
+                #  "value": f"{iout * (2800 / 3.6):.0f}"},
             ],
         }
 
