@@ -231,6 +231,17 @@ class BuckGenerator(TopologyGenerator):
                 # transient is short (avoids long settling time).
                 {"type": "MULTI_CAPACITOR", "name": "C1",
                  "param": "Init__Cap__Voltage", "value": f"{vout:g}"},
+                # IL_ref source — chassis VDC T_step5 (Amplitude=2800 stock,
+                # ≈ 13.68 A reference assuming 4095 counts / 20 A nominal
+                # ADC full-scale). Override to user's iout so SSCB7 PI
+                # actually targets the requested operating point;
+                # without this the stock chassis tries to push 13.68 A
+                # into a 6 Ω load → 82 V output → controller saturates
+                # and diverges (IL ±130 A, Vo 84 V — confirmed via
+                # signal_samples after the first c_code attempt).
+                {"type": "VDC", "name": "T_step5",
+                 "param": "Amplitude",
+                 "value": f"{iout * 4095 / 20:.0f}"},
             ],
         }
 

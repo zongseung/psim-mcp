@@ -51,6 +51,7 @@ def register_tools(mcp, service=None):
             "  토폴로지별 chassis와 SIMPLECBLOCK 호출 규약:\n"
             "  - buck (closed_loop=True): chassis 'examples\\C Block\\buck converter - digital control - C block.psimsch'\n"
             "    기본 타깃 SSCB7 (PI 컴펜세이터). 입력: x1=IL_ref, x2=IL_sense, x3=Kp, x4=Ti, x5=Fsamp, x6=upper_limit, x7=lower_limit, x8=ap_start. 출력: y1=duty word, y2=integ state.\n"
+            "    Generator가 자동 override하는 chassis element: VDC1(Vin), RLoad(R), C1(Init Vout), T_step5(IL_ref counts = iout × 4095/20). 다른 knob: CONSTANT.Kp/Ti/Fsamp/upper_limit_compensator/lower_limit_compensator — c_code가 x3..x8 무시하고 하드코딩하면 신경 안 써도 됨.\n"
             "    ⚠️ 단위 도메인: x1/x2는 ADC counts (12-bit, 0~4095, full-scale ≈ 20A), y1은 duty count word (0~upper_limit, 보통 0~1000 = 0~100%).\n"
             "    사용자가 'Kp=0.2 A⁻¹' 같은 물리 단위를 줬으면 C 코드 내부에서 변환 필수:\n"
             "       float I_max = 20.0f;       // ADC full-scale (chassis 가정값)\n"
