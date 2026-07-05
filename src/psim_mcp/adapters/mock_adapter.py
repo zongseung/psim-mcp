@@ -56,6 +56,27 @@ _DEFAULT_COMPONENTS: list[dict] = [
 ]
 
 
+# Canned PsimConvertToPython output for convert_to_python (buck-like RLC).
+# Format mirrors real PSIM 2026 converter output so the importer pipeline
+# can be exercised end-to-end in mock mode.
+_MOCK_CONVERTED_SCRIPT = """
+p1.PsimSetElmValue(sch, None, "TIMESTEP", "1E-06")
+p1.PsimSetElmValue(sch, None, "TOTALTIME", "0.05")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "SIMCONTROL", "", DIRECTION = 0, AREA = [0, 0, 40, 40], PAGE=0, XFLIP=0, _OPTIONS_=0)
+nCreatedIndex = p1.PsimCreateNewElement(sch, "VDC", "V1", AREA = [90, 100, 110, 150], DIRECTION = 0, PAGE=0, XFLIP=0, _OPTIONS_=16, PORTS=[100, 100, 100, 150], Amplitude = "48")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "MULTI_INDUCTOR", "L1", SubType="Level 1", AREA = [150, 90, 200, 110], DIRECTION = 0, PAGE=0, XFLIP=0, _OPTIONS_=16, PORTS=[150, 100, 200, 100], Inductance = "47u")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "MULTI_CAPACITOR", "C1", SubType="Level 1", AREA = [240, 100, 260, 150], DIRECTION = 90, PAGE=0, XFLIP=0, _OPTIONS_=16, PORTS=[250, 100, 250, 150], Capacitance = "100u")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "MULTI_RESISTOR", "R1", SubType="Level 1", AREA = [290, 100, 310, 150], DIRECTION = 90, PAGE=0, XFLIP=0, _OPTIONS_=16, PORTS=[300, 100, 300, 150], Resistance = "10")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "Ground", "Ground", AREA = [90, 150, 110, 170], DIRECTION = 0, PAGE=0, XFLIP=0, _OPTIONS_=16, PORTS=[100, 150])
+nCreatedIndex = p1.PsimCreateNewElement(sch, "WIRE", "", PAGE=0, X1="100", Y1="100", X2="150", Y2="100")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "WIRE", "", PAGE=0, X1="200", Y1="100", X2="250", Y2="100")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "WIRE", "", PAGE=0, X1="250", Y1="100", X2="300", Y2="100")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "WIRE", "", PAGE=0, X1="100", Y1="150", X2="250", Y2="150")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "WIRE", "", PAGE=0, X1="250", Y1="150", X2="300", Y2="150")
+nCreatedIndex = p1.PsimCreateNewElement(sch, "LABEL", "Vout", DIRECTION = 0, PORTS=[250, 100], PAGE=0, XFLIP=0, _OPTIONS_=16)
+"""
+
+
 class MockPsimAdapter(BasePsimAdapter):
     """In-memory mock that emulates PSIM responses for local development."""
 
@@ -121,10 +142,7 @@ class MockPsimAdapter(BasePsimAdapter):
                 }
 
         available = [c["id"] for c in self._current_project["components"]]
-        raise ValueError(
-            f"Component '{component_id}' not found. "
-            f"Available components: {available}"
-        )
+        raise ValueError(f"Component '{component_id}' not found. Available components: {available}")
 
     async def run_simulation(self, options: dict | None = None) -> dict:
         """Return a pre-built successful simulation result."""
@@ -193,7 +211,9 @@ class MockPsimAdapter(BasePsimAdapter):
         if signals is None:
             selected = dict(waveform_library)
         else:
-            selected = {name: waveform_library[name] for name in signals if name in waveform_library}
+            selected = {
+                name: waveform_library[name] for name in signals if name in waveform_library
+            }
 
         trimmed: dict[str, list[float]] = {}
         for name, values in selected.items():
@@ -319,6 +339,23 @@ class MockPsimAdapter(BasePsimAdapter):
             "parameter_count": sum(len(c.get("parameters", {})) for c in components),
         }
 
+    async def convert_to_python(self, path: str, output_path: str = "") -> dict:
+        """Return a canned converted script (buck-like RLC) for testing.
+
+        Mirrors the real bridge response shape:
+        ``{"success": True, "data": {"script_path", "script_text", ...}}``.
+        """
+        script_text = _MOCK_CONVERTED_SCRIPT
+        return {
+            "success": True,
+            "data": {
+                "source_path": path,
+                "script_path": output_path or f"{path}.converted.py",
+                "script_text": script_text,
+                "size": len(script_text),
+            },
+        }
+
     async def create_circuit(
         self,
         circuit_type: str,
@@ -348,7 +385,8 @@ class MockPsimAdapter(BasePsimAdapter):
             "components": components,
             "connections": connections,
             "wire_segments": wire_segments or [],
-            "simulation_settings": simulation_settings or {
+            "simulation_settings": simulation_settings
+            or {
                 "time_step": 1e-5,
                 "total_time": 0.1,
             },
@@ -376,7 +414,9 @@ def _infer_unit(parameter_name: str) -> str:
     return _UNIT_MAP.get(parameter_name, "")
 
 
-def _build_mock_signals(current_project: dict | None, last_simulation: dict | None) -> dict[str, list[float]]:
+def _build_mock_signals(
+    current_project: dict | None, last_simulation: dict | None
+) -> dict[str, list[float]]:
     """Build deterministic synthetic waveforms from the current mock project."""
     if current_project is None:
         raise RuntimeError("No project is currently open.")
@@ -427,20 +467,14 @@ def _build_mock_signals(current_project: dict | None, last_simulation: dict | No
         phase = 2.0 * math.pi * idx / samples
         transient = math.exp(-idx / 80.0)
         vout.append(
-            vout_mean
-            + 0.5 * ripple_pp * math.sin(phase * 18.0)
-            + 0.12 * vout_mean * transient
+            vout_mean + 0.5 * ripple_pp * math.sin(phase * 18.0) + 0.12 * vout_mean * transient
         )
         il1.append(
             inductor_current_mean
             + 0.5 * inductor_current_ripple * math.sin(phase * 18.0 + math.pi / 6.0)
         )
-        ilm.append(
-            0.5 * magnetizing_peak * (1.0 + math.sin(phase * 10.0 - math.pi / 4.0))
-        )
-        ilr.append(
-            math.sqrt(2.0) * resonant_rms * math.sin(phase * 22.0)
-        )
+        ilm.append(0.5 * magnetizing_peak * (1.0 + math.sin(phase * 10.0 - math.pi / 4.0)))
+        ilr.append(math.sqrt(2.0) * resonant_rms * math.sin(phase * 22.0))
 
     return {
         "V(Vout)": vout,

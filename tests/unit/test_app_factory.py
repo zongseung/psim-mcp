@@ -25,17 +25,20 @@ def test_create_app_returns_fastmcp():
     assert isinstance(app, FastMCP)
 
 
-def test_create_app_registers_18_tools():
+def test_create_app_registers_19_tools():
     """The factory must register the full tool surface including analysis tools."""
     app = create_app(AppConfig(psim_mode="mock"))
     tools = app._tool_manager._tools  # internal dict keyed by tool name
-    # 18 = original 17 + analyze_existing (split out so analyze_simulation
+    # 19 = original 17 + analyze_existing (split out so analyze_simulation
     # doesn't have to re-run the simulation whenever metrics are asked for
-    # — keeps each call under Claude Desktop's tool-call timeout window).
-    assert len(tools) == 18, f"Expected 18 tools, got {len(tools)}: {list(tools.keys())}"
+    # — keeps each call under Claude Desktop's tool-call timeout window)
+    # + import_circuit (VER2: reconstruct components+nets of an existing
+    # .psimsch via PsimConvertToPython → importer pipeline).
+    assert len(tools) == 19, f"Expected 19 tools, got {len(tools)}: {list(tools.keys())}"
     assert "analyze_simulation" in tools
     assert "analyze_existing" in tools
     assert "optimize_circuit" in tools
+    assert "import_circuit" in tools
 
 
 def test_create_app_with_explicit_config(tmp_path: Path):

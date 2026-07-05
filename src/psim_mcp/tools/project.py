@@ -41,3 +41,22 @@ def register_tools(mcp, service=None):
         """Return detailed structural information about the open project."""
         svc = service or _get_service()
         return await svc.get_project_info()
+
+    @mcp.tool(
+        description=(
+            "기존 .psimsch 회로 파일의 **완전한 구조**(소자 + 전기적 연결/넷 + 파라미터 + "
+            "시뮬레이션 설정)를 복원합니다. get_project_info와 달리 넷(어느 핀들이 서로 "
+            "연결됐는지)까지 알 수 있습니다 — 사용자가 가진 기존 회로를 이해/설명/수정할 때 "
+            "이 툴을 먼저 호출하세요.\n"
+            "응답: components(id/type/parameters/enabled), nets(id/pins/labels/role — "
+            "pins는 'L1.0' 형식 = 소자ID.핀번호), dangling_pins(미연결 핀 — disabled 소자나 "
+            "미사용 출력이면 정상), stats, simulation(TIMESTEP/TOTALTIME 등).\n"
+            "이후 set_parameter로 파라미터를 수정하고 run_simulation으로 재실행하는 "
+            "동적 수정 루프에 연결됩니다. include_graph=true면 전체 CircuitGraph dict도 반환."
+        ),
+    )
+    @tool_handler("import_circuit")
+    async def import_circuit(path: str, include_graph: bool = False) -> str:
+        """Reconstruct components + nets of an existing .psimsch schematic."""
+        svc = service or _get_service()
+        return await svc.import_circuit(path, include_graph=include_graph)

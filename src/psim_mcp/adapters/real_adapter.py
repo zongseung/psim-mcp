@@ -25,12 +25,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _MAX_CONSECUTIVE_FAILURES = 5
 _CIRCUIT_BREAKER_COOLDOWN = 30.0  # seconds before HALF_OPEN probe
-_LOCK_ACQUIRE_TIMEOUT = 10.0     # seconds to wait for asyncio.Lock
-_MAX_RESTARTS = 10               # lifetime restart cap
+_LOCK_ACQUIRE_TIMEOUT = 10.0  # seconds to wait for asyncio.Lock
+_MAX_RESTARTS = 10  # lifetime restart cap
 
 
 class CircuitState(Enum):
     """Three-state circuit breaker model (Nygard, *Release It!*)."""
+
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -39,6 +40,7 @@ class CircuitState(Enum):
 @dataclasses.dataclass
 class BridgeMetrics:
     """Observable operational metrics for the bridge subprocess."""
+
     restart_count: int = 0
     total_calls: int = 0
     failure_count: int = 0
@@ -100,11 +102,13 @@ class RealPsimAdapter(BasePsimAdapter):
         env: dict[str, str] = {}
         # Only pass essential variables
         essential_vars = [
-            "PATH",           # Required for subprocess execution
-            "SystemRoot",     # Required on Windows
-            "TEMP", "TMP",    # Temp directories
-            "HOME", "USERPROFILE",  # Home directory
-            "PSIM_PATH",      # PSIM installation
+            "PATH",  # Required for subprocess execution
+            "SystemRoot",  # Required on Windows
+            "TEMP",
+            "TMP",  # Temp directories
+            "HOME",
+            "USERPROFILE",  # Home directory
+            "PSIM_PATH",  # PSIM installation
         ]
         for var in essential_vars:
             val = os.environ.get(var)
@@ -203,8 +207,10 @@ class RealPsimAdapter(BasePsimAdapter):
 
         logger.info(
             "Starting bridge process (%d/%d): %s %s",
-            self._total_restarts, _MAX_RESTARTS,
-            self._python_exe, self._bridge_script,
+            self._total_restarts,
+            _MAX_RESTARTS,
+            self._python_exe,
+            self._bridge_script,
         )
         cmd = [self._python_exe, self._bridge_script]
 
@@ -465,6 +471,13 @@ class RealPsimAdapter(BasePsimAdapter):
     async def get_project_info(self) -> dict:
         """Query project info via the bridge."""
         return await self._call_bridge("get_project_info")
+
+    async def convert_to_python(self, path: str, output_path: str = "") -> dict:
+        """Convert a schematic to a PSIM Python script via the bridge."""
+        params: dict[str, Any] = {"path": path}
+        if output_path:
+            params["output_path"] = output_path
+        return await self._call_bridge("convert_to_python", params)
 
     async def create_circuit(
         self,

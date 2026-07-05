@@ -1,33 +1,62 @@
 # psim-mcp
 
-Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSIM으로 시뮬레이션하는 MCP 서버.
+Claude Desktop에서 **기존 PSIM 회로를 읽고 이해하고 동적으로 수정·시뮬레이션**하는 MCP 서버.
 
-**18개 Tool** | **1075개 테스트** | **173개 소스 파일** | **29개 topology** | **40+ 부품 라이브러리** | **LLM-native intent (regex / sampling / hybrid)**
+**19개 Tool** | **1098개 테스트** | **29개 topology** | **40+ 부품 라이브러리** | **넷 재구성 round-trip 무손실 (precision=recall=1.0)**
 
 ```
-"buck converter 48V to 12V 5A"
-  → Intent 추출 → Topology 선택 → CircuitGraph → Auto Layout → Routing → SVG Preview → .psimsch
+기존 .psimsch  → import_circuit (구조 완전 복원: 소자 + 넷 + 파라미터)
+              → Claude가 회로 이해
+              → set_parameter (동적 수정, 파일에 영속)
+              → run_simulation → 파형/메트릭 비교
 ```
+
+---
+
+## 주 워크플로 (VER2): 기존 회로 읽기 → 이해 → 수정 → 시뮬레이션
+
+사용자가 가진 `.psimsch` 파일을 Claude가 **구조 수준으로 이해**합니다. `.psimsch`는 바이너리지만, PSIM 자체의 `PsimConvertToPython` 변환을 경유해 소자·와이어 좌표·라벨을 100% 충실도로 추출하고, union-find 넷 재구성으로 "어느 핀들이 전기적으로 연결됐는지"까지 복원합니다.
+
+```
+Claude Desktop 프롬프트 예시:
+  "C:\...\Interleaving_Boost_Converter.psimsch 가져와서 구조 설명해줘"
+  "인덕터 전부 250uH로 바꾸고 다시 돌려서 리플 비교해줘"
+```
+
+**실회로 검증 결과** (3상 인터리빙 부스트, 53소자/38넷):
+
+| 단계 | 결과 |
+|------|------|
+| `import_circuit` | 스위칭 노드 3개·제어 체인·라벨 넷 정확 복원, dangling 4핀 = disabled 소자 (정확 진단) |
+| `set_parameter` L1-L3 125u→250u | 파일 영속, 재import로 확인 |
+| 재시뮬 비교 | I_L 리플 2.018→1.131 A (×0.56 — L 2배 시 이론 예측과 일치), Vout 폐루프 규제 유지 |
+| **round-trip** (복원→재생성→재변환→비교) | **두 실회로 모두 넷 파티션 identical, precision=recall=1.0** |
+
+읽기뿐 아니라 쓰기(`emit_script`: 그래프 → PSIM이 그대로 수용하는 생성 스크립트)까지 무손실 검증되어, 향후 구조 편집(위상 추가 등)의 기반이 됩니다.
+
+> **프로젝트 방침 (2026-07)**: 자연어→회로 **생성** 파이프라인(intent/synthesis/layout/routing)은 동결(maintenance mode)합니다. 생성 경로는 레이아웃·라우팅 추측이 구조적으로 취약한 반면(29개 중 3개만 canonical end-to-end), 읽기 경로는 PSIM 엔진이 ground truth라 추측이 없습니다. 신규 투자는 VER2(읽기·수정·재생성)에만 합니다. 상세: `docs/ver2/schematic-import-netlist-reconstruction-PRD.md`.
 
 ---
 
 ## 주요 기능
 
-- **자연어 회로 설계** — 한국어/영어로 회로를 설명하면 topology 자동 선택, 파라미터 계산, 회로도 생성
-- **LLM-native intent layer** — Strategy 패턴 기반 `IntentResolver` (regex / MCP sampling / hybrid 선택 가능); `Vin=12V` / `12V input` / `입력 400V` 같은 명시·암묵 라벨 모두 인식
-- **29개 전력전자 topology** — Buck, Boost, Flyback, LLC, Full-Bridge, 3-Phase Inverter, BLDC Drive 등
-- **PSIM 템플릿 기반 폐루프 제어** — Altair 검증된 reference schematic을 chassis로 가져와 파라미터 / C 블록 코드를 MCP가 주입. Boost vin=12V→vout=48V 정상상태 V<sub>o</sub>=48.07V·I<sub>o</sub>=2.003A 검증 완료
-- **알고리즘 기반 자동 배치** — 좌표 하드코딩 없이 CircuitGraph에서 schematic layout 자동 생성
-- **Pin-aware 와이어 라우팅** — L-shape 꺾임점이 다른 핀과 충돌하지 않도록 자동 우회
-- **PSIM 2026 강체 element 호환** — `MULTI_MOSFET` 게이트 / `VSEN` / `GATING` 등 PSIM이 PORTS를 강제 재배치하는 element에 대해 `AREA` 자동 산출 (이전 "gate floating" 에러 원인 해결)
-- **SVG + ASCII 미리보기** — 생성 전 회로도 확인, 수정, 확정 (브라우저 자동 열기)
-- **PSIM Simview 파형** — 시뮬레이션 후 Simview에서 자동으로 파형 그래프 표시
-- **대화형 설계 루프** — `design_circuit` → 질문 → `continue_design` → 미리보기 → `confirm_circuit`
-- **Mock 모드** — PSIM 없이 개발/테스트 가능 (macOS, Linux 포함)
+### 회로 읽기 · 동적 수정 (주 워크플로)
+
+- **기존 회로 구조 완전 복원** (`import_circuit`) — 소자 + **전기적 넷**(핀 연결) + 파라미터 + 시뮬 설정. PSIM `PsimConvertToPython` 경유 + ast 파싱 + union-find 넷 재구성 (T-분기/crossover/라벨-온리 넷/ground 병합/disabled 소자 전부 처리)
+- **동적 파라미터 수정 루프** — `import_circuit` → `set_parameter`(파일 영속) → `run_simulation` → `analyze_existing` 메트릭 비교
+- **무손실 round-trip** — 복원 그래프 → `emit_script` → PSIM 재생성 → 재복원 시 넷 파티션 identical (실회로 2종 검증). 구조 편집의 쓰기 경로 확보
+- **PSIM Simview 파형 / 메트릭 분석** — ripple/mean/rms/overshoot/settling, 파형 PNG
+- **Mock 모드** — PSIM 없이 개발/테스트 가능 (macOS, Linux 포함; import 파이프라인 포함)
+
+### 회로 생성 (legacy — 동결, 신규 투자 없음)
+
+- **자연어 회로 설계** — topology 자동 선택, 파라미터 계산, 회로도 생성 (`design_circuit` → `confirm_circuit`). 29개 topology 중 canonical end-to-end는 buck/flyback/llc 3개, 나머지는 템플릿 fallback
+- **PSIM 템플릿 기반 폐루프 제어** — Altair 검증 reference를 chassis로 복사 후 파라미터/C 블록 주입. 이 방식은 "검증된 회로 재사용 + 수정"이라는 점에서 VER2 철학과 같아 유지 가치 있음
+- 자동 배치(force-directed)·pin-aware 라우팅·SVG 미리보기·intent resolver(regex/sampling/hybrid) 등은 현상 유지
 
 ---
 
-## PSIM 시뮬레이션 검증 현황
+## PSIM 시뮬레이션 검증 현황 (legacy 생성 경로)
 
 | 상태 | topology (15/25) |
 |------|-----------------|
@@ -37,7 +66,7 @@ Claude Desktop에서 자연어로 전력전자 회로를 설계하고 Altair PSI
 
 ---
 
-## PSIM 템플릿 활용
+## PSIM 템플릿 활용 (생성 경로 중 유지 가치 높음)
 
 PSIM에 동봉된 검증된 예제 회로를 chassis로 가져와 **파라미터 / C 코드만 MCP가 갈아끼우는** 방식. 좌표 / 와이어 / element 배치를 직접 합성하는 것보다 안정적이며 PSIM 2026의 강체 element / 노드 병합 quirk을 우회합니다.
 
@@ -141,13 +170,28 @@ uv sync --all-extras
 }
 ```
 
-Claude Desktop을 **완전 종료** 후 재실행하면 17개 tool이 표시됩니다.
+Claude Desktop을 **완전 종료** 후 재실행하면 19개 tool이 표시됩니다.
 
 ---
 
 ## 사용법
 
-### Claude Desktop에서 프롬프트 예시
+### 기존 회로 가져오기 · 수정 (주 워크플로)
+
+```
+C:\circuits\my_boost.psimsch 를 import_circuit으로 가져와서
+어떤 회로인지, 어떤 노드들이 연결돼 있는지 설명해줘.
+```
+
+```
+이 회로 인덕터를 250uH로 바꾸고 (set_parameter),
+total_time=0.1로 다시 시뮬레이션해서 (run_simulation)
+인덕터 전류 리플이 얼마나 줄었는지 비교해줘 (analyze_existing).
+```
+
+주의: `set_parameter`는 **열린 파일에 저장**됩니다. 원본을 보존하려면 사본에서 작업하세요.
+
+### 회로 생성 프롬프트 예시 (legacy)
 
 ```
 design_circuit 도구로 buck converter vin=48 vout_target=12 iout=5 설계하고,
@@ -254,29 +298,18 @@ y2 = integ;
 
 ---
 
-## MCP 도구 (18개)
+## MCP 도구 (19개)
 
-### 회로 설계
-
-| 도구 | 설명 |
-|------|------|
-| `design_circuit` | 자연어 → 회로 설계 (topology 선택 + auto preview) |
-| `continue_design` | 추가 정보 입력하여 설계 계속 (세션 토큰 기반) |
-| `preview_circuit` | 회로 미리보기 (SVG + ASCII) |
-| `confirm_circuit` | 미리보기 확정 → .psimsch 생성 + PSIM 자동 실행 |
-| `create_circuit` | 미리보기 없이 직접 생성 |
-| `get_component_library` | 부품 라이브러리 조회 (40+ 부품) |
-| `list_circuit_templates` | 회로 템플릿 목록 (29개, 9 카테고리) |
-
-### 시뮬레이션
+### 회로 읽기 · 수정 · 시뮬레이션 (주 워크플로)
 
 | 도구 | 설명 |
 |------|------|
+| `import_circuit` | **기존 .psimsch의 완전한 구조 복원** — 소자 + 넷(핀 연결) + 파라미터 + 시뮬 설정. `get_project_info`와 달리 전기적 연결까지 반환 |
 | `open_project` | 기존 .psimsch 파일 열기 |
-| `get_project_info` | 프로젝트 구조 조회 |
-| `set_parameter` | 컴포넌트 파라미터 변경 |
+| `get_project_info` | 프로젝트 구조 조회 (소자+파라미터만 — 넷은 `import_circuit`) |
+| `set_parameter` | 컴포넌트 파라미터 변경 (열린 파일에 영속) |
 | `sweep_parameter` | 파라미터 스윕 시뮬레이션 |
-| `run_simulation` | 시뮬레이션 실행 (simview=true로 Simview 자동 열기) |
+| `run_simulation` | 시뮬레이션 실행 (`total_time`/`time_step` override, simview=true로 Simview 자동 열기) |
 | `export_results` | 결과 내보내기 (JSON/CSV) |
 | `compare_results` | 시뮬레이션 결과 비교 |
 | `get_status` | 서버/PSIM 상태 확인 |
@@ -288,6 +321,18 @@ y2 = integ;
 | `analyze_simulation` | 시뮬레이션 실행 + 토폴로지별 자동 분석 + 파형 PNG 생성 (PSIM Simview는 `open_simview=True`로 옵트인) |
 | `analyze_existing` | **이미 존재하는 .smv** 결과 파일을 분석만 — 시뮬을 재실행하지 않아 빠름. `analyze_simulation` 타임아웃 시 `run_simulation` → `analyze_existing` 2단계로 우회 |
 | `optimize_circuit` | 베이지안 최적화로 회로 파라미터 자동 튜닝 |
+
+### 회로 생성 (legacy)
+
+| 도구 | 설명 |
+|------|------|
+| `design_circuit` | 자연어 → 회로 설계 (topology 선택 + auto preview) |
+| `continue_design` | 추가 정보 입력하여 설계 계속 (세션 토큰 기반) |
+| `preview_circuit` | 회로 미리보기 (SVG + ASCII) |
+| `confirm_circuit` | 미리보기 확정 → .psimsch 생성 + PSIM 자동 실행 |
+| `create_circuit` | 미리보기 없이 직접 생성 |
+| `get_component_library` | 부품 라이브러리 조회 (40+ 부품) |
+| `list_circuit_templates` | 회로 템플릿 목록 (29개, 9 카테고리) |
 
 ---
 
@@ -317,11 +362,15 @@ y2 = integ;
 src/psim_mcp/
 ├── server.py              # FastMCP 앱 팩토리 (create_app)
 ├── config.py              # AppConfig (Pydantic settings)
-├── adapters/              # MockPsimAdapter / RealPsimAdapter
-├── bridge/                # PSIM Python 3.8/3.9 브리지 IPC
+├── adapters/              # MockPsimAdapter / RealPsimAdapter (+ convert_to_python)
+├── bridge/                # PSIM Python 3.8/3.9 브리지 IPC (10개 액션)
+├── importer/              # ★ VER2: 기존 회로 → CircuitGraph 재구성
+│   ├── parser.py          #   PsimConvertToPython 출력 ast 파싱
+│   ├── net_builder.py     #   union-find 넷 재구성 (T-분기/crossover/라벨/ground)
+│   └── roundtrip.py       #   emit_script (쓰기 경로) + compare_nets (검증)
 ├── data/                  # 8개 선언적 레지스트리 (topology, component, capability...)
-├── generators/            # 토폴로지별 generate() / synthesize()
-├── intent/                # 자연어 → 의도 추출 (Strategy 패턴)
+├── generators/            # [legacy] 토폴로지별 generate() / synthesize()
+├── intent/                # [legacy] 자연어 → 의도 추출 (Strategy 패턴)
 │   ├── resolver.py        #   IntentResolver ABC + RegexResolver + factory
 │   ├── sampling_resolver.py  # MCP sampling 기반 LLM 추출
 │   ├── sampling_schema.py    # Pydantic v2 응답 스키마
@@ -329,17 +378,34 @@ src/psim_mcp/
 │   ├── ranker.py          #   토폴로지 후보 점수화 (결정론적 안전망)
 │   ├── spec_builder.py    #   CanonicalSpec 빌더
 │   └── clarification.py   #   누락 정보 질문 정책
-├── synthesis/             # CircuitGraph 합성 (28 토폴로지)
+├── synthesis/             # CircuitGraph 데이터 모델 + [legacy] 합성 (28 토폴로지)
 ├── validators/            # 구조/전기/파라미터/그래프 검증
-├── layout/                # SchematicLayout 자동 배치 (force-directed)
-├── routing/               # WireRouting (trunk-branch, pin-aware)
+├── layout/                # [legacy] SchematicLayout 자동 배치 (force-directed)
+├── routing/               # [legacy] WireRouting (trunk-branch, pin-aware)
 ├── services/              # CircuitDesign / Simulation / Project / Parameter
 ├── shared/                # ResponseBuilder, StateStore (preview tokens)
-├── tools/                 # 18개 MCP 도구 (FastMCP 등록)
+├── tools/                 # 19개 MCP 도구 (FastMCP 등록)
 └── utils/                 # SVG/ASCII 렌더러, 로깅, 경로 보안
 ```
 
-### Canonical Synthesis Pipeline
+`[legacy]` = 동결(maintenance mode) — 버그 수정만, 신규 기능 투자 없음.
+
+### VER2 Import Pipeline (주 경로)
+
+```
+기존 .psimsch (바이너리)
+  → bridge: PsimConvertToPython        # PSIM 자체 변환, 충실도 100%
+  → importer/parser.py                 # ast 파싱: 소자 PORTS + WIRE 좌표 + LABEL
+  → importer/net_builder.py            # union-find 끝점 클러스터링
+       ├─ T-분기 연결 / crossover 비연결
+       ├─ 동명 LABEL 병합 (라벨-온리 넷)
+       └─ ground 심볼 통합
+  → CircuitGraph (components + nets)   # 기존 synthesis/graph.py 공용 포맷
+  → import_circuit 응답 → set_parameter / run_simulation 동적 수정 루프
+  → (역방향) importer/roundtrip.py emit_script → PSIM 재생성 (무손실 검증됨)
+```
+
+### Canonical Synthesis Pipeline (legacy)
 
 ```
 자연어
@@ -426,7 +492,7 @@ PSIM은 와이어 **끝점(endpoint)**에서만 전기적 연결을 인식합니
 ## 개발
 
 ```bash
-# 단위 테스트 (1075개 collected, 1074 passing)
+# 단위 테스트 (1098개 collected)
 uv run pytest tests/unit -q
 
 # 단일 파일
@@ -466,14 +532,12 @@ uv run mcp dev src/psim_mcp/server.py
 
 ## 설계 문서
 
-`docs/ver5/`에 전체 설계 문서:
-
 | 문서 | 내용 |
 |------|------|
-| `prd-and-architecture-*.md` | 최상위 PRD + 아키텍처 |
-| `phase-execution-plan.md` | Phase 1~5 실행 계획 |
-| `phase-4-routing-fix-plan.md` | PSIM 와이어 연결 문제 해결 기획서 |
-| `implementation-status.md` | 구현 현황 |
+| **`docs/ver2/schematic-import-netlist-reconstruction-PRD.md`** | **VER2 기획서 — 회로 읽기·넷 재구성·동적 수정 (현재 주 방향), Phase 0/B/B+ 실측·검증 결과 포함** |
+| `docs/ver5/prd-and-architecture-*.md` | [legacy] 생성 파이프라인 PRD + 아키텍처 |
+| `docs/ver5/phase-execution-plan.md` | [legacy] Phase 1~5 실행 계획 |
+| `docs/ver5/implementation-status.md` | [legacy] 생성 파이프라인 구현 현황 |
 
 LLM-native intent layer 마이그레이션 설계: `claudedocs/design-llm-native-intent-2026-04-28.md`.
 

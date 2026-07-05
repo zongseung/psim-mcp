@@ -139,6 +139,23 @@ class BasePsimAdapter(ABC):
         기본 구현은 아무 작업도 하지 않는다. 서브클래스에서 필요 시 오버라이드.
         """
 
+    async def convert_to_python(self, path: str, output_path: str = "") -> dict:
+        """Convert a ``.psimsch`` schematic into a PSIM Python script.
+
+        The generated script (PsimCreateNewElement calls) is the only complete
+        text representation of an existing schematic — element listing omits
+        wires, positions, and node indices. Used by the importer pipeline.
+
+        Args:
+            path: Absolute path to the ``.psimsch`` file.
+            output_path: Where to write the generated script; adapter picks a
+                temp location when empty.
+
+        Returns:
+            Dict with ``script_path`` and ``script_text``.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support convert_to_python.")
+
     @abstractmethod
     async def create_circuit(
         self,

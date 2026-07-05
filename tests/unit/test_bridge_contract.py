@@ -51,6 +51,7 @@ EXPECTED_ACTIONS = {
     "export_results",
     "get_status",
     "get_project_info",
+    "convert_to_python",
     "create_circuit",
     "extract_signals",
     "compute_metrics",

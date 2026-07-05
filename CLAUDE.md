@@ -32,10 +32,19 @@ uv run mcp dev src/psim_mcp/server.py
 
 All Python operations must use `uv run`. Never use bare `python`, `pip`, or `python -m`.
 
+## Project Direction (2026-07)
+
+**VER2 (read-modify) is the primary path; the generation pipeline is frozen.**
+`import_circuit` → understand → `set_parameter` → `run_simulation` is the main
+workflow. The intent/synthesis/layout/routing generation modules are in
+maintenance mode (bug fixes only, no new investment) — do not extend them
+unless explicitly asked. New work goes into `importer/` and the dynamic
+modification loop. See `docs/ver2/schematic-import-netlist-reconstruction-PRD.md`.
+
 ## Verified Current Status
 
-- Unit test collection: 1013 tests
-- Registered MCP tools: 17
+- Unit test collection: 1098 tests
+- Registered MCP tools: 19 (includes `import_circuit` — VER2 schematic import)
 - Total topologies in `topology_metadata.py`: 29
 - End-to-end canonical topologies: `buck`, `flyback`, `llc`
 - Topologies still using the legacy `design_circuit` path: 26

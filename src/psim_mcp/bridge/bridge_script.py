@@ -840,6 +840,48 @@ def handle_get_project_info(params):
         return _error("PSIM_ERROR", "프로젝트 정보 조회 실패: %s" % str(e))
 
 
+def handle_convert_to_python(params):
+    """스키매틱(.psimsch)을 PsimConvertToPython으로 Python 스크립트로 변환한다.
+
+    PsimGetElementList는 와이어·좌표·노드 정보를 반환하지 않으므로,
+    기존 회로의 완전한 구조(소자 PORTS + WIRE 좌표 + LABEL)를 얻는
+    유일한 API 경로가 이 변환이다. 생성된 스크립트 텍스트를 그대로
+    반환하며, 파싱은 MCP 서버 측(psim_mcp.importer)에서 수행한다.
+    """
+    path = params.get("path")
+    if not path:
+        return _error("INVALID_INPUT", "path가 지정되지 않았습니다.")
+    if not os.path.isfile(path):
+        return _error("FILE_NOT_FOUND", "파일을 찾을 수 없습니다: %s" % path)
+
+    output_path = params.get("output_path")
+    if not output_path:
+        import tempfile
+        base = os.path.splitext(os.path.basename(path))[0]
+        output_path = os.path.join(
+            tempfile.gettempdir(), "%s_converted.py" % base
+        )
+
+    try:
+        p = _get_psim()
+        ret = p.PsimConvertToPython(path, output_path)
+        if not os.path.isfile(output_path):
+            return _error(
+                "CONVERT_FAILED",
+                "PsimConvertToPython이 출력 파일을 생성하지 못했습니다 (ret=%s)." % ret,
+            )
+        with open(output_path, "r", encoding="utf-8", errors="replace") as f:
+            script_text = f.read()
+        return _success({
+            "source_path": path,
+            "script_path": output_path,
+            "script_text": script_text,
+            "size": len(script_text),
+        })
+    except Exception as e:
+        return _error("PSIM_ERROR", "스키매틱 변환 실패: %s" % str(e))
+
+
 def _resolve_pin_positions(components):
     """Build a dict: 'ComponentID.pin_name' -> (x, y) for all placed components.
 
@@ -1990,6 +2032,7 @@ _ACTION_HANDLERS = {
     "export_results": handle_export_results,
     "get_status": handle_get_status,
     "get_project_info": handle_get_project_info,
+    "convert_to_python": handle_convert_to_python,
     "create_circuit": handle_create_circuit,
     "extract_signals": handle_extract_signals,
     "compute_metrics": handle_compute_metrics,
