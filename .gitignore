@@ -56,3 +56,6 @@ Thumbs.db
 
 # Local frameworks
 /SuperClaude_Framework/
+
+# Isolated feature worktrees
+/.worktrees/
