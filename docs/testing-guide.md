@@ -14,7 +14,6 @@ PSIM-MCP Server는 **Mac에서 mock 모드로 개발하고 Windows에서 실제 
 flowchart TB
     subgraph UNIT["Unit Tests (Mac/Windows 공통)"]
         U1["validators 검증"]
-        U2["schemas 검증"]
         U3["SimulationService 로직"]
         U4["MockAdapter 동작"]
         U5["경로 보안 검증"]
@@ -44,7 +43,6 @@ tests/
 ├── unit/                          # 단위 테스트 (Mac/Windows 공통)
 │   ├── __init__.py
 │   ├── test_validators.py         # 입력 검증 로직
-│   ├── test_schemas.py            # Pydantic 모델 검증
 │   ├── test_simulation_service.py # Service Layer 비즈니스 로직
 │   ├── test_mock_adapter.py       # MockAdapter 동작 검증
 │   ├── test_path_security.py      # 경로 보안 (path traversal)
@@ -213,128 +211,7 @@ class TestOutputFormatValidation:
         assert validate_output_format("xlsx") is False
 ```
 
-### 4.2 Pydantic Schema 테스트 (`test_schemas.py`)
-
-데이터 모델의 직렬화/역직렬화 및 제약조건을 검증합니다.
-
-```python
-# tests/unit/test_schemas.py
-import pytest
-from pydantic import ValidationError
-from psim_mcp.models.schemas import (
-    OpenProjectRequest,
-    SetParameterRequest,
-    RunSimulationRequest,
-    ExportResultsRequest,
-    SweepParameterRequest,
-    ToolResponse,
-    ErrorDetail,
-)
-
-
-class TestOpenProjectRequest:
-
-    def test_valid_request(self):
-        req = OpenProjectRequest(path="C:\\projects\\buck.psimsch")
-        assert req.path == "C:\\projects\\buck.psimsch"
-
-    def test_empty_path_rejected(self):
-        with pytest.raises(ValidationError):
-            OpenProjectRequest(path="")
-
-
-class TestSetParameterRequest:
-
-    def test_valid_request(self):
-        req = SetParameterRequest(
-            component_id="SW1",
-            parameter_name="switching_frequency",
-            value=100000,
-        )
-        assert req.value == 100000
-
-    def test_missing_component_id(self):
-        with pytest.raises(ValidationError):
-            SetParameterRequest(
-                component_id="",
-                parameter_name="voltage",
-                value=48.0,
-            )
-
-
-class TestRunSimulationRequest:
-
-    def test_defaults(self):
-        req = RunSimulationRequest()
-        assert req.time_step is None
-        assert req.total_time is None
-        assert req.timeout is None
-
-    def test_custom_values(self):
-        req = RunSimulationRequest(time_step=1e-6, total_time=0.1, timeout=60)
-        assert req.time_step == 1e-6
-
-
-class TestSweepParameterRequest:
-
-    def test_valid_sweep(self):
-        req = SweepParameterRequest(
-            component_id="L1",
-            parameter_name="inductance",
-            start=10e-6,
-            end=100e-6,
-            step=10e-6,
-        )
-        assert req.start < req.end
-
-    def test_start_greater_than_end(self):
-        """start > end인 경우 ValidationError 발생."""
-        with pytest.raises(ValidationError):
-            SweepParameterRequest(
-                component_id="L1",
-                parameter_name="inductance",
-                start=100e-6,
-                end=10e-6,
-                step=10e-6,
-            )
-
-    def test_zero_step(self):
-        """step이 0이면 무한 루프 위험 → 거부."""
-        with pytest.raises(ValidationError):
-            SweepParameterRequest(
-                component_id="L1",
-                parameter_name="inductance",
-                start=10e-6,
-                end=100e-6,
-                step=0,
-            )
-
-
-class TestToolResponse:
-
-    def test_success_response(self):
-        resp = ToolResponse(
-            success=True,
-            data={"project_name": "buck"},
-            message="프로젝트가 열렸습니다.",
-        )
-        assert resp.success is True
-        assert resp.error is None
-
-    def test_error_response(self):
-        resp = ToolResponse(
-            success=False,
-            error=ErrorDetail(
-                code="FILE_NOT_FOUND",
-                message="파일을 찾을 수 없습니다.",
-                suggestion="경로를 확인해주세요.",
-            ),
-        )
-        assert resp.success is False
-        assert resp.error.code == "FILE_NOT_FOUND"
-```
-
-### 4.3 SimulationService 테스트 (`test_simulation_service.py`)
+### 4.2 SimulationService 테스트 (`test_simulation_service.py`)
 
 Service Layer의 핵심 비즈니스 로직을 검증합니다.
 
@@ -464,7 +341,7 @@ class TestGetStatus:
         assert result["data"]["mode"] == "mock"
 ```
 
-### 4.4 MockAdapter 테스트 (`test_mock_adapter.py`)
+### 4.3 MockAdapter 테스트 (`test_mock_adapter.py`)
 
 MockAdapter가 모든 인터페이스를 올바르게 구현하는지 확인합니다.
 
@@ -514,7 +391,7 @@ class TestMockAdapter:
         assert result is not None
 ```
 
-### 4.5 경로 보안 테스트 (`test_path_security.py`)
+### 4.4 경로 보안 테스트 (`test_path_security.py`)
 
 Path traversal 공격 및 경로 관련 보안 로직을 집중 검증합니다.
 
@@ -610,7 +487,7 @@ class TestValidateFileExtension:
         assert validate_file_extension("circuit.PSIMSCH") is True
 ```
 
-### 4.6 에러 응답 형식 테스트 (`test_error_responses.py`)
+### 4.5 에러 응답 형식 테스트 (`test_error_responses.py`)
 
 모든 에러 응답이 표준 형식을 따르는지 확인합니다.
 

@@ -20,6 +20,12 @@ def test_ideal_transformer_parameter_mapping_matches_converted_llc_example():
     assert mapping["ns_turns"] == "Ns__secondary_"
 
 
+def test_igbt_alias_uses_runtime_mapping():
+    mapping = _get_parameter_name_mapping("MULTI_IGBT")
+
+    assert mapping["on_resistance"] == "R_transistor"
+
+
 def test_unknown_component_type_falls_back_to_flat_map():
     mapping = _get_parameter_name_mapping("SOME_UNKNOWN_TYPE")
 

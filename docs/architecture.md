@@ -177,9 +177,6 @@ psim-mcp/
 │       │   ├── base.py            # BasePsimAdapter ABC
 │       │   ├── mock_adapter.py    # MockPsimAdapter
 │       │   └── real_adapter.py    # RealPsimAdapter (Windows)
-│       ├── models/
-│       │   ├── __init__.py
-│       │   └── schemas.py         # 데이터 모델 (Pydantic)
 │       └── utils/
 │           ├── __init__.py
 │           ├── logging.py         # 로깅 설정
@@ -190,8 +187,7 @@ psim-mcp/
 │   ├── unit/                      # Mac/공통 테스트
 │   │   ├── test_validators.py
 │   │   ├── test_simulation_service.py
-│   │   ├── test_mock_adapter.py
-│   │   └── test_schemas.py
+│   │   └── test_mock_adapter.py
 │   └── integration/               # Windows/PSIM 통합 테스트
 │       ├── test_real_adapter.py
 │       └── test_claude_desktop.py
