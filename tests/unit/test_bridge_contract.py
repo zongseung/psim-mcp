@@ -52,7 +52,6 @@ EXPECTED_ACTIONS = {
     "get_status",
     "get_project_info",
     "convert_to_python",
-    "create_circuit",
     "extract_signals",
     "compute_metrics",
 }
@@ -260,7 +259,6 @@ def real_adapter(tmp_path):
         psim_mode="real",
         psim_python_exe="python",
         psim_path=str(tmp_path),
-        psim_project_dir=tmp_path / "projects",
         psim_output_dir=tmp_path / "output",
     )
     with patch(

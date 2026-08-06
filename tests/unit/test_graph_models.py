@@ -7,14 +7,6 @@ from psim_mcp.synthesis.graph import (
     GraphComponent,
     GraphNet,
 )
-from psim_mcp.synthesis.graph_builders import (
-    make_block,
-    make_component,
-    make_net,
-    make_trace,
-)
-
-
 def test_graph_component_creation():
     c = GraphComponent(id="V1", type="DC_Source")
     assert c.id == "V1"
@@ -112,29 +104,3 @@ def test_components_in_block():
     input_comps = g.components_in_block("input")
     assert len(input_comps) == 2
     assert {c.id for c in input_comps} == {"V1", "GND1"}
-
-
-def test_make_component_helper():
-    c = make_component("V1", "DC_Source", role="input_source", parameters={"voltage": 48})
-    assert c.id == "V1"
-    assert c.role == "input_source"
-    assert c.parameters["voltage"] == 48
-
-
-def test_make_net_helper():
-    n = make_net("net1", ["V1.positive", "SW1.drain"], role="input_positive")
-    assert n.id == "net1"
-    assert n.role == "input_positive"
-
-
-def test_make_block_helper():
-    b = make_block("blk1", "input", role="input", component_ids=["V1"])
-    assert b.id == "blk1"
-    assert b.component_ids == ["V1"]
-
-
-def test_make_trace_helper():
-    t = make_trace("formula", "duty", 0.25, confidence=0.99, rationale="D=Vout/Vin")
-    assert t.source == "formula"
-    assert t.confidence == 0.99
-    assert t.rationale == "D=Vout/Vin"

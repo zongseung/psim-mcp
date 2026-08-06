@@ -27,7 +27,6 @@ class AppConfig(BaseSettings):
     psim_mode: Literal["mock", "real"] = "mock"
     psim_path: Path | None = None
     psim_python_exe: Path | None = None
-    psim_project_dir: Path | None = None
     psim_output_dir: Path | None = None
 
     # --- Logging ---
@@ -42,22 +41,6 @@ class AppConfig(BaseSettings):
     # --- Simulation ---
     simulation_timeout: int = 300
     max_sweep_steps: int = 100
-
-    # --- Preview ---
-    preview_ttl: int = 3600  # seconds
-
-    # --- Feature flags (Phase 1-5) ---
-    psim_intent_pipeline_v2: bool = True
-    psim_synthesis_enabled_topologies: list[str] = []  # empty = all supported
-    psim_graph_enabled_topologies: list[str] = []
-    psim_layout_engine_enabled_topologies: list[str] = []
-    psim_routing_enabled_topologies: list[str] = []
-
-    # --- Intent resolver strategy (Phase 0+) ---
-    # Selects the IntentResolver implementation. ``regex`` (default) preserves
-    # the deterministic pre-migration pipeline; ``sampling`` and ``hybrid`` are
-    # reserved for Phase 1. Unknown modes fall back to ``regex``.
-    intent_resolver_mode: str = "regex"
 
     # --- Security ---
     allowed_project_dirs: list[str] = []
@@ -85,14 +68,7 @@ class AppConfig(BaseSettings):
             raise ValueError(f"log_level must be one of {valid}, got '{v}'")
         return v
 
-    @field_validator(
-        "allowed_project_dirs",
-        "psim_synthesis_enabled_topologies",
-        "psim_graph_enabled_topologies",
-        "psim_layout_engine_enabled_topologies",
-        "psim_routing_enabled_topologies",
-        mode="before",
-    )
+    @field_validator("allowed_project_dirs", mode="before")
     @classmethod
     def _parse_allowed_dirs(cls, v: str | list[str]) -> list[str]:
         if isinstance(v, str):
@@ -112,7 +88,6 @@ class AppConfig(BaseSettings):
         field_examples = {
             "PSIM_PATH": r"C:\Powersim\PSIM",
             "PSIM_PYTHON_EXE": r"C:\Powersim\PSIM\python38\python.exe",
-            "PSIM_PROJECT_DIR": r"C:\Users\user\psim-projects",
             "PSIM_OUTPUT_DIR": r"C:\Users\user\psim-output",
         }
 
@@ -127,8 +102,6 @@ class AppConfig(BaseSettings):
             missing.append("PSIM_PATH")
         if self.psim_python_exe is None:
             missing.append("PSIM_PYTHON_EXE")
-        if self.psim_project_dir is None:
-            missing.append("PSIM_PROJECT_DIR")
         if self.psim_output_dir is None:
             missing.append("PSIM_OUTPUT_DIR")
 

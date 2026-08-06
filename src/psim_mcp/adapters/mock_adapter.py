@@ -356,44 +356,6 @@ class MockPsimAdapter(BasePsimAdapter):
             },
         }
 
-    async def create_circuit(
-        self,
-        circuit_type: str,
-        components: list[dict],
-        connections: list[dict],
-        save_path: str,
-        wire_segments: list[dict] | None = None,
-        simulation_settings: dict | None = None,
-        psim_template: dict | None = None,
-        nets: list[dict] | None = None,
-    ) -> dict:
-        """Mock circuit creation — stores the circuit as the current project."""
-        import copy
-
-        self._current_project = {
-            "name": _stem_from_path(save_path),
-            "path": save_path,
-            "components": copy.deepcopy(components),
-        }
-        self._last_simulation = None
-
-        return {
-            "file_path": save_path,
-            "circuit_type": circuit_type,
-            "component_count": len(components),
-            "connection_count": len(wire_segments or connections),
-            "components": components,
-            "connections": connections,
-            "wire_segments": wire_segments or [],
-            "simulation_settings": simulation_settings
-            or {
-                "time_step": 1e-5,
-                "total_time": 0.1,
-            },
-            "status": "created",
-        }
-
-
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------

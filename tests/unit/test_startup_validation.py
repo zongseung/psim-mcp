@@ -15,7 +15,6 @@ _PSIM_ENV_VARS = (
     "PSIM_MODE",
     "PSIM_PATH",
     "PSIM_PYTHON_EXE",
-    "PSIM_PROJECT_DIR",
     "PSIM_OUTPUT_DIR",
 )
 
@@ -46,8 +45,6 @@ def test_real_mode_with_all_paths_passes(tmp_path: Path):
     psim_dir.mkdir()
     python_exe = psim_dir / "python.exe"
     python_exe.touch()
-    project_dir = tmp_path / "projects"
-    project_dir.mkdir()
     output_dir = tmp_path / "output"
     output_dir.mkdir()
 
@@ -55,7 +52,6 @@ def test_real_mode_with_all_paths_passes(tmp_path: Path):
         psim_mode="real",
         psim_path=psim_dir,
         psim_python_exe=python_exe,
-        psim_project_dir=project_dir,
         psim_output_dir=output_dir,
         _env_file=None,
     )
@@ -69,7 +65,7 @@ def test_real_mode_error_lists_all_missing_fields():
         cfg.validate_real_mode()
 
     msg = str(exc_info.value)
-    for field in ("PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_PROJECT_DIR", "PSIM_OUTPUT_DIR"):
+    for field in ("PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_OUTPUT_DIR"):
         assert field in msg, f"Missing field '{field}' not found in error message"
 
 
@@ -86,7 +82,6 @@ def test_real_mode_partial_paths_raises():
     msg = str(exc_info.value)
     assert "PSIM_PATH" not in msg
     assert "PSIM_PYTHON_EXE" in msg
-    assert "PSIM_PROJECT_DIR" in msg
     assert "PSIM_OUTPUT_DIR" in msg
 
 
@@ -111,7 +106,6 @@ def test_real_mode_nonexistent_psim_path_raises(tmp_path: Path):
         psim_mode="real",
         psim_path=fake_dir,
         psim_python_exe=python_exe,
-        psim_project_dir=tmp_path,
         psim_output_dir=tmp_path,
         _env_file=None,
     )
@@ -129,7 +123,6 @@ def test_real_mode_nonexistent_python_exe_raises(tmp_path: Path):
         psim_mode="real",
         psim_path=psim_dir,
         psim_python_exe=fake_exe,
-        psim_project_dir=tmp_path,
         psim_output_dir=tmp_path,
         _env_file=None,
     )
@@ -144,15 +137,12 @@ def test_real_mode_inferrs_python_exe_from_psim_path(tmp_path: Path):
     python_dir.mkdir(parents=True)
     inferred_python = python_dir / "python.exe"
     inferred_python.touch()
-    project_dir = tmp_path / "projects"
-    project_dir.mkdir()
     output_dir = tmp_path / "output"
     output_dir.mkdir()
 
     cfg = AppConfig(
         psim_mode="real",
         psim_path=psim_dir,
-        psim_project_dir=project_dir,
         psim_output_dir=output_dir,
         _env_file=None,
     )

@@ -28,7 +28,6 @@ def adapter(tmp_path) -> RealPsimAdapter:
         psim_mode="real",
         psim_python_exe="python",
         psim_path=str(tmp_path),
-        psim_project_dir=tmp_path / "projects",
         psim_output_dir=tmp_path / "output",
     )
     with patch(

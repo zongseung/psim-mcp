@@ -11,7 +11,6 @@
         "PSIM_MODE": "real",
         "PSIM_PATH": "C:\\Powersim\\PSIM",
         "PSIM_PYTHON_EXE": "C:\\Powersim\\PSIM\\python38\\python.exe",
-        "PSIM_PROJECT_DIR": "C:\\Users\\{사용자}\\psim-projects",
         "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output",
         "LOG_LEVEL": "INFO",
         "SIMULATION_TIMEOUT": "300"
@@ -39,7 +38,6 @@
         "PSIM_MODE": "real",
         "PSIM_PATH": "C:\\Powersim\\PSIM",
         "PSIM_PYTHON_EXE": "C:\\Powersim\\PSIM\\python38\\python.exe",
-        "PSIM_PROJECT_DIR": "C:\\Users\\{사용자}\\psim-projects",
         "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output"
       }
     }

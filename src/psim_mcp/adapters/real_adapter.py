@@ -478,31 +478,3 @@ class RealPsimAdapter(BasePsimAdapter):
         if output_path:
             params["output_path"] = output_path
         return await self._call_bridge("convert_to_python", params)
-
-    async def create_circuit(
-        self,
-        circuit_type: str,
-        components: list[dict],
-        connections: list[dict],
-        save_path: str,
-        wire_segments: list[dict] | None = None,
-        simulation_settings: dict | None = None,
-        psim_template: dict | None = None,
-        nets: list[dict] | None = None,
-    ) -> dict:
-        """Create a circuit schematic via the bridge (uses psimapipy)."""
-        params: dict = {
-            "circuit_type": circuit_type,
-            "components": components,
-            "connections": connections,
-            "wire_segments": wire_segments,
-            "save_path": save_path,
-            "simulation_settings": simulation_settings,
-            "nets": nets,
-        }
-        if psim_template:
-            params["psim_template"] = psim_template
-        result = await self._call_bridge("create_circuit", params)
-        if result.get("success", False):
-            self._project_open = True
-        return result

@@ -26,7 +26,6 @@ def mock_config(analysis_test_root: Path) -> AppConfig:
     out.mkdir(exist_ok=True)
     return AppConfig(
         psim_mode="mock",
-        psim_project_dir=analysis_test_root / "projects",
         psim_output_dir=out,
         log_dir=analysis_test_root / "logs",
         allowed_project_dirs=[str(analysis_test_root.resolve())],
