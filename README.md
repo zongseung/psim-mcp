@@ -105,7 +105,7 @@ PSIM_OUTPUT_DIR=./output
 | `PSIM_PATH` | 없음 | real 모드의 PSIM 설치 경로 |
 | `PSIM_PYTHON_EXE` | 없음 | PSIM Python 3.9 실행 파일 |
 | `PSIM_OUTPUT_DIR` | 없음 | real 모드에서 필요한 시뮬레이션 결과 디렉터리 |
-| `LOG_DIR` | `./logs` | 로그 디렉터리 |
+| `LOG_DIR` | `<저장소>/logs` | 로그 디렉터리 |
 | `LOG_LEVEL` | `INFO` | 로그 수준 |
 | `SERVER_TRANSPORT` | `stdio` | `stdio` 또는 `sse` |
 | `SERVER_HOST` | `127.0.0.1` | SSE 서버 호스트 |
