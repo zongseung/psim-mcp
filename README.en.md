@@ -6,6 +6,8 @@
 
 An MCP server for Claude Desktop that opens existing PSIM circuits, analyzes their structure and results, changes needed parameters, and runs simulations. It does not provide tools for creating new circuits.
 
+`real` is the mode for actual product use; `mock` is only a development and test aid when PSIM is unavailable.
+
 ## Existing-circuit workflow
 
 1. Open an existing `.psimsch` file with `open_project`.

@@ -148,10 +148,11 @@ Check that no translation invents capabilities, reintroduces generation, changes
 
 For each README, assert all 12 current tool names exist, all seven removed tool names are absent, and all four language links exist. Run `git diff --check` on the four READMEs and `.env.example`.
 
-### Task 4: Verify, commit, and push main
+### Task 4: Verify committed deliverables and push main
 
-**Files:**
-- Commit: `.env.example`, `README.md`, `README.en.md`, `README.ja.md`, `README.zh-CN.md`
+**Intended tracked diff (7 files):**
+- Planning documents: `docs/superpowers/specs/2026-08-06-real-mode-multilingual-readme-design.md`, `docs/superpowers/plans/2026-08-06-real-mode-multilingual-readmes.md`
+- Product documentation: `.env.example`, `README.md`, `README.en.md`, `README.ja.md`, `README.zh-CN.md`
 - Do not commit: `.env`, `output/`, or any pre-existing user changes
 
 **Interfaces:**
@@ -173,24 +174,23 @@ Expected: the complete suite passes and Ruff reports no errors in product/test c
 
 Expected: the same PSIM version and successful read-only import as Task 1.
 
-- [ ] **Step 3: Stage only intended tracked files**
+- [ ] **Step 3: Verify the intended committed file set**
 
 Run:
 
 ```powershell
-git add -- .env.example README.md README.en.md README.ja.md README.zh-CN.md
-git diff --cached --name-status
+git diff --name-status origin/main...HEAD
+git log --oneline --decorate origin/main..HEAD
 git check-ignore -v .env output
 ```
 
-Expected: exactly five tracked documentation files are staged; local operational files remain ignored.
+Expected: the committed diff contains exactly the two planning documents and five product documentation files listed above. Product documentation already committed task-by-task is not re-staged or re-committed; local operational files remain ignored.
 
-- [ ] **Step 4: Commit and push main**
+- [ ] **Step 4: Push main**
 
 Run:
 
 ```powershell
-git commit -m "docs: enable real mode and add multilingual readmes"
 git push origin main
 ```
 
