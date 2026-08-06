@@ -1,9 +1,4 @@
-"""Simulation service -- runs simulations and manages results.
-
-This is the slimmed-down version after MSA refactoring.  Project management,
-parameter handling, and circuit creation have been extracted into dedicated
-services (``ProjectService``, ``ParameterService``, ``CircuitDesignService``).
-"""
+"""Simulation service -- runs simulations and manages results."""
 
 from __future__ import annotations
 
@@ -20,7 +15,6 @@ from psim_mcp.services.validators import (
     validate_output_format,
     validate_parameter_value,
     validate_project_path,
-    validate_save_path,
     validate_signals_list,
     validate_simulation_options,
     validate_string_length,
@@ -30,36 +24,6 @@ if TYPE_CHECKING:
     from psim_mcp.adapters.base import BasePsimAdapter
     from psim_mcp.config import AppConfig
     from psim_mcp.shared.protocols import ProjectServiceProtocol
-
-
-def _get_allowed_save_dirs(config: AppConfig | None) -> list[str] | None:
-    """Resolve allowed output roots for newly created schematics.
-
-    Only restricts when ``allowed_project_dirs`` is explicitly configured.
-    """
-    if config is None:
-        return None
-    if config.allowed_project_dirs:
-        return config.allowed_project_dirs
-    return None
-
-
-def _build_save_path_suggestion(
-    config: AppConfig | None,
-    circuit_type: str = "circuit",
-) -> str:
-    """Describe valid save roots and provide a safe example path."""
-    allowed_dirs = _get_allowed_save_dirs(config)
-    if not allowed_dirs:
-        return "Use a valid .psimsch path."
-
-    example_root = allowed_dirs[-1]
-    example_path = f"{example_root}\\{circuit_type}.psimsch"
-    roots = ", ".join(allowed_dirs)
-    return (
-        f"Use a .psimsch path under one of the configured save roots: {roots}. "
-        f"Example: {example_path}"
-    )
 
 
 class SimulationService:
@@ -73,9 +37,6 @@ class SimulationService:
     For backward compatibility it also retains delegate methods that forward
     to the appropriate domain service when called via legacy code paths.
 
-    Phase 1-5 boundary: This service remains a compatibility layer, but it can
-    now consume enriched circuit payloads that include graph/layout/routing
-    projections in addition to legacy component/connection data.
     """
 
     def __init__(
@@ -284,153 +245,6 @@ class SimulationService:
         return await self._audit.execute_with_audit(
             "set_parameter",
             {"component_id": component_id, "parameter_name": parameter_name},
-            _handler,
-        )
-
-    async def create_circuit(
-        self,
-        circuit_type: str,
-        components: list[dict],
-        connections: list[dict],
-        save_path: str,
-        simulation_settings: dict | None = None,
-        circuit_spec: dict | None = None,
-        wire_segments: list[dict] | None = None,
-    ) -> dict:
-        """Backward compat: circuit creation (will be removed)."""
-        from psim_mcp.bridge.wiring import nets_to_connections
-        from psim_mcp.data.component_library import resolve_psim_element_type
-        from psim_mcp.validators import validate_circuit as validate_circuit_spec
-
-        def _nets_to_connections(nets: list[dict]) -> list[dict]:
-            conns = []
-            for net in nets:
-                pins = net.get("pins", [])
-                for i in range(len(pins) - 1):
-                    conns.append({"from": pins[i], "to": pins[i + 1]})
-            return conns
-
-        def _enrich(comps: list[dict]) -> list[dict]:
-            enriched = []
-            for c in comps:
-                item = dict(c)
-                item["psim_element_type"] = resolve_psim_element_type(str(item.get("type", "")))
-                enriched.append(item)
-            return enriched
-
-        async def _handler():
-            nonlocal components, connections, wire_segments
-
-            if not circuit_type or not isinstance(circuit_type, str):
-                return ResponseBuilder.error(
-                    code="VALIDATION_ERROR",
-                    message="circuit_type은 비어 있지 않은 문자열이어야 합니다.",
-                )
-
-            if circuit_spec is not None:
-                graph_data = circuit_spec.get("graph")
-                layout_data = circuit_spec.get("layout")
-                routing_data = circuit_spec.get("routing") or circuit_spec.get("wire_routing")
-
-                if graph_data is not None and layout_data is not None:
-                    try:
-                        from psim_mcp.layout.materialize import materialize_to_legacy
-                        from psim_mcp.layout.models import SchematicLayout
-                        from psim_mcp.synthesis.graph import CircuitGraph
-
-                        graph = CircuitGraph.from_dict(graph_data) if isinstance(graph_data, dict) else graph_data
-                        layout = SchematicLayout.from_dict(layout_data) if isinstance(layout_data, dict) else layout_data
-                        components, nets = materialize_to_legacy(graph, layout)
-                    except Exception:
-                        components = circuit_spec.get("components", components)
-                        nets = circuit_spec.get("nets", [])
-                else:
-                    components = circuit_spec.get("components", components)
-                    nets = circuit_spec.get("nets", [])
-
-                wire_segments = circuit_spec.get("wire_segments", wire_segments)
-                if not wire_segments and routing_data is not None:
-                    try:
-                        from psim_mcp.routing.models import WireRouting
-
-                        routing = WireRouting.from_dict(routing_data) if isinstance(routing_data, dict) else routing_data
-                        wire_segments = routing.to_legacy_segments()
-                    except Exception:
-                        pass
-
-                if nets:
-                    try:
-                        connections = nets_to_connections(nets)
-                    except Exception:
-                        connections = _nets_to_connections(nets)
-
-            if not components or not isinstance(components, list):
-                return ResponseBuilder.error(
-                    code="VALIDATION_ERROR",
-                    message="components는 비어 있지 않은 리스트여야 합니다.",
-                )
-
-            if not save_path or not isinstance(save_path, str):
-                return ResponseBuilder.error(
-                    code="VALIDATION_ERROR",
-                    message="save_path가 지정되지 않았습니다.",
-                )
-
-            if not save_path.endswith(".psimsch"):
-                return ResponseBuilder.error(
-                    code="VALIDATION_ERROR",
-                    message="save_path는 .psimsch 확장자여야 합니다.",
-                )
-
-            save_path_validation = validate_save_path(
-                save_path,
-                allowed_dirs=_get_allowed_save_dirs(self._config),
-            )
-            if not save_path_validation.is_valid:
-                return ResponseBuilder.error(
-                    code=save_path_validation.error_code or "VALIDATION_ERROR",
-                    message=save_path_validation.error_message or "Invalid save_path.",
-                    suggestion=_build_save_path_suggestion(self._config, circuit_type),
-                )
-
-            validation_input = {
-                "components": components,
-                "nets": circuit_spec.get("nets", []) if circuit_spec else [],
-            }
-            validation = validate_circuit_spec(validation_input)
-            if not validation.is_valid:
-                error_messages = "; ".join(e.message for e in validation.errors)
-                return ResponseBuilder.error(
-                    code="CIRCUIT_VALIDATION_FAILED",
-                    message=f"회로 검증 실패: {error_messages}",
-                )
-
-            bridge_components = _enrich(components)
-
-            try:
-                data = await self._adapter.create_circuit(
-                    circuit_type=circuit_type,
-                    components=bridge_components,
-                    connections=connections or [],
-                    wire_segments=wire_segments,
-                    save_path=save_path,
-                    simulation_settings=simulation_settings,
-                )
-                return ResponseBuilder.success(
-                    data,
-                    f"'{circuit_type}' 회로가 성공적으로 생성되었습니다. "
-                    f"컴포넌트 {len(components)}개, 연결 {len(connections or [])}개.",
-                )
-            except Exception:
-                self._logger.exception("Failed to create circuit")
-                return ResponseBuilder.error(
-                    code="CREATE_CIRCUIT_FAILED",
-                    message="회로 생성 중 오류가 발생했습니다.",
-                )
-
-        return await self._audit.execute_with_audit(
-            "create_circuit",
-            {"circuit_type": circuit_type, "component_count": len(components)},
             _handler,
         )
 

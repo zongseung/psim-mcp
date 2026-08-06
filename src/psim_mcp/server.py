@@ -49,7 +49,6 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
     from psim_mcp.services.project_service import ProjectService
     from psim_mcp.services.parameter_service import ParameterService
     from psim_mcp.services.simulation_service import SimulationService
-    from psim_mcp.services.circuit_design_service import CircuitDesignService
 
     project_svc = ProjectService(adapter=adapter, config=config)
     parameter_svc = ParameterService(
@@ -58,15 +57,11 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
     simulation_svc = SimulationService(
         adapter=adapter, config=config, project_service=project_svc,
     )
-    circuit_design_svc = CircuitDesignService(
-        adapter=adapter, config=config,
-    )
 
     return {
         "project": project_svc,
         "parameter": parameter_svc,
         "simulation": simulation_svc,
-        "circuit_design": circuit_design_svc,
         "_adapter": adapter,
         # Legacy: combined service for backward compat
         "_legacy": simulation_svc,
@@ -86,15 +81,13 @@ def create_service(config: AppConfig):
 
 def register_all_tools(mcp: FastMCP, services: dict) -> None:
     """Register every tool module on *mcp* using domain services."""
-    from psim_mcp.tools import analysis, circuit, design, parameter, project, results, simulation
+    from psim_mcp.tools import analysis, parameter, project, results, simulation
 
     # Use dedicated services for each tool module
     project.register_tools(mcp, services["project"])
     parameter.register_tools(mcp, services["_legacy"])
     simulation.register_tools(mcp, services["simulation"])
     results.register_tools(mcp, services["_legacy"])
-    circuit.register_tools(mcp, services["circuit_design"])
-    design.register_tools(mcp, services["circuit_design"])
     analysis.register_tools(mcp, services["simulation"], services["_adapter"])
 
 

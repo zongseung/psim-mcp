@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,6 @@ def mock_config(tmp_path: Path) -> AppConfig:
     out.mkdir()
     return AppConfig(
         psim_mode="mock",
-        psim_project_dir=tmp_path / "projects",
         psim_output_dir=out,
         log_dir=tmp_path / "logs",
         allowed_project_dirs=[str(tmp_path)],
@@ -164,38 +162,8 @@ async def test_export_no_output_dir_no_config(tmp_path: Path):
 
 def test_real_mode_startup_fails_without_config(monkeypatch):
     """create_app with real mode but missing paths must raise ValueError."""
-    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_PROJECT_DIR", "PSIM_OUTPUT_DIR"):
+    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_OUTPUT_DIR"):
         monkeypatch.delenv(var, raising=False)
     cfg = AppConfig(psim_mode="real", _env_file=None)
     with pytest.raises(ValueError, match="PSIM_MODE=real"):
         create_app(cfg)
-
-
-async def test_continue_design_keeps_asking_when_template_not_design_ready(mock_config: AppConfig):
-    """continue_design should not fall through to template preview without design-ready specs."""
-    app = create_app(mock_config)
-
-    raw = await app._tool_manager.call_tool(
-        "design_circuit",
-        {"description": "푸시풀 컨버터"},
-        convert_result=False,
-    )
-    first = json.loads(raw)
-    assert first["success"] is True
-    # push_pull requires vin, vout_target, iout — missing fields cause need_specs or confirm_intent
-    action = first["data"]["action"]
-    assert action in ("confirm_intent", "need_specs")
-
-    if action == "confirm_intent":
-        token = first["data"]["design_session_token"]
-        raw = await app._tool_manager.call_tool(
-            "continue_design",
-            {"design_session_token": token},
-            convert_result=False,
-        )
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert result["data"]["action"] == "need_specs"
-    else:
-        result = first
-    assert "missing_fields" in result["data"]

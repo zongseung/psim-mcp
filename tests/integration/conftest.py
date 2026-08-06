@@ -18,10 +18,8 @@ from psim_mcp.server import create_app
 def integration_config(tmp_path: Path) -> AppConfig:
     """AppConfig in mock mode with isolated temp directories."""
     (tmp_path / "output").mkdir()
-    (tmp_path / "projects").mkdir()
     return AppConfig(
         psim_mode="mock",
-        psim_project_dir=tmp_path / "projects",
         psim_output_dir=tmp_path / "output",
         log_dir=tmp_path / "logs",
         allowed_project_dirs=[str(tmp_path)],
@@ -32,11 +30,6 @@ def integration_config(tmp_path: Path) -> AppConfig:
 def app(integration_config: AppConfig):
     """Fully wired FastMCP app created through the production factory."""
     return create_app(integration_config)
-
-
-@pytest.fixture
-def circuit_design_service(app):
-    return app._services["circuit_design"]
 
 
 @pytest.fixture

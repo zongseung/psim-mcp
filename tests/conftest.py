@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import glob
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,28 +9,11 @@ import pytest
 from psim_mcp.config import AppConfig
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _cleanup_preview_svgs():
-    """Clean up preview SVG files generated during tests.
-
-    Runs once at the end of the full test session.
-    Prevents accumulation of psim_preview_*.svg in the temp directory.
-    """
-    yield
-    pattern = os.path.join(tempfile.gettempdir(), "psim_preview_*.svg")
-    for svg_file in glob.glob(pattern):
-        try:
-            os.remove(svg_file)
-        except OSError:
-            pass
-
-
 @pytest.fixture
 def test_config(tmp_path: Path) -> AppConfig:
     """AppConfig wired for mock mode with temporary directories."""
     return AppConfig(
         psim_mode="mock",
-        psim_project_dir=tmp_path / "projects",
         psim_output_dir=tmp_path / "output",
         log_dir=tmp_path / "logs",
         allowed_project_dirs=[str(tmp_path)],

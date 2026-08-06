@@ -25,20 +25,25 @@ def test_create_app_returns_fastmcp():
     assert isinstance(app, FastMCP)
 
 
-def test_create_app_registers_19_tools():
-    """The factory must register the full tool surface including analysis tools."""
+EXPECTED_TOOLS = {
+    "open_project",
+    "get_project_info",
+    "import_circuit",
+    "set_parameter",
+    "sweep_parameter",
+    "run_simulation",
+    "export_results",
+    "compare_results",
+    "get_status",
+    "analyze_simulation",
+    "analyze_existing",
+    "optimize_circuit",
+}
+
+
+def test_create_app_registers_supported_tools():
     app = create_app(AppConfig(psim_mode="mock"))
-    tools = app._tool_manager._tools  # internal dict keyed by tool name
-    # 19 = original 17 + analyze_existing (split out so analyze_simulation
-    # doesn't have to re-run the simulation whenever metrics are asked for
-    # — keeps each call under Claude Desktop's tool-call timeout window)
-    # + import_circuit (VER2: reconstruct components+nets of an existing
-    # .psimsch via PsimConvertToPython → importer pipeline).
-    assert len(tools) == 19, f"Expected 19 tools, got {len(tools)}: {list(tools.keys())}"
-    assert "analyze_simulation" in tools
-    assert "analyze_existing" in tools
-    assert "optimize_circuit" in tools
-    assert "import_circuit" in tools
+    assert set(app._tool_manager._tools) == EXPECTED_TOOLS
 
 
 def test_create_app_with_explicit_config(tmp_path: Path):
@@ -71,7 +76,6 @@ def test_create_adapter_real_skipped_or_mocked(tmp_path: Path):
         psim_mode="real",
         psim_path=tmp_path / "psim.exe",
         psim_python_exe=tmp_path / "python.exe",
-        psim_project_dir=tmp_path / "projects",
         psim_output_dir=tmp_path / "output",
     )
     # We mock RealPsimAdapter since it may not be importable everywhere.
@@ -104,7 +108,7 @@ def test_create_service_returns_simulation_service():
 
 def test_create_app_real_mode_missing_fields_raises(monkeypatch):
     """create_app with psim_mode='real' but missing paths must raise ValueError."""
-    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_PROJECT_DIR", "PSIM_OUTPUT_DIR"):
+    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_OUTPUT_DIR"):
         monkeypatch.delenv(var, raising=False)
     cfg = AppConfig(psim_mode="real", _env_file=None)
     with pytest.raises(ValueError, match="PSIM_MODE=real"):
