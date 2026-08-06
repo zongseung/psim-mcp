@@ -7,6 +7,7 @@ Claude Desktop에서 **기존 PSIM 회로를 읽고 이해하고 동적으로 �
 ```
 기존 .psimsch → import_circuit (소자 + 넷 + 파라미터 복원)
               → 회로 이해
+              → open_project (수정·시뮬레이션 대상 열기)
               → set_parameter (열린 파일에 영속)
               → run_simulation → analyze_existing
 ```
@@ -51,8 +52,8 @@ uv sync --all-extras
       "command": "C:\\Users\\{사용자}\\psim-mcp\\.venv\\Scripts\\psim-mcp.exe",
       "env": {
         "PSIM_MODE": "real",
-        "PSIM_PATH": "C:\\Altair\\Altair_PSIM_2026",
-        "PSIM_PYTHON_EXE": "C:\\Users\\{사용자}\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
+        "PSIM_PATH": "C:\\Powersim\\PSIM",
+        "PSIM_PYTHON_EXE": "C:\\Powersim\\PSIM\\python38\\python.exe",
         "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output"
       }
     }
@@ -110,7 +111,8 @@ C:\circuits\my_boost.psimsch를 가져와서 구조를 설명해줘.
   → importer/parser.py
   → importer/net_builder.py (T-분기, 라벨, ground를 포함한 넷 재구성)
   → CircuitGraph (components + nets)
-  → import_circuit 응답 → set_parameter / run_simulation / analysis
+  → import_circuit 응답 → open_project (수정·시뮬레이션 대상 설정)
+  → set_parameter / run_simulation / analysis
   → importer/roundtrip.py emit_script → PSIM 재생성
 ```
 

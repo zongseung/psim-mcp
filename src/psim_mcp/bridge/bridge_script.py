@@ -41,10 +41,8 @@ except Exception:  # pragma: no cover - bridge must still run in PSIM's isolated
     _registry_get_parameter_mapping = None
 
 
-# ---------------------------------------------------------------------------
-# 토폴로지별 기본 시뮬레이션 파라미터
-# (이 스크립트는 PSIM Python 3.8에서 실행되므로 psim_mcp 모듈을 import할 수 없다.
-#  simulation_defaults.py와 동일한 매핑을 인라인으로 유지한다.)
+# Fallback parameter-name mapping for PSIM's isolated Python environment.
+# Used when the registry import above is unavailable.
 # Internal parameter name → PSIM API parameter name mapping.
 # None means the parameter should be skipped (not a PSIM creation parameter).
 _PARAM_NAME_MAP = {

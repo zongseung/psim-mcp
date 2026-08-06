@@ -17,7 +17,7 @@ All Python operations must use `uv run`. Never use bare `python`, `pip`, or `pyt
 
 ## Project Direction
 
-VER2 is the public product: `import_circuit` → understand → `set_parameter` → `run_simulation` → analysis. The server registers 12 MCP tools for existing-project, parameter, simulation, result, and analysis workflows.
+VER2 is the public product: `import_circuit` → understand → `open_project` → `set_parameter` → `run_simulation` → analysis. The server registers 12 MCP tools for existing-project, parameter, simulation, result, and analysis workflows.
 
 `CircuitGraph` is the importer representation of an existing circuit: components plus electrical nets reconstructed from PSIM conversion output. Treat it as the format returned by the read-modify workflow.
 
