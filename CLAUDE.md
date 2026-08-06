@@ -53,7 +53,7 @@ app = create_app(AppConfig(psim_mode="mock"))
 - `MockPsimAdapter`: in-memory adapter for tests and development.
 - `RealPsimAdapter`: long-running bridge subprocess, serialized with `asyncio.Lock`.
 
-Select with `PSIM_MODE=mock` (default) or `PSIM_MODE=real`. Real mode requires `PSIM_PATH`, `PSIM_PYTHON_EXE`, `PSIM_PROJECT_DIR`, and `PSIM_OUTPUT_DIR`.
+Select with `PSIM_MODE=mock` (default) or `PSIM_MODE=real`. Real mode requires `PSIM_PATH`, `PSIM_PYTHON_EXE`, and `PSIM_OUTPUT_DIR`.
 
 ### Services and Response Contract
 

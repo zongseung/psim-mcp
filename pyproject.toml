@@ -43,8 +43,3 @@ packages = ["src/psim_mcp"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-
-[tool.ruff.lint.per-file-ignores]
-# Intentional: constants/patterns defined before imports that depend on them
-"src/psim_mcp/layout/auto_placer.py" = ["E402"]
-"src/psim_mcp/parsers/intent_parser.py" = ["E402"]

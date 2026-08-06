@@ -1,1 +1,0 @@
-"""Topology-specific layout strategies."""

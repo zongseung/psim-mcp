@@ -53,7 +53,6 @@ uv sync --all-extras
         "PSIM_MODE": "real",
         "PSIM_PATH": "C:\\Altair\\Altair_PSIM_2026",
         "PSIM_PYTHON_EXE": "C:\\Users\\{사용자}\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
-        "PSIM_PROJECT_DIR": "C:\\Users\\{사용자}\\psim-projects",
         "PSIM_OUTPUT_DIR": "C:\\Users\\{사용자}\\psim-output"
       }
     }
@@ -124,7 +123,6 @@ C:\circuits\my_boost.psimsch를 가져와서 구조를 설명해줘.
 | `PSIM_MODE` | `mock` | `mock` 또는 `real` |
 | `PSIM_PATH` | — | PSIM 설치 경로 (real 모드 필수) |
 | `PSIM_PYTHON_EXE` | — | PSIM Python 실행 파일 경로 |
-| `PSIM_PROJECT_DIR` | — | `.psimsch` 저장 디렉터리 |
 | `PSIM_OUTPUT_DIR` | — | 시뮬레이션 결과 디렉터리 |
 | `LOG_LEVEL` | `INFO` | 로그 레벨 |
 | `SIMULATION_TIMEOUT` | `300` | 시뮬레이션 타임아웃 (초) |

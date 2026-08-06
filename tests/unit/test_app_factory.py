@@ -76,7 +76,6 @@ def test_create_adapter_real_skipped_or_mocked(tmp_path: Path):
         psim_mode="real",
         psim_path=tmp_path / "psim.exe",
         psim_python_exe=tmp_path / "python.exe",
-        psim_project_dir=tmp_path / "projects",
         psim_output_dir=tmp_path / "output",
     )
     # We mock RealPsimAdapter since it may not be importable everywhere.
@@ -109,7 +108,7 @@ def test_create_service_returns_simulation_service():
 
 def test_create_app_real_mode_missing_fields_raises(monkeypatch):
     """create_app with psim_mode='real' but missing paths must raise ValueError."""
-    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_PROJECT_DIR", "PSIM_OUTPUT_DIR"):
+    for var in ("PSIM_MODE", "PSIM_PATH", "PSIM_PYTHON_EXE", "PSIM_OUTPUT_DIR"):
         monkeypatch.delenv(var, raising=False)
     cfg = AppConfig(psim_mode="real", _env_file=None)
     with pytest.raises(ValueError, match="PSIM_MODE=real"):
