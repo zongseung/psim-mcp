@@ -56,8 +56,10 @@ PSIM_OUTPUT_DIR=./output
 
 `claude_desktop_config.json`에 다음을 추가합니다.
 
+로컬 real 모드에는 Windows PSIM 호스트가 필요합니다. 아래 JSON의 모든 placeholder 경로를 실제 로컬 경로로 바꾸세요.
+
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- macOS(mock 또는 원격 사용): `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
