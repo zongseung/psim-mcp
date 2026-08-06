@@ -16,7 +16,7 @@ only introduce false connections):
 6. Snap component pins to clusters by exact coordinate; coincident pins
    connect directly (pin-to-pin contact is legal in PSIM).
 
-Output is the existing :class:`~psim_mcp.synthesis.graph.CircuitGraph`
+Output is the existing :class:`~psim_mcp.importer.graph.CircuitGraph`
 so validators, set_parameter and the simulation path apply unchanged.
 """
 
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..synthesis.graph import CircuitGraph, GraphComponent, GraphNet
+from .graph import CircuitGraph, GraphComponent, GraphNet
 from .parser import ParsedSchematic, Point
 
 _GROUND_TYPES = {"GROUND", "GND"}

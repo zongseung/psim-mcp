@@ -1,8 +1,4 @@
-"""Standard response envelope builders.
-
-Canonical location for ``ResponseBuilder``.  The previous import path
-``psim_mcp.services.response`` remains functional via a compatibility shim.
-"""
+"""Standard response envelope builders."""
 
 from typing import Any
 

@@ -33,16 +33,87 @@ import sys
 import time
 import traceback
 
-try:
-    from psim_mcp.data.bridge_mapping_registry import (
-        get_parameter_mapping as _registry_get_parameter_mapping,
-    )
-except Exception:  # pragma: no cover - bridge must still run in PSIM's isolated Python
-    _registry_get_parameter_mapping = None
+# Per-component parameter-name mapping (single source of truth).
+# Maps MCP parameter names -> PSIM parameter names per component type.
+# PSIM 2026 VDC/VAC use "Amplitude" (not "V1") — confirmed via
+# output/converted_*.py reference scripts. Transformer names validated from
+# PsimConvertToPython outputs (converted_Flyback..., converted_ResonantLLC...).
+# None means the parameter is not a PSIM element parameter and must be skipped.
+_COMPONENT_PARAM_MAP = {
+    "DC_Source": {
+        "voltage": "Amplitude",
+        "amplitude": "Amplitude",
+        "Amplitude": "Amplitude",
+    },
+    "AC_Source": {
+        "voltage": "Amplitude",
+        "amplitude": "Amplitude",
+        "Amplitude": "Amplitude",
+        "frequency": "Freq",
+        "Frequency": "Freq",
+    },
+    "Inductor": {
+        "inductance": "Inductance",
+        "Inductance": "Inductance",
+        "CurrentFlag": "Current_Flag",
+    },
+    "Capacitor": {
+        "capacitance": "Capacitance",
+        "Capacitance": "Capacitance",
+    },
+    "Resistor": {
+        "resistance": "Resistance",
+        "Resistance": "Resistance",
+        "VoltageFlag": "Voltage_Flag",
+    },
+    "MOSFET": {
+        "on_resistance": "On_Resistance",
+        "switching_frequency": None,  # not a PSIM MULTI_MOSFET parameter
+    },
+    "IGBT": {
+        "on_resistance": "R_transistor",
+        "switching_frequency": None,
+    },
+    "Diode": {
+        "forward_voltage": "Diode_Voltage_Drop",
+    },
+    "Transformer": {
+        "turns_ratio": None,
+        "np_turns": "Np__primary_",
+        "ns_turns": "Ns__secondary_",
+        "magnetizing_inductance": "Lm__magnetizing_",
+        "Lm": "Lm__magnetizing_",
+    },
+    "IdealTransformer": {
+        "turns_ratio": None,
+        "np_turns": "Np__primary_",
+        "ns_turns": "Ns__secondary_",
+    },
+    "PWM_Generator": {
+        "Frequency": "Frequency",
+        "NoOfPoints": "No__of_Points",
+        "Switching_Points": "Switching_Points",
+    },
+    # SIMPLECBLOCK: the C source is set via PsimSetElmValue2 after creation,
+    # so ``c_code`` is intentionally None here.
+    "C_Block": {
+        "input_count": "_InputCount",
+        "output_count": "_OutputCount",
+        "c_code": None,
+    },
+    "Battery": {
+        "voltage": "V1",
+        "capacity_Ah": "Capacity",
+        "SOC": "SOC",
+    },
+    "SimControl": {
+        "TIMESTEP": "TimeStep",
+        "TOTALTIME": "TotalTime",
+    },
+}
 
 
-# Fallback parameter-name mapping for PSIM's isolated Python environment.
-# Used when the registry import above is unavailable.
+# Flat fallback for component types absent from _COMPONENT_PARAM_MAP.
 # Internal parameter name → PSIM API parameter name mapping.
 # None means the parameter should be skipped (not a PSIM creation parameter).
 _PARAM_NAME_MAP = {
@@ -105,20 +176,14 @@ def _get_parameter_name_mapping(component_type):
     if alias and alias not in candidates:
         candidates.append(alias)
 
-    if _registry_get_parameter_mapping is not None:
-        for candidate in candidates:
-            mapping = _registry_get_parameter_mapping(candidate)
-            if mapping:
-                return mapping
+    for candidate in candidates:
+        mapping = _COMPONENT_PARAM_MAP.get(candidate)
+        if mapping:
+            return dict(mapping)
 
-    # Fallback path runs inside PSIM's Python 3.8 where the registry
-    # import fails. ``_PARAM_NAME_MAP`` is a FLAT parameter→PSIM-name
-    # translation that's effectively universal (parameter names rarely
-    # overlap across components), so we hand it back wholesale instead
-    # of treating it as a per-component lookup (the original bug —
-    # ``_PARAM_NAME_MAP.get("DC_Source")`` is always None, so every
-    # parameter passed through untranslated and PSIM silently kept its
-    # defaults).
+    # ``_PARAM_NAME_MAP`` is a FLAT parameter→PSIM-name translation that's
+    # effectively universal (parameter names rarely overlap across
+    # components), so we hand it back wholesale for unknown component types.
     return _PARAM_NAME_MAP
 
 

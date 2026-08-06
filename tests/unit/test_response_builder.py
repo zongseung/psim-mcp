@@ -1,8 +1,8 @@
-"""Tests for ResponseBuilder in psim_mcp.services.response."""
+"""Tests for ResponseBuilder in psim_mcp.shared.response."""
 
 from __future__ import annotations
 
-from psim_mcp.services.response import ResponseBuilder
+from psim_mcp.shared.response import ResponseBuilder
 
 
 def test_success_returns_correct_envelope():

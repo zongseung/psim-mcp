@@ -1,6 +1,6 @@
 """Unit tests for CircuitGraph and related models."""
 
-from psim_mcp.synthesis.graph import (
+from psim_mcp.importer.graph import (
     CircuitGraph,
     DesignDecisionTrace,
     FunctionalBlock,

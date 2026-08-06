@@ -1,6 +1,6 @@
 """Service layer for PSIM-MCP."""
 
-from psim_mcp.services.response import ResponseBuilder
+from psim_mcp.shared.response import ResponseBuilder
 from psim_mcp.services.simulation_service import SimulationService
 from psim_mcp.services.validators import (
     ValidationResult,

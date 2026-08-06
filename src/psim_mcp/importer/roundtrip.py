@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from itertools import combinations
 
-from ..synthesis.graph import CircuitGraph
+from .graph import CircuitGraph
 from .parser import ParsedComponent, ParsedSchematic
 
 

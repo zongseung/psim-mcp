@@ -1,8 +1,10 @@
-from psim_mcp.data.bridge_mapping_registry import get_parameter_mapping
+"""Parameter-name mapping tests against the bridge's single source of truth."""
+
+from psim_mcp.bridge.bridge_script import _get_parameter_name_mapping
 
 
 def test_transformer_parameter_mapping_matches_converted_flyback_example():
-    mapping = get_parameter_mapping("Transformer")
+    mapping = _get_parameter_name_mapping("TF_1F_1")
 
     assert mapping["turns_ratio"] is None
     assert mapping["np_turns"] == "Np__primary_"
@@ -11,8 +13,15 @@ def test_transformer_parameter_mapping_matches_converted_flyback_example():
 
 
 def test_ideal_transformer_parameter_mapping_matches_converted_llc_example():
-    mapping = get_parameter_mapping("IdealTransformer")
+    mapping = _get_parameter_name_mapping("TF_IDEAL")
 
     assert mapping["turns_ratio"] is None
     assert mapping["np_turns"] == "Np__primary_"
     assert mapping["ns_turns"] == "Ns__secondary_"
+
+
+def test_unknown_component_type_falls_back_to_flat_map():
+    mapping = _get_parameter_name_mapping("SOME_UNKNOWN_TYPE")
+
+    assert mapping["resistance"] == "Resistance"
+    assert mapping["inductance"] == "Inductance"
