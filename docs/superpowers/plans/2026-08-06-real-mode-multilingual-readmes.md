@@ -62,7 +62,6 @@ Write `.env` exactly as:
 PSIM_MODE=real
 PSIM_PATH=C:\Altair\Altair_PSIM_2026
 PSIM_PYTHON_EXE=C:\Users\new92\AppData\Local\Programs\Python\Python39\python.exe
-PSIM_PROJECT_DIR=C:\Users\new92\psim-mcp\projects
 PSIM_OUTPUT_DIR=C:\Users\new92\psim-mcp\output
 LOG_DIR=./logs
 LOG_LEVEL=INFO
@@ -102,7 +101,7 @@ Expected: real PSIM reports a valid 2026 version and import returns `success=tru
 
 - [ ] **Step 1: Update `.env.example`**
 
-Set `PSIM_MODE=real` in the real-mode example, show `C:\Altair\Altair_PSIM_2026` and a generic `<사용자>` Python 3.9 path, retain `./projects` and `./output`, and state that an omitted `ALLOWED_PROJECT_DIRS` permits any validator-accepted absolute project path.
+Set `PSIM_MODE=real` in the real-mode example, show `C:\Altair\Altair_PSIM_2026` and a generic `<사용자>` Python 3.9 path, retain `./output`, and state that an omitted `ALLOWED_PROJECT_DIRS` permits any validator-accepted absolute project path.
 
 - [ ] **Step 2: Rewrite `README.md` against the merged product surface**
 

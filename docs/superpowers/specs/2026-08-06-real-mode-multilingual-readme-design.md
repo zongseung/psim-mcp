@@ -14,11 +14,10 @@ Create an ignored repository-root `.env` with:
 PSIM_MODE=real
 PSIM_PATH=C:\Altair\Altair_PSIM_2026
 PSIM_PYTHON_EXE=C:\Users\new92\AppData\Local\Programs\Python\Python39\python.exe
-PSIM_PROJECT_DIR=C:\Users\new92\psim-mcp\projects
 PSIM_OUTPUT_DIR=C:\Users\new92\psim-mcp\output
 ```
 
-Do not set `ALLOWED_PROJECT_DIRS`. Users may open an existing `.psimsch` from any absolute path accepted by the existing path validator. `PSIM_PROJECT_DIR` is a required default location, not an access boundary. Simulation and export artifacts default to `PSIM_OUTPUT_DIR`, while tools that accept an explicit output directory remain configurable per call.
+Do not set `ALLOWED_PROJECT_DIRS`. Users may open an existing `.psimsch` from any absolute path accepted by the existing path validator. Simulation and export artifacts default to `PSIM_OUTPUT_DIR`, while tools that accept an explicit output directory remain configurable per call.
 
 The `.env` file remains untracked because it contains machine-specific paths. Create the output directory if it does not exist; preserve the existing project directory and all user files.
 
