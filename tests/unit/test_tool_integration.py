@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -169,33 +168,3 @@ def test_real_mode_startup_fails_without_config(monkeypatch):
     cfg = AppConfig(psim_mode="real", _env_file=None)
     with pytest.raises(ValueError, match="PSIM_MODE=real"):
         create_app(cfg)
-
-
-async def test_continue_design_keeps_asking_when_template_not_design_ready(mock_config: AppConfig):
-    """continue_design should not fall through to template preview without design-ready specs."""
-    app = create_app(mock_config)
-
-    raw = await app._tool_manager.call_tool(
-        "design_circuit",
-        {"description": "푸시풀 컨버터"},
-        convert_result=False,
-    )
-    first = json.loads(raw)
-    assert first["success"] is True
-    # push_pull requires vin, vout_target, iout — missing fields cause need_specs or confirm_intent
-    action = first["data"]["action"]
-    assert action in ("confirm_intent", "need_specs")
-
-    if action == "confirm_intent":
-        token = first["data"]["design_session_token"]
-        raw = await app._tool_manager.call_tool(
-            "continue_design",
-            {"design_session_token": token},
-            convert_result=False,
-        )
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert result["data"]["action"] == "need_specs"
-    else:
-        result = first
-    assert "missing_fields" in result["data"]

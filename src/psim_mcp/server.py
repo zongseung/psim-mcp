@@ -86,15 +86,13 @@ def create_service(config: AppConfig):
 
 def register_all_tools(mcp: FastMCP, services: dict) -> None:
     """Register every tool module on *mcp* using domain services."""
-    from psim_mcp.tools import analysis, circuit, design, parameter, project, results, simulation
+    from psim_mcp.tools import analysis, parameter, project, results, simulation
 
     # Use dedicated services for each tool module
     project.register_tools(mcp, services["project"])
     parameter.register_tools(mcp, services["_legacy"])
     simulation.register_tools(mcp, services["simulation"])
     results.register_tools(mcp, services["_legacy"])
-    circuit.register_tools(mcp, services["circuit_design"])
-    design.register_tools(mcp, services["circuit_design"])
     analysis.register_tools(mcp, services["simulation"], services["_adapter"])
 
 
