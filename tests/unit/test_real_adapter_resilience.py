@@ -134,6 +134,17 @@ class TestLockTimeout:
         finally:
             adapter._lock.release()
 
+    async def test_non_owner_call_is_busy_during_session_lease(
+        self,
+        adapter: RealPsimAdapter,
+        tmp_path,
+    ) -> None:
+        # Given / When
+        async with adapter.session_lease(str(tmp_path)):
+            # Then
+            with pytest.raises(RuntimeError, match="SESSION_BUSY"):
+                await adapter._call_bridge("get_status")
+
 
 class TestMetrics:
     def test_initial_metrics(self, adapter: RealPsimAdapter):
@@ -179,3 +190,21 @@ class TestMetrics:
         result = await adapter.health_check()
         assert result["healthy"] is False
         assert result["process_alive"] is False
+
+
+async def test_shutdown_clears_project_state_without_live_bridge(
+    adapter: RealPsimAdapter,
+) -> None:
+    # Given
+    adapter._project_open = True
+    adapter._current_project_path = "stale.psimsch"
+    adapter._last_output_path = "stale.smv"
+    adapter._process = None
+
+    # When
+    await adapter.shutdown()
+
+    # Then
+    assert adapter.is_project_open is False
+    assert adapter.current_project_path is None
+    assert adapter._last_output_path == ""

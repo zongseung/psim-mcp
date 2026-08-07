@@ -1,196 +1,171 @@
-"""Circuit optimization service -- Bayesian optimization of component values."""
+"""Safe sequential Optuna optimization for user-selected circuit values."""
 
 from __future__ import annotations
 
-import logging
+import hashlib
+import shutil
+import tempfile
+import time
+from asyncio import CancelledError  # noqa: F401  # noqa: ANYIO_OK
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from psim_mcp.adapters.base import BasePsimAdapter
+from psim_mcp.models.optimization import OptimizationRequest
+from psim_mcp.services.optimization_study import (
+    OptimizationStudy,
+    StudyFiles,
+    append_ledger,
+)
+from psim_mcp.services.validators import validate_project_path
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from psim_mcp.adapters.base import BasePsimAdapter, SessionToken
+    from psim_mcp.config import AppConfig
 
 
 class OptimizationService:
-    """Iteratively optimizes circuit parameters using Bayesian optimization.
-
-    Uses `Optuna <https://optuna.org/>`_ with a TPE sampler to explore the
-    parameter space and minimize a cost function derived from the difference
-    between computed metrics and user-supplied targets.
-    """
-
-    def __init__(self, adapter: BasePsimAdapter) -> None:
+    def __init__(self, adapter: BasePsimAdapter, config: AppConfig) -> None:
         self._adapter = adapter
+        self._config = config
 
-    async def optimize(
+    async def optimize(  # noqa: ANN401  # noqa: DICT_OK
         self,
-        topology: str,
-        targets: dict[str, float],
-        tunable_params: list[dict] | None = None,
-        n_trials: int = 50,
-        max_time_seconds: int = 300,
+        request: OptimizationRequest,
     ) -> dict:
-        """Run Bayesian optimization loop.
+        started = time.monotonic()
+        result = self._empty_result()
+        validation = validate_project_path(
+            request.source_project_path,
+            self._config.allowed_project_dirs or None,
+        )
+        if not validation.is_valid:
+            result["error"] = validation.error_message
+            return result
+        if self._config.psim_output_dir is None:
+            result["error"] = "PSIM_OUTPUT_DIR is required for optimization artifacts"
+            return result
 
-        Parameters
-        ----------
-        topology:
-            Circuit topology name -- used to look up default tunable
-            parameters and metric definitions.
-        targets:
-            Mapping of metric names to desired values.
-        tunable_params:
-            Optional list of parameter descriptors.  Each entry must have
-            ``component``, ``param``, ``min``, ``max`` keys and optionally
-            ``log_scale`` (default *True*).
-        n_trials:
-            Maximum number of optimization trials.
-        max_time_seconds:
-            Hard time-limit (currently informational).
-
-        Returns
-        -------
-        dict
-            Keys: ``success``, ``best_params``, ``best_cost``,
-            ``trials_completed``, ``history``.
-        """
+        source = Path(request.source_project_path).resolve()
+        ledger: Path | None = None
         try:
-            import optuna
-
-            optuna.logging.set_verbosity(optuna.logging.WARNING)
-        except ImportError:
-            return {
-                "success": False,
-                "error": "optuna not installed. Run: uv add optuna",
-            }
-
-        from psim_mcp.data.topology_metrics import (
-            get_default_tunable_params,
-            get_topology_metrics,
-        )
-
-        # Get tunable params
-        if not tunable_params:
-            tunable_params = get_default_tunable_params(topology)
-        if not tunable_params:
-            return {
-                "success": False,
-                "error": f"No tunable parameters defined for topology '{topology}'",
-            }
-
-        # Get metrics spec
-        topo_metrics = get_topology_metrics(topology) or {}
-        metrics_spec = topo_metrics.get("metrics", [])
-        skip_ratio = topo_metrics.get("steady_state_skip", 0.5)
-
-        best_cost = float("inf")
-        best_params: dict = {}
-        trial_history: list[dict] = []
-
-        study = optuna.create_study(
-            sampler=optuna.samplers.TPESampler(
-                n_startup_trials=max(5, n_trials // 4),
-                multivariate=True,
-            ),
-            direction="minimize",
-        )
-
-        for trial_idx in range(n_trials):
-            trial = study.ask()
-
-            # Suggest parameter values
-            param_values: dict[str, float] = {}
-            for p in tunable_params:
-                key = f"{p['component']}.{p['param']}"
-                param_values[key] = trial.suggest_float(
-                    key,
-                    float(p["min"]),
-                    float(p["max"]),
-                    log=p.get("log_scale", True),
-                )
-
-            # Set parameters on the adapter
-            for p in tunable_params:
-                key = f"{p['component']}.{p['param']}"
-                try:
-                    await self._adapter.set_parameter(
-                        p["component"],
-                        p["param"],
-                        param_values[key],
-                    )
-                except Exception:
-                    study.tell(trial, float("inf"))
-                    continue
-
-            # Run simulation (headless)
-            try:
-                sim_result = await self._adapter.run_simulation({"simview": 0})
-                if not isinstance(sim_result, dict) or sim_result.get("status") != "completed":
-                    study.tell(trial, float("inf"))
-                    continue
-            except Exception:
-                study.tell(trial, float("inf"))
-                continue
-
-            # Compute metrics
-            try:
-                metrics_result = await self._adapter.compute_metrics(
-                    metrics_spec=metrics_spec,
-                    skip_ratio=skip_ratio,
-                )
-                computed = metrics_result.get("metrics", {})
-            except Exception:
-                study.tell(trial, float("inf"))
-                continue
-
-            # Compute cost (normalised squared error)
-            cost = 0.0
-            for metric_name, target_val in targets.items():
-                actual = computed.get(metric_name)
-                if actual is None or isinstance(actual, dict):
-                    cost += 100.0
-                    continue
-                if target_val != 0:
-                    cost += ((actual - target_val) / target_val) ** 2
-                else:
-                    cost += actual**2
-
-            study.tell(trial, cost)
-            trial_history.append(
-                {
-                    "trial": trial_idx,
-                    "cost": round(cost, 6),
-                    "params": {k: round(v, 9) for k, v in param_values.items()},
-                    "metrics": {
-                        k: round(v, 6) if isinstance(v, float) else v
-                        for k, v in computed.items()
-                    },
-                }
+            output_root = self._config.psim_output_dir.resolve()
+            output_root.mkdir(parents=True, exist_ok=True)
+            study_dir = Path(tempfile.mkdtemp(prefix="optuna-", dir=output_root))
+            ledger = study_dir / "study.jsonl"
+            result.update(study_dir=str(study_dir), ledger_path=str(ledger))
+            source_copy = study_dir / "source-copy.psimsch"
+            working = study_dir / "working.psimsch"
+            source_hash = self._hash(source)
+            result["source_hash_before"] = source_hash
+        except Exception as exc:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK
+            result.update(
+                state="failed",
+                stop_reason="setup_failed",
+                error=str(exc),
+                elapsed_seconds=round(time.monotonic() - started, 6),
             )
+            if ledger is not None:
+                append_ledger(ledger, {"type": "terminal", **result})
+            return result
 
-            if cost < best_cost:
-                best_cost = cost
-                best_params = dict(param_values)
-
-            logger.debug("Trial %d: cost=%.6f", trial_idx, cost)
-
-        # Apply best parameters to the adapter
-        for p in tunable_params:
-            key = f"{p['component']}.{p['param']}"
-            if key in best_params:
+        try:
+            async with self._adapter.session_lease(str(study_dir)) as token:
+                previous = self._adapter.current_project_path
                 try:
-                    await self._adapter.set_parameter(
-                        p["component"],
-                        p["param"],
-                        best_params[key],
+                    shutil.copy2(source, source_copy)
+                    if self._hash(source_copy) != source_hash:
+                        raise OSError("source copy hash mismatch")
+                    shutil.copy2(source_copy, working)
+                    result.update(
+                        await OptimizationStudy(self._adapter, request).run(
+                            token,
+                            StudyFiles(source_copy, working, study_dir, ledger),
+                            started,
+                        )
                     )
-                except Exception:
-                    pass
+                except CancelledError:
+                    result.update(
+                        success=False,
+                        state="cancelled",
+                        stop_reason="cancelled",
+                        error="optimization cancelled",
+                    )
+                    raise
+                except Exception as exc:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK
+                    result.update(
+                        success=False,
+                        state="failed",
+                        stop_reason="optimization_failed",
+                        error=str(exc),
+                    )
+                finally:
+                    result["restoration_status"] = await self._restore(token, previous)
+                    result["source_hash_after"] = self._hash_if_present(source)
+                    if result["source_hash_after"] != source_hash:
+                        result["source_changed_during_study"] = True
+                        result.update(success=False, state="failed", stop_reason="source_changed")
+                    if str(result["restoration_status"]).startswith("failed"):
+                        result.update(
+                            success=False, state="failed", stop_reason="restoration_failed"
+                        )
+                    result["elapsed_seconds"] = round(time.monotonic() - started, 6)
+                    result["result_paths"] = [
+                        path for path in result["result_paths"] if Path(path).is_file()
+                    ]
+                    append_ledger(ledger, {"type": "terminal", **result})
+        except Exception as exc:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK
+            result.update(
+                success=False,
+                state="failed",
+                stop_reason="session_lease_failed",
+                error=str(exc),
+                elapsed_seconds=round(time.monotonic() - started, 6),
+            )
+            append_ledger(ledger, {"type": "terminal", **result})
+        return result
 
+    async def _restore(self, token: SessionToken, previous: str | None) -> str:
+        try:
+            await self._adapter.reset_session(token)
+            if previous is not None:
+                await self._adapter.open_project(previous, lease_token=token)
+                return "restored"
+            return "no_previous_project"
+        except Exception as exc:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK
+            return f"failed: {exc}"
+
+    @staticmethod
+    def _hash(path: Path) -> str:
+        with path.open("rb") as handle:
+            return hashlib.file_digest(handle, "sha256").hexdigest()
+
+    @classmethod
+    def _hash_if_present(cls, path: Path) -> str | None:
+        try:
+            return cls._hash(path)
+        except OSError:
+            return None
+
+    @staticmethod
+    def _empty_result() -> dict:  # noqa: ANN401  # noqa: DICT_OK
         return {
-            "success": True,
-            "best_params": {k: round(v, 9) for k, v in best_params.items()},
-            "best_cost": round(best_cost, 6),
-            "trials_completed": len(trial_history),
-            "history": trial_history[-5:],  # last 5 trials
+            "success": False,
+            "state": "failed",
+            "stop_reason": "validation_failed",
+            "trials_complete": 0,
+            "trials_failed": 0,
+            "best_params": None,
+            "best_cost": None,
+            "best_metrics": None,
+            "constraint_residuals": None,
+            "best_project_path": None,
+            "source_hash_before": None,
+            "source_hash_after": None,
+            "source_changed_during_study": False,
+            "restoration_status": "not_started",
+            "study_dir": None,
+            "ledger_path": None,
+            "result_paths": [],
+            "elapsed_seconds": 0.0,
+            "error": None,
         }

@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class SessionToken:
+    value: str
 
 
 class BasePsimAdapter(ABC):
@@ -13,7 +20,11 @@ class BasePsimAdapter(ABC):
     """
 
     @abstractmethod
-    async def open_project(self, path: str) -> dict:
+    async def open_project(
+        self,
+        path: str,
+        lease_token: SessionToken | None = None,
+    ) -> dict:
         """Open a PSIM project file.
 
         Args:
@@ -29,6 +40,7 @@ class BasePsimAdapter(ABC):
         component_id: str,
         parameter_name: str,
         value: int | float | str,
+        lease_token: SessionToken | None = None,
     ) -> dict:
         """Set a single parameter on a component.
 
@@ -45,7 +57,12 @@ class BasePsimAdapter(ABC):
         """
 
     @abstractmethod
-    async def run_simulation(self, options: dict | None = None) -> dict:
+    async def run_simulation(
+        self,
+        options: dict | None = None,
+        output_path: str = "",
+        lease_token: SessionToken | None = None,
+    ) -> dict:
         """Execute the simulation for the currently open project.
 
         Args:
@@ -54,6 +71,19 @@ class BasePsimAdapter(ABC):
         Returns:
             Dict with status, duration, result_file, and summary.
         """
+
+    @property
+    @abstractmethod
+    def current_project_path(self) -> str | None:
+        """Return the currently open project path when known."""
+
+    @abstractmethod
+    def session_lease(self, study_dir: str) -> AbstractAsyncContextManager[SessionToken]:
+        """Reserve the adapter session for one multi-call operation."""
+
+    @abstractmethod
+    async def reset_session(self, token: SessionToken) -> None:
+        """Reset bridge and project state while holding a session lease."""
 
     @abstractmethod
     async def export_results(
@@ -102,6 +132,7 @@ class BasePsimAdapter(ABC):
         graph_file: str = "",
         skip_ratio: float = 0.5,
         time_step: float = 1e-6,
+        lease_token: SessionToken | None = None,
     ) -> dict:
         """Compute simulation metrics from the latest simulation result.
 

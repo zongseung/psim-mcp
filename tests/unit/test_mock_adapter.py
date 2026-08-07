@@ -72,6 +72,28 @@ class TestRunSimulation:
         with pytest.raises(RuntimeError, match="No project"):
             await mock_adapter.run_simulation()
 
+    async def test_explicit_output_path_is_created(
+        self,
+        mock_adapter: MockPsimAdapter,
+        tmp_path,
+    ) -> None:
+        # Given
+        project = tmp_path / "demo.psimsch"
+        project.write_text("mock")
+        output = tmp_path / "trial-0001.smv"
+        await mock_adapter.open_project(str(project))
+
+        # When
+        async with mock_adapter.session_lease(str(tmp_path)) as token:
+            result = await mock_adapter.run_simulation(
+                output_path=str(output),
+                lease_token=token,
+            )
+
+        # Then
+        assert result["output_path"] == str(output)
+        assert output.is_file()
+
 
 class TestExportResults:
     async def test_returns_exported_files(self, mock_adapter: MockPsimAdapter):
@@ -118,6 +140,34 @@ class TestAnalysisHelpers:
         assert result["metrics"]["vout_mean"] > 0
         assert "V(Vout)" in result["available_signals"]
 
+    async def test_compute_metrics_applies_exact_fractional_window(
+        self,
+        mock_adapter: MockPsimAdapter,
+    ) -> None:
+        # Given
+        await mock_adapter.open_project("/tmp/demo.psimsch")
+        await mock_adapter.run_simulation()
+        metric = {
+            "name": "vout_mean",
+            "signal": "V(Vout)",
+            "function": "mean",
+            "window": {
+                "start_fraction": 0.25,
+                "end_fraction": 0.75,
+                "min_samples": 20,
+            },
+        }
+
+        # When
+        result = await mock_adapter.compute_metrics([metric])
+
+        # Then
+        assert result["windows"]["vout_mean"] == {
+            "start_index": 200,
+            "end_index": 600,
+            "point_count": 400,
+        }
+
 
 class TestGetStatus:
     async def test_returns_status_dict(self, mock_adapter: MockPsimAdapter):
@@ -150,3 +200,23 @@ class TestGetProjectInfo:
     async def test_raises_without_open_project(self, mock_adapter: MockPsimAdapter):
         with pytest.raises(RuntimeError, match="No project"):
             await mock_adapter.get_project_info()
+
+
+async def test_session_lease_blocks_all_ordinary_mock_operations(
+    mock_adapter: MockPsimAdapter,
+) -> None:
+    # Given
+    operations = (
+        lambda: mock_adapter.export_results("/tmp/output"),
+        mock_adapter.extract_signals,
+        mock_adapter.get_status,
+        mock_adapter.get_project_info,
+        lambda: mock_adapter.convert_to_python("/tmp/demo.psimsch"),
+    )
+
+    # When
+    async with mock_adapter.session_lease("/tmp/study"):
+        # Then
+        for operation in operations:
+            with pytest.raises(RuntimeError, match="SESSION_BUSY"):
+                await operation()

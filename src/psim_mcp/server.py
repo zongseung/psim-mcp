@@ -79,7 +79,7 @@ def create_service(config: AppConfig):
     return SimulationService(adapter=adapter, config=config)
 
 
-def register_all_tools(mcp: FastMCP, services: dict) -> None:
+def register_all_tools(mcp: FastMCP, services: dict, config: AppConfig) -> None:
     """Register every tool module on *mcp* using domain services."""
     from psim_mcp.tools import analysis, parameter, project, results, simulation
 
@@ -88,7 +88,7 @@ def register_all_tools(mcp: FastMCP, services: dict) -> None:
     parameter.register_tools(mcp, services["_legacy"])
     simulation.register_tools(mcp, services["simulation"])
     results.register_tools(mcp, services["_legacy"])
-    analysis.register_tools(mcp, services["simulation"], services["_adapter"])
+    analysis.register_tools(mcp, services["simulation"], services["_adapter"], config)
 
 
 def register_knowledge_resources(mcp: FastMCP) -> None:
@@ -164,7 +164,7 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
     app._adapter = adapter  # type: ignore[attr-defined]
 
     app._services = services  # type: ignore[attr-defined]
-    register_all_tools(app, services)
+    register_all_tools(app, services, config)
     register_knowledge_resources(app)
     return app
 
