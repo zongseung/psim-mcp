@@ -29,19 +29,32 @@ class TestSimulationDefaults:
         """모든 값은 문자열이어야 한다 (PSIM API가 문자열을 요구)."""
         for topology, defaults in SIMULATION_DEFAULTS.items():
             assert isinstance(defaults["time_step"], str), f"{topology}: time_step이 문자열이 아님"
-            assert isinstance(defaults["total_time"], str), f"{topology}: total_time이 문자열이 아님"
+            assert isinstance(defaults["total_time"], str), (
+                f"{topology}: total_time이 문자열이 아님"
+            )
 
     @pytest.mark.parametrize(
         "topology",
         [
-            "buck", "boost", "buck_boost", "flyback", "llc", "dab",
-            "half_bridge", "full_bridge", "three_phase_inverter",
+            "buck",
+            "boost",
+            "buck_boost",
+            "flyback",
+            "llc",
+            "dab",
+            "half_bridge",
+            "full_bridge",
+            "three_phase_inverter",
             "diode_bridge_rectifier",
-            "boost_pfc", "totem_pole_pfc",
-            "bldc_drive", "pmsm_foc_drive",
+            "boost_pfc",
+            "totem_pole_pfc",
+            "bldc_drive",
+            "pmsm_foc_drive",
             "cc_cv_charger",
-            "pv_mppt_boost", "pv_grid_tied",
-            "lc_filter", "lcl_filter",
+            "pv_mppt_boost",
+            "pv_grid_tied",
+            "lc_filter",
+            "lcl_filter",
         ],
     )
     def test_required_topologies_exist(self, topology: str):

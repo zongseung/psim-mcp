@@ -15,7 +15,11 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
             {"name": "output_voltage_ripple_pp", "signal": "V(Vout)", "function": "ripple_pp"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
             {"name": "inductor_current_mean", "signal": "I(L1)", "function": "mean"},
             {"name": "inductor_current_ripple_pp", "signal": "I(L1)", "function": "ripple_pp"},
         ],
@@ -23,8 +27,20 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
         "primary_signals": ["V(Vout)", "I(L1)"],
         "tunable_params": [
             {"component": "L1", "param": "inductance", "min": 1e-6, "max": 1e-3, "log_scale": True},
-            {"component": "C1", "param": "capacitance", "min": 1e-6, "max": 1e-3, "log_scale": True},
-            {"component": "R1", "param": "resistance", "min": 1.0, "max": 100.0, "log_scale": False},
+            {
+                "component": "C1",
+                "param": "capacitance",
+                "min": 1e-6,
+                "max": 1e-3,
+                "log_scale": True,
+            },
+            {
+                "component": "R1",
+                "param": "resistance",
+                "min": 1.0,
+                "max": 100.0,
+                "log_scale": False,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 5.0, "min_absolute": 0.5},
@@ -35,14 +51,30 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
             {"name": "output_voltage_ripple_pp", "signal": "V(Vout)", "function": "ripple_pp"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
             {"name": "inductor_current_mean", "signal": "I(L1)", "function": "mean"},
         ],
         "steady_state_skip": 0.5,
         "primary_signals": ["V(Vout)", "I(L1)"],
         "tunable_params": [
-            {"component": "L1", "param": "inductance", "min": 10e-6, "max": 5e-3, "log_scale": True},
-            {"component": "C1", "param": "capacitance", "min": 10e-6, "max": 2e-3, "log_scale": True},
+            {
+                "component": "L1",
+                "param": "inductance",
+                "min": 10e-6,
+                "max": 5e-3,
+                "log_scale": True,
+            },
+            {
+                "component": "C1",
+                "param": "capacitance",
+                "min": 10e-6,
+                "max": 2e-3,
+                "log_scale": True,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 5.0, "min_absolute": 0.5},
@@ -52,14 +84,30 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
     "buck_boost": {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
             {"name": "inductor_current_mean", "signal": "I(L1)", "function": "mean"},
         ],
         "steady_state_skip": 0.5,
         "primary_signals": ["V(Vout)", "I(L1)"],
         "tunable_params": [
-            {"component": "L1", "param": "inductance", "min": 10e-6, "max": 2e-3, "log_scale": True},
-            {"component": "C1", "param": "capacitance", "min": 10e-6, "max": 1e-3, "log_scale": True},
+            {
+                "component": "L1",
+                "param": "inductance",
+                "min": 10e-6,
+                "max": 2e-3,
+                "log_scale": True,
+            },
+            {
+                "component": "C1",
+                "param": "capacitance",
+                "min": 10e-6,
+                "max": 1e-3,
+                "log_scale": True,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 5.0, "min_absolute": 0.5},
@@ -69,14 +117,30 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
     "flyback": {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
             {"name": "magnetizing_current_peak", "signal": "I(Lm)", "function": "peak"},
         ],
         "steady_state_skip": 0.6,
         "primary_signals": ["V(Vout)", "I(Lm)"],
         "tunable_params": [
-            {"component": "Lm", "param": "inductance", "min": 10e-6, "max": 1e-3, "log_scale": True},
-            {"component": "C1", "param": "capacitance", "min": 10e-6, "max": 1e-3, "log_scale": True},
+            {
+                "component": "Lm",
+                "param": "inductance",
+                "min": 10e-6,
+                "max": 1e-3,
+                "log_scale": True,
+            },
+            {
+                "component": "C1",
+                "param": "capacitance",
+                "min": 10e-6,
+                "max": 1e-3,
+                "log_scale": True,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 10.0, "min_absolute": 0.5},
@@ -86,14 +150,30 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
     "llc": {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
             {"name": "resonant_current_rms", "signal": "I(Lr)", "function": "rms"},
         ],
         "steady_state_skip": 0.6,
         "primary_signals": ["V(Vout)", "I(Lr)"],
         "tunable_params": [
-            {"component": "Lr", "param": "inductance", "min": 1e-6, "max": 500e-6, "log_scale": True},
-            {"component": "Cr", "param": "capacitance", "min": 1e-9, "max": 100e-9, "log_scale": True},
+            {
+                "component": "Lr",
+                "param": "inductance",
+                "min": 1e-6,
+                "max": 500e-6,
+                "log_scale": True,
+            },
+            {
+                "component": "Cr",
+                "param": "capacitance",
+                "min": 1e-9,
+                "max": 100e-9,
+                "log_scale": True,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 10.0, "min_absolute": 0.5},
@@ -105,16 +185,38 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
             {"name": "output_voltage_ripple_pp", "signal": "V(Vout)", "function": "ripple_pp"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
             {"name": "inductor_current_mean", "signal": "I(L1)", "function": "mean"},
             {"name": "inductor_current_ripple_pp", "signal": "I(L1)", "function": "ripple_pp"},
         ],
         "steady_state_skip": 0.6,
         "primary_signals": ["V(Vout)", "I(L1)"],
         "tunable_params": [
-            {"component": "L1", "param": "inductance", "min": 10e-6, "max": 2e-3, "log_scale": True},
-            {"component": "Cout", "param": "capacitance", "min": 1e-6, "max": 500e-6, "log_scale": True},
-            {"component": "Vout", "param": "resistance", "min": 1.0, "max": 100.0, "log_scale": False},
+            {
+                "component": "L1",
+                "param": "inductance",
+                "min": 10e-6,
+                "max": 2e-3,
+                "log_scale": True,
+            },
+            {
+                "component": "Cout",
+                "param": "capacitance",
+                "min": 1e-6,
+                "max": 500e-6,
+                "log_scale": True,
+            },
+            {
+                "component": "Vout",
+                "param": "resistance",
+                "min": 1.0,
+                "max": 100.0,
+                "log_scale": False,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 10.0, "min_absolute": 0.5},
@@ -124,13 +226,29 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
     "cuk": {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
         ],
         "steady_state_skip": 0.5,
         "primary_signals": ["V(Vout)"],
         "tunable_params": [
-            {"component": "L1", "param": "inductance", "min": 10e-6, "max": 2e-3, "log_scale": True},
-            {"component": "C1", "param": "capacitance", "min": 10e-6, "max": 1e-3, "log_scale": True},
+            {
+                "component": "L1",
+                "param": "inductance",
+                "min": 10e-6,
+                "max": 2e-3,
+                "log_scale": True,
+            },
+            {
+                "component": "C1",
+                "param": "capacitance",
+                "min": 10e-6,
+                "max": 1e-3,
+                "log_scale": True,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 5.0, "min_absolute": 0.5},
@@ -140,13 +258,29 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
     "sepic": {
         "metrics": [
             {"name": "output_voltage_mean", "signal": "V(Vout)", "function": "mean"},
-            {"name": "output_voltage_ripple_pct", "signal": "V(Vout)", "function": "ripple_percent"},
+            {
+                "name": "output_voltage_ripple_pct",
+                "signal": "V(Vout)",
+                "function": "ripple_percent",
+            },
         ],
         "steady_state_skip": 0.5,
         "primary_signals": ["V(Vout)"],
         "tunable_params": [
-            {"component": "L1", "param": "inductance", "min": 10e-6, "max": 2e-3, "log_scale": True},
-            {"component": "C1", "param": "capacitance", "min": 10e-6, "max": 1e-3, "log_scale": True},
+            {
+                "component": "L1",
+                "param": "inductance",
+                "min": 10e-6,
+                "max": 2e-3,
+                "log_scale": True,
+            },
+            {
+                "component": "C1",
+                "param": "capacitance",
+                "min": 10e-6,
+                "max": 1e-3,
+                "log_scale": True,
+            },
         ],
         "acceptance_criteria": {
             "output_voltage_mean": {"tolerance_pct": 5.0, "min_absolute": 0.5},
@@ -177,13 +311,21 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
             {"name": "output_voltage_ripple_pct", "signal": "Vo", "function": "ripple_percent"},
             {"name": "inductor_current_mean", "signal": "I(L1)", "function": "mean"},
             {"name": "inductor_current_ripple_pp", "signal": "I(L1)", "function": "ripple_pp"},
-            {"name": "il_sensed_mean", "signal": "IL_sensed_analog_by_adc_gain", "function": "mean"},
+            {
+                "name": "il_sensed_mean",
+                "signal": "IL_sensed_analog_by_adc_gain",
+                "function": "mean",
+            },
             {"name": "il_ref_mean", "signal": "IL_ref", "function": "mean"},
             {"name": "duty_mean", "signal": "Duty_cycle", "function": "mean"},
         ],
         "steady_state_skip": 0.5,
         "primary_signals": [
-            "Vo", "I(L1)", "IL_sensed_analog_by_adc_gain", "IL_ref", "Duty_cycle",
+            "Vo",
+            "I(L1)",
+            "IL_sensed_analog_by_adc_gain",
+            "IL_ref",
+            "Duty_cycle",
         ],
         "tunable_params": [],
         "acceptance_criteria": {
@@ -197,14 +339,6 @@ _TOPOLOGY_METRICS: dict[str, dict] = {
 def get_topology_metrics(topology: str) -> dict | None:
     """Return metric definitions for a topology, or None if unknown."""
     return _TOPOLOGY_METRICS.get(topology)
-
-
-def get_default_tunable_params(topology: str) -> list[dict] | None:
-    """Return default tunable parameter ranges for a topology."""
-    entry = _TOPOLOGY_METRICS.get(topology)
-    if entry is None:
-        return None
-    return entry.get("tunable_params")
 
 
 def get_acceptance_criteria(topology: str) -> dict | None:

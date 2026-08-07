@@ -106,10 +106,7 @@ class AppConfig(BaseSettings):
             missing.append("PSIM_OUTPUT_DIR")
 
         if missing:
-            details = "\n".join(
-                f"  - {field} (예: {field_examples[field]})"
-                for field in missing
-            )
+            details = "\n".join(f"  - {field} (예: {field_examples[field]})" for field in missing)
             raise ValueError(
                 f"PSIM_MODE=real requires the following environment variables:\n"
                 f"{details}\n"

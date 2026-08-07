@@ -17,7 +17,7 @@ All Python operations must use `uv run`. Never use bare `python`, `pip`, or `pyt
 
 ## Project Direction
 
-VER2 is the public product: `import_circuit` → understand → `open_project` → `set_parameter` → `run_simulation` → analysis. The server registers 12 MCP tools for existing-project, parameter, simulation, result, and analysis workflows.
+VER2 is the public product: `import_circuit` → understand → `open_project` → `set_parameter` → `run_simulation` → analysis. The server registers 11 MCP tools for existing-project, parameter, simulation, result, and analysis workflows.
 
 `CircuitGraph` is the importer representation of an existing circuit: components plus electrical nets reconstructed from PSIM conversion output. Treat it as the format returned by the read-modify workflow.
 
@@ -41,7 +41,7 @@ Claude Desktop ─stdio─→ MCP Server (Python 3.12+)
 
 ### App Factory Pattern
 
-`server.py` uses `create_app(config)` to create isolated FastMCP instances. Module-level `mcp` and `config` use `__getattr__` for lazy singleton initialization.
+`server.py` uses `create_app(config)` to create isolated FastMCP instances.
 
 ```python
 app = create_app(AppConfig(psim_mode="mock"))
@@ -58,8 +58,7 @@ Select with `PSIM_MODE=mock` (default) or `PSIM_MODE=real`. Real mode requires `
 ### Services and Response Contract
 
 - `ProjectService`: open and inspect existing projects.
-- `ParameterService`: modify parameters on the open project.
-- `SimulationService`: simulate, sweep, export, compare, and report status.
+- `SimulationService`: simulate, set/sweep parameters, export, and report status.
 
 Tools use `@tool_handler("name")` for exception handling, JSON serialization, LLM-output sanitization, and the 50KB response limit. Responses use `ResponseBuilder`:
 

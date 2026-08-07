@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from pathlib import Path
 
 
@@ -180,6 +181,27 @@ class SecurityAuditLogger:
             tool_name,
             reason,
         )
+
+
+async def execute_with_audit(
+    audit: SecurityAuditLogger,
+    tool_name: str,
+    input_summary: dict,
+    handler,
+) -> dict:
+    """Execute async *handler* with timing and audit logging via *audit*."""
+    start = time.monotonic()
+    success = False
+    try:
+        result = await handler()
+        success = result.get("success", False)
+        return result
+    except Exception:
+        logging.getLogger(__name__).exception("Audit-wrapped error in %s", tool_name)
+        raise
+    finally:
+        duration = (time.monotonic() - start) * 1000
+        audit.log_tool_call(tool_name, input_summary, duration, success)
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -9,17 +9,15 @@ import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PureWindowsPath
 
 from psim_mcp.adapters.base import BasePsimAdapter, SessionToken
 
 
 def _stem_from_path(path: str) -> str:
     """Extract the file stem regardless of OS path style."""
-    # Try Windows-style first (contains backslash), then POSIX.
-    if "\\" in path:
-        return PureWindowsPath(path).stem
-    return PurePosixPath(path).stem
+    # PureWindowsPath treats both '/' and '\\' as separators on every OS
+    return PureWindowsPath(path).stem
 
 
 # Default component catalogue used by the mock adapter.
@@ -317,7 +315,6 @@ class MockPsimAdapter(BasePsimAdapter):
             metric_name = str(spec.get("name", ""))
             signal_name = str(spec.get("signal", ""))
             function_name = str(spec.get("function", ""))
-            kwargs = spec.get("kwargs", {}) or {}
 
             values = signal_data.get(signal_name)
             if not values:
@@ -354,20 +351,6 @@ class MockPsimAdapter(BasePsimAdapter):
                     result = _metric_rms(metric_values, metric_skip)
                 elif function_name == "peak":
                     result = _metric_peak(metric_values, metric_skip)
-                elif function_name == "overshoot_percent":
-                    result = _metric_overshoot_percent(
-                        metric_values,
-                        float(kwargs.get("target", 0.0)),
-                        metric_skip,
-                    )
-                elif function_name == "settling_time":
-                    result = _metric_settling_time(
-                        metric_values,
-                        time_step,
-                        float(kwargs.get("target", 0.0)),
-                        float(kwargs.get("band", 0.02)),
-                        metric_skip,
-                    )
                 else:
                     results[metric_name] = {"error": f"unknown function '{function_name}'"}
                     continue
@@ -443,6 +426,7 @@ class MockPsimAdapter(BasePsimAdapter):
                 "size": len(script_text),
             },
         }
+
 
 # ------------------------------------------------------------------
 # Helpers
@@ -567,28 +551,3 @@ def _metric_rms(values: list[float], skip_ratio: float) -> float:
 def _metric_peak(values: list[float], skip_ratio: float) -> float:
     trimmed = _skip_values(values, skip_ratio)
     return max(abs(v) for v in trimmed)
-
-
-def _metric_overshoot_percent(values: list[float], target: float, skip_ratio: float) -> float:
-    trimmed = _skip_values(values, skip_ratio)
-    if target == 0:
-        return 0.0
-    return max(0.0, (max(trimmed) - target) / abs(target) * 100.0)
-
-
-def _metric_settling_time(
-    values: list[float],
-    time_step: float,
-    target: float,
-    band: float,
-    skip_ratio: float,
-) -> float:
-    trimmed = _skip_values(values, skip_ratio)
-    if target == 0:
-        return 0.0
-    lower = target * (1.0 - band)
-    upper = target * (1.0 + band)
-    for idx, value in enumerate(trimmed):
-        if all(lower <= later <= upper for later in trimmed[idx:]):
-            return idx * time_step
-    return len(trimmed) * time_step

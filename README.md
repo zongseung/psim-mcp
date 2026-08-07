@@ -22,7 +22,7 @@
 
 - **기존 회로 자동화**: `.psimsch` 회로를 열어 소자·파라미터·전기적 넷을 복원하고 수정합니다.
 - **실제 PSIM 시뮬레이션**: PSIM 2026 엔진으로 시간 영역 시뮬레이션을 실행하고 `.smv` 결과를 분석합니다.
-- **파라미터 스윕과 비교**: 단일 파라미터 범위 실험(`sweep_parameter`)과 결과 간 비교(`compare_results`)를 제공합니다.
+- **파라미터 스윕**: 단일 파라미터 범위 실험(`sweep_parameter`)으로 반복 시뮬레이션을 자동화합니다.
 - **제한된 Optuna 최적화**: 원본을 보존하는 격리 사본에서 L/C/설계 저항 값을 최적화합니다(`optimize_circuit`).
 - **에이전트 스킬 내장**: 회로 워크플로·최적화 절차를 스킬로 제공해 Claude Code와 Codex가 같은 원칙으로 작업합니다.
 
@@ -66,6 +66,8 @@ psim-mcp는 MCP 클라이언트가 기존 Altair PSIM 회로를 열고, 구조�
 3. 단일 변경은 `set_parameter`, 반복 실험은 `sweep_parameter`, 제한 최적화는 `optimize_circuit`를 사용합니다.
 4. `run_simulation`으로 PSIM을 실행합니다.
 5. `analyze_simulation`, `analyze_existing`, `export_results`로 결과를 확인합니다.
+
+지원하지 않는 것: 새 토폴로지 생성 도구, 결과 간 자동 비교(before/after 비교는 두 결과를 각각 `analyze_existing`으로 분석해 대조).
 
 `real` 모드는 실제 PSIM을 사용합니다. `mock` 모드는 개발과 MCP 연결 시험을 위한 결정론적 대체 구현이며 실제 회로 성능의 근거가 아닙니다.
 
@@ -198,7 +200,7 @@ Claude Desktop의 `claude_desktop_config.json`에 다음 서버 정의를 추가
 
 Codex 등 [agentskills.io](https://agentskills.io) 스펙을 따르는 에이전트는 저장소의 `.agents/skills/` 디렉터리에서 동일한 스킬을 사용합니다. 두 위치의 스킬 파일은 CI 테스트(`tests/unit/test_skills_sync.py`)로 동기화가 강제됩니다.
 
-## 공개 도구 12개 기술 명세
+## 공개 도구 11개 기술 명세
 
 | 도구 | 입력 개요 | 동작과 파일 영향 |
 | --- | --- | --- |
@@ -209,7 +211,6 @@ Codex 등 [agentskills.io](https://agentskills.io) 스펙을 따르는 에이전
 | `sweep_parameter` | 단일 파라미터 범위와 step | 값을 순차 저장·시뮬레이션하며 마지막 값이 열린 프로젝트에 남음; 최대 단계 제한 적용 |
 | `run_simulation` | 선택적 timestep, total time, timeout, Simview | 현재 프로젝트를 실행하고 `.smv` 결과를 생성 |
 | `export_results` | 출력 디렉터리, `json`/`csv`, 신호 목록 | 최근 시뮬레이션 결과를 파일로 내보냄 |
-| `compare_results` | 두 결과 경로, 신호 목록 | 기본 비교 인터페이스; 서비스 구현이 없으면 비교 값이 `null`인 P1 응답 반환 |
 | `get_status` | 없음 | PSIM 가용성, 버전, 현재 프로젝트 상태 조회 |
 | `analyze_simulation` | topology, 목표, 파형 옵션 | 시뮬레이션 후 topology별 메트릭·샘플·선택적 PNG 생성 |
 | `analyze_existing` | `.smv`, topology, 목표, 파형 옵션 | 재실행 없이 기존 결과 분석; 메트릭이 비면 `available_signals` 확인 필요 |

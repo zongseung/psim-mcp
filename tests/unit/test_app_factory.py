@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from psim_mcp.adapters.mock_adapter import MockPsimAdapter
 from psim_mcp.config import AppConfig
-from psim_mcp.server import create_adapter, create_app, create_service
+from psim_mcp.server import create_adapter, create_app
 from psim_mcp.services.simulation_service import SimulationService
 
 
@@ -33,7 +33,6 @@ EXPECTED_TOOLS = {
     "sweep_parameter",
     "run_simulation",
     "export_results",
-    "compare_results",
     "get_status",
     "analyze_simulation",
     "analyze_existing",
@@ -85,20 +84,9 @@ def test_create_adapter_real_skipped_or_mocked(tmp_path: Path):
         return_value=fake_adapter,
     ):
         from psim_mcp.server import create_adapter as patched
+
         result = patched(cfg)
         assert result is fake_adapter
-
-
-# ------------------------------------------------------------------
-# create_service
-# ------------------------------------------------------------------
-
-
-def test_create_service_returns_simulation_service():
-    """create_service should return a SimulationService."""
-    cfg = AppConfig(psim_mode="mock")
-    svc = create_service(cfg)
-    assert isinstance(svc, SimulationService)
 
 
 # ------------------------------------------------------------------

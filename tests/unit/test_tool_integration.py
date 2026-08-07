@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from psim_mcp.config import AppConfig
-from psim_mcp.server import create_app, create_service
+from psim_mcp.server import create_app
 from psim_mcp.services.simulation_service import SimulationService
 
 
@@ -118,18 +118,6 @@ async def test_sweep_parameter_small_range(
 
 
 # ------------------------------------------------------------------
-# compare_results — P1 stub
-# ------------------------------------------------------------------
-
-
-async def test_compare_results_returns_p1_stub(service: SimulationService):
-    """compare_results is a P1 feature; verify the stub returns the standard envelope."""
-    # The service does not have compare_results, so the tool falls back
-    # to a stub — but we can test the stub logic directly.
-    assert not hasattr(service, "compare_results")
-
-
-# ------------------------------------------------------------------
 # export with output_dir=None and no config dir
 # ------------------------------------------------------------------
 
@@ -142,7 +130,7 @@ async def test_export_no_output_dir_no_config(tmp_path: Path):
         log_dir=tmp_path / "logs",
         allowed_project_dirs=[str(tmp_path)],
     )
-    svc = create_service(cfg)
+    svc = create_app(cfg)._psim_service
 
     # Open and run so there are results to export
     proj = tmp_path / "p.psimsch"

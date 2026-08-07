@@ -91,9 +91,7 @@ class AnalysisService:
                     all_pass = False
                     continue
                 error_pct = (
-                    abs(actual - target_val) / abs(target_val) * 100
-                    if target_val != 0
-                    else 0
+                    abs(actual - target_val) / abs(target_val) * 100 if target_val != 0 else 0
                 )
                 passed = error_pct < 5.0  # 5 % tolerance
                 comparison[metric_name] = {
@@ -160,10 +158,7 @@ class AnalysisService:
                             "last": float(sampled[-1]) if sampled else 0.0,
                             "min": float(min(sampled)) if sampled else 0.0,
                             "max": float(max(sampled)) if sampled else 0.0,
-                            "mean": (
-                                float(sum(sampled) / len(sampled))
-                                if sampled else 0.0
-                            ),
+                            "mean": (float(sum(sampled) / len(sampled)) if sampled else 0.0),
                             "values": [float(v) for v in sampled],
                         }
             except Exception:

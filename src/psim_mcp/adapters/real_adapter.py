@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import logging
 import os
@@ -40,19 +39,6 @@ class CircuitState(Enum):
     HALF_OPEN = "half_open"
 
 
-@dataclasses.dataclass
-class BridgeMetrics:
-    """Observable operational metrics for the bridge subprocess."""
-
-    restart_count: int = 0
-    total_calls: int = 0
-    failure_count: int = 0
-    consecutive_failures: int = 0
-    circuit_state: str = "closed"
-    last_error: str | None = None
-    last_error_time: float | None = None
-
-
 class RealPsimAdapter(BasePsimAdapter):
     """Adapter that communicates with PSIM through a Python bridge script.
 
@@ -83,7 +69,6 @@ class RealPsimAdapter(BasePsimAdapter):
         self._circuit_opened_at: float | None = None
         self._consecutive_failures: int = 0
         self._total_restarts: int = 0
-        self._metrics = BridgeMetrics()
 
         # Startup validation: bridge script must exist
         if not Path(self._bridge_script).is_file():
@@ -139,8 +124,6 @@ class RealPsimAdapter(BasePsimAdapter):
             self._circuit_state = CircuitState.CLOSED
             self._circuit_opened_at = None
             self._consecutive_failures = 0
-            self._metrics.circuit_state = CircuitState.CLOSED.value
-            self._metrics.consecutive_failures = 0
         finally:
             self._lock.release()
 
@@ -198,7 +181,6 @@ class RealPsimAdapter(BasePsimAdapter):
             if elapsed >= _CIRCUIT_BREAKER_COOLDOWN:
                 logger.info("Circuit breaker cooldown elapsed, transitioning to HALF_OPEN")
                 self._circuit_state = CircuitState.HALF_OPEN
-                self._metrics.circuit_state = CircuitState.HALF_OPEN.value
                 return
             raise RuntimeError(
                 f"Circuit breaker is OPEN — bridge failed {self._consecutive_failures} "
@@ -209,20 +191,14 @@ class RealPsimAdapter(BasePsimAdapter):
     def _record_success(self) -> None:
         """Reset failure counters on a successful bridge call."""
         self._consecutive_failures = 0
-        self._metrics.consecutive_failures = 0
         if self._circuit_state is CircuitState.HALF_OPEN:
             logger.info("Probe call succeeded, circuit breaker → CLOSED")
             self._circuit_state = CircuitState.CLOSED
             self._circuit_opened_at = None
-            self._metrics.circuit_state = CircuitState.CLOSED.value
 
     def _record_failure(self, error: str) -> None:
         """Increment failure counters; open circuit breaker if threshold reached."""
         self._consecutive_failures += 1
-        self._metrics.consecutive_failures = self._consecutive_failures
-        self._metrics.failure_count += 1
-        self._metrics.last_error = error
-        self._metrics.last_error_time = time.monotonic()
 
         if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
             logger.error(
@@ -231,21 +207,6 @@ class RealPsimAdapter(BasePsimAdapter):
             )
             self._circuit_state = CircuitState.OPEN
             self._circuit_opened_at = time.monotonic()
-            self._metrics.circuit_state = CircuitState.OPEN.value
-
-    def get_metrics(self) -> dict:
-        """Return a snapshot of operational metrics."""
-        return dataclasses.asdict(self._metrics)
-
-    async def health_check(self) -> dict:
-        """Proactive health assessment of the bridge subprocess."""
-        process_alive = self._process is not None and self._process.returncode is None
-        return {
-            "healthy": self._circuit_state is CircuitState.CLOSED and process_alive,
-            "circuit_state": self._circuit_state.value,
-            "process_alive": process_alive,
-            "metrics": self.get_metrics(),
-        }
 
     # ------------------------------------------------------------------
     # Internal bridge call
@@ -263,7 +224,6 @@ class RealPsimAdapter(BasePsimAdapter):
             )
 
         self._total_restarts += 1
-        self._metrics.restart_count = self._total_restarts
 
         logger.info(
             "Starting bridge process (%d/%d): %s %s",
@@ -352,7 +312,6 @@ class RealPsimAdapter(BasePsimAdapter):
             RuntimeError: If the bridge process dies, returns invalid JSON,
                 or the circuit breaker is open.
         """
-        self._metrics.total_calls += 1
         self._check_circuit_breaker()
 
         payload = json.dumps({"action": action, "params": params or {}})
@@ -501,7 +460,8 @@ class RealPsimAdapter(BasePsimAdapter):
     ) -> dict:
         """Set a component parameter via the bridge."""
         result = await self._call_bridge(
-            "set_parameter", {
+            "set_parameter",
+            {
                 "component_id": component_id,
                 "parameter_name": parameter_name,
                 "value": value,
@@ -527,7 +487,9 @@ class RealPsimAdapter(BasePsimAdapter):
             try:
                 requested.relative_to(self._study_dir)
             except ValueError:
-                raise RuntimeError("Simulation output path must stay inside the study directory") from None
+                raise RuntimeError(
+                    "Simulation output path must stay inside the study directory"
+                ) from None
 
         result = await self._call_bridge(
             "run_simulation",

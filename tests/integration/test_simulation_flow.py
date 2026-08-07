@@ -17,7 +17,11 @@ class TestOpenSimulateExport:
     """End-to-end: open project → run simulation → export results."""
 
     async def test_open_simulate_export(
-        self, project_service, simulation_service, project_file: Path, tmp_path: Path,
+        self,
+        project_service,
+        simulation_service,
+        project_file: Path,
+        tmp_path: Path,
     ):
         # Step 1: Open project
         open_result = await project_service.open_project(str(project_file))
@@ -37,7 +41,10 @@ class TestOpenSimulateExport:
         assert len(export_result["data"]["exported_files"]) > 0
 
     async def test_open_set_parameter_simulate(
-        self, project_service, simulation_service, project_file: Path,
+        self,
+        project_service,
+        simulation_service,
+        project_file: Path,
     ):
         """Open → change parameter → simulate successfully."""
         await project_service.open_project(str(project_file))
@@ -63,7 +70,11 @@ class TestSimulationGuardRails:
         assert result["error"]["code"] == "NO_PROJECT"
 
     async def test_export_without_simulation(
-        self, project_service, simulation_service, project_file: Path, tmp_path: Path,
+        self,
+        project_service,
+        simulation_service,
+        project_file: Path,
+        tmp_path: Path,
     ):
         await project_service.open_project(str(project_file))
 
@@ -83,7 +94,9 @@ class TestProjectInfo:
     """Verify project info retrieval through the full stack."""
 
     async def test_get_project_info_after_open(
-        self, project_service, project_file: Path,
+        self,
+        project_service,
+        project_file: Path,
     ):
         await project_service.open_project(str(project_file))
 

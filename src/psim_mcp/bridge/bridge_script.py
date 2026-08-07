@@ -139,9 +139,9 @@ _PARAM_NAME_MAP = {
     "NoOfPoints": "No__of_Points",
     "Switching_Points": "Switching_Points",
     # Transformer — PSIM uses Np/Ns (not Ratio)
-    "turns_ratio": None,             # skip — use np_turns/ns_turns instead
-    "np_turns": "Np__primary_",      # primary turns count
-    "ns_turns": "Ns__secondary_",    # secondary turns count
+    "turns_ratio": None,  # skip — use np_turns/ns_turns instead
+    "np_turns": "Np__primary_",  # primary turns count
+    "ns_turns": "Ns__secondary_",  # secondary turns count
     "magnetizing_inductance": "Lm__magnetizing_",
     "primary_inductance": "Inductance",
     # Series impedance (sources)
@@ -255,7 +255,8 @@ def _get_psim():
 
     if not p or not p.IsValid():
         raise RuntimeError(
-            "PSIM 인스턴스 생성 실패. PSIM_PATH=%s 경로에 psim2.dll이 있는지 확인하세요." % psim_path
+            "PSIM 인스턴스 생성 실패. PSIM_PATH=%s 경로에 psim2.dll이 있는지 확인하세요."
+            % psim_path
         )
 
     _psim_instance = p
@@ -265,6 +266,7 @@ def _get_psim():
 # ---------------------------------------------------------------------------
 # Action Handlers
 # ---------------------------------------------------------------------------
+
 
 def handle_open_project(params):
     """PSIM 프로젝트 파일(.psimsch)을 연다."""
@@ -301,19 +303,19 @@ def handle_open_project(params):
                         "index": elem.Index,
                     }
                     if hasattr(elem, "Params") and elem.Params:
-                        comp["parameters"] = {
-                            param.Name: param.Value for param in elem.Params
-                        }
+                        comp["parameters"] = {param.Name: param.Value for param in elem.Params}
                     components.append(comp)
         except Exception:
             pass  # 소자 목록 조회 실패해도 파일 열기는 성공
 
-        return _success({
-            "path": path,
-            "status": "opened",
-            "component_count": len(components),
-            "components": components[:50],  # 최대 50개만 반환
-        })
+        return _success(
+            {
+                "path": path,
+                "status": "opened",
+                "component_count": len(components),
+                "components": components[:50],  # 최대 50개만 반환
+            }
+        )
 
     except Exception as e:
         return _error("PSIM_ERROR", "프로젝트 열기 실패: %s" % str(e))
@@ -363,14 +365,16 @@ def handle_set_parameter(params):
             if _current_path:
                 p.PsimFileSave(_current_sch, _current_path)
 
-        return _success({
-            "component_id": component_id,
-            "parameter_name": parameter_name,
-            "psim_parameter_name": psim_parameter_name,
-            "new_value": str(value),
-            "persisted": bool(_current_path),
-            "raw_result": result,
-        })
+        return _success(
+            {
+                "component_id": component_id,
+                "parameter_name": parameter_name,
+                "psim_parameter_name": psim_parameter_name,
+                "new_value": str(value),
+                "persisted": bool(_current_path),
+                "raw_result": result,
+            }
+        )
 
     except Exception as e:
         return _error("PSIM_ERROR", "Parameter update failed: %s" % str(e))
@@ -404,13 +408,11 @@ def handle_run_simulation(params):
         # ignored — PSIM reads those values from the schematic's
         # "Simulation Control" element instead.  Patch the element directly
         # (same call the chassis ``simulation_overrides`` flow uses).
-        for opt_key, sch_key in (("total_time", "TOTALTIME"),
-                                  ("time_step", "TIMESTEP")):
+        for opt_key, sch_key in (("total_time", "TOTALTIME"), ("time_step", "TIMESTEP")):
             if opt_key in options:
                 try:
                     with _suppress_stdout():
-                        p.PsimSetElmValue(sim_target, None, sch_key,
-                                          str(options[opt_key]))
+                        p.PsimSetElmValue(sim_target, None, sch_key, str(options[opt_key]))
                 except Exception:
                     pass  # best-effort; sim may still run with schematic default
 
@@ -440,13 +442,15 @@ def handle_run_simulation(params):
                     summary["last_value"] = curve.Values[curve.Rows - 1]
                 graph_summary.append(summary)
 
-        return _success({
-            "status": "completed",
-            "duration_seconds": round(duration, 3),
-            "output_path": output_path,
-            "signal_count": len(graph_summary),
-            "signals": graph_summary,
-        })
+        return _success(
+            {
+                "status": "completed",
+                "duration_seconds": round(duration, 3),
+                "output_path": output_path,
+                "signal_count": len(graph_summary),
+                "signals": graph_summary,
+            }
+        )
 
     except Exception as e:
         return _error("SIMULATION_FAILED", "시뮬레이션 실행 실패: %s" % str(e))
@@ -498,13 +502,15 @@ def handle_export_results(params):
                         values.append("")
                 f.write(",".join(values) + "\n")
 
-        return _success({
-            "output_file": out_file,
-            "format": "csv",
-            "signal_count": len(graph),
-            "signal_names": [c.Name for c in graph],
-            "row_count": max_rows,
-        })
+        return _success(
+            {
+                "output_file": out_file,
+                "format": "csv",
+                "signal_count": len(graph),
+                "signal_names": [c.Name for c in graph],
+                "row_count": max_rows,
+            }
+        )
 
     except Exception as e:
         return _error("EXPORT_FAILED", "결과 추출 실패: %s" % str(e))
@@ -517,26 +523,32 @@ def handle_get_status(params):
         ver, sub, subsub, subsubsub = p.get_psim_version()
         version_name = p.get_psim_version_name()
 
-        return _success({
-            "psim_available": True,
-            "psim_version": "%d.%d.%d.%d" % (ver, sub, subsub, subsubsub),
-            "psim_version_name": version_name,
-            "psim_path": os.environ.get("PSIM_PATH", ""),
-            "project_open": _current_sch is not None,
-            "current_project": _current_path,
-        })
+        return _success(
+            {
+                "psim_available": True,
+                "psim_version": "%d.%d.%d.%d" % (ver, sub, subsub, subsubsub),
+                "psim_version_name": version_name,
+                "psim_path": os.environ.get("PSIM_PATH", ""),
+                "project_open": _current_sch is not None,
+                "current_project": _current_path,
+            }
+        )
     except ImportError:
-        return _success({
-            "psim_available": False,
-            "psim_version": None,
-            "psim_version_name": None,
-        })
+        return _success(
+            {
+                "psim_available": False,
+                "psim_version": None,
+                "psim_version_name": None,
+            }
+        )
     except Exception as e:
-        return _success({
-            "psim_available": False,
-            "psim_version": None,
-            "error": str(e),
-        })
+        return _success(
+            {
+                "psim_available": False,
+                "psim_version": None,
+                "error": str(e),
+            }
+        )
 
 
 def handle_get_project_info(params):
@@ -561,17 +573,17 @@ def handle_get_project_info(params):
                     "index": elem.Index,
                 }
                 if hasattr(elem, "Params") and elem.Params:
-                    comp["parameters"] = {
-                        param.Name: param.Value for param in elem.Params
-                    }
+                    comp["parameters"] = {param.Name: param.Value for param in elem.Params}
                 components.append(comp)
 
-        return _success({
-            "path": _current_path,
-            "is_subcircuit": is_sub,
-            "component_count": len(components),
-            "components": components,
-        })
+        return _success(
+            {
+                "path": _current_path,
+                "is_subcircuit": is_sub,
+                "component_count": len(components),
+                "components": components,
+            }
+        )
 
     except Exception as e:
         return _error("PSIM_ERROR", "프로젝트 정보 조회 실패: %s" % str(e))
@@ -594,10 +606,9 @@ def handle_convert_to_python(params):
     output_path = params.get("output_path")
     if not output_path:
         import tempfile
+
         base = os.path.splitext(os.path.basename(path))[0]
-        output_path = os.path.join(
-            tempfile.gettempdir(), "%s_converted.py" % base
-        )
+        output_path = os.path.join(tempfile.gettempdir(), "%s_converted.py" % base)
 
     try:
         p = _get_psim()
@@ -609,12 +620,14 @@ def handle_convert_to_python(params):
             )
         with open(output_path, "r", encoding="utf-8", errors="replace") as f:
             script_text = f.read()
-        return _success({
-            "source_path": path,
-            "script_path": output_path,
-            "script_text": script_text,
-            "size": len(script_text),
-        })
+        return _success(
+            {
+                "source_path": path,
+                "script_path": output_path,
+                "script_text": script_text,
+                "size": len(script_text),
+            }
+        )
     except Exception as e:
         return _error("PSIM_ERROR", "스키매틱 변환 실패: %s" % str(e))
 
@@ -622,6 +635,7 @@ def handle_convert_to_python(params):
 # ---------------------------------------------------------------------------
 # Simulation metric extraction functions
 # ---------------------------------------------------------------------------
+
 
 def _steady_state_slice(values, skip_ratio=0.5):
     """Skip transient startup, return steady-state portion."""
@@ -667,23 +681,6 @@ def _metric_peak(values, skip_ratio=0.5):
     return max(abs(value) for value in ss) if ss else 0.0
 
 
-def _metric_overshoot_percent(values, target, skip_ratio=0.0):
-    if not values or target == 0:
-        return 0.0
-    peak = max(values)
-    return max(0.0, (peak - target) / abs(target) * 100.0)
-
-
-def _metric_settling_time(values, time_step, target, band=0.02, skip_ratio=0.0):
-    if not values or target == 0:
-        return 0.0
-    threshold = abs(target * band)
-    for i in range(len(values) - 1, -1, -1):
-        if abs(values[i] - target) > threshold:
-            return (i + 1) * time_step
-    return 0.0
-
-
 _METRIC_FUNCTIONS = {
     "mean": _metric_mean,
     "ripple_pp": _metric_ripple_pp,
@@ -692,14 +689,13 @@ _METRIC_FUNCTIONS = {
     "peak": _metric_peak,
     "max": _metric_max_value,
     "min": _metric_min_value,
-    "overshoot_percent": _metric_overshoot_percent,
-    "settling_time": _metric_settling_time,
 }
 
 
 # ---------------------------------------------------------------------------
 # Signal extraction and metric computation handlers
 # ---------------------------------------------------------------------------
+
 
 def _slice_metric_values(values, window):
     start_fraction = float(window["start_fraction"])
@@ -714,14 +710,13 @@ def _slice_metric_values(values, window):
     end_index = math.ceil(len(values) * end_fraction)
     sliced = values[start_index:end_index]
     if len(sliced) < min_samples:
-        raise ValueError(
-            "metric window has %d samples; requires %d" % (len(sliced), min_samples)
-        )
+        raise ValueError("metric window has %d samples; requires %d" % (len(sliced), min_samples))
     return sliced, {
         "start_index": start_index,
         "end_index": end_index,
         "point_count": len(sliced),
     }
+
 
 def handle_extract_signals(params):
     """Extract raw signal data from the last simulation or a graph file."""
@@ -749,7 +744,7 @@ def handle_extract_signals(params):
     for curve in res.Graph:
         if signal_names and curve.Name not in signal_names:
             continue
-        values = list(curve.Values[:curve.Rows])
+        values = list(curve.Values[: curve.Rows])
         start = int(len(values) * skip_ratio)
         values = values[start:]
         if len(values) > max_points:
@@ -757,12 +752,14 @@ def handle_extract_signals(params):
             values = values[::step]
         output[curve.Name] = [round(v, 9) for v in values]
 
-    return _success({
-        "signals": output,
-        "signal_names": list(output.keys()),
-        "point_count": len(next(iter(output.values()), [])),
-        "graph_file": graph_file,
-    })
+    return _success(
+        {
+            "signals": output,
+            "signal_names": list(output.keys()),
+            "point_count": len(next(iter(output.values()), [])),
+            "graph_file": graph_file,
+        }
+    )
 
 
 def handle_compute_metrics(params):
@@ -770,7 +767,6 @@ def handle_compute_metrics(params):
     graph_file = params.get("graph_file", "")
     metrics_spec = params.get("metrics", [])
     skip_ratio = float(params.get("skip_ratio", 0.5))
-    time_step = float(params.get("time_step", 1e-6))
 
     p = _get_psim()
 
@@ -800,14 +796,12 @@ def handle_compute_metrics(params):
     # curve into a Python list took 4+ minutes and tripped the MCP tool-call
     # timeout; filtering to the 1-3 referenced signals keeps analyze_existing
     # in single-digit seconds.
-    needed_signal_names = {
-        spec.get("signal", "") for spec in metrics_spec if spec.get("signal")
-    }
+    needed_signal_names = {spec.get("signal", "") for spec in metrics_spec if spec.get("signal")}
     signal_data = {}
     for curve in res.Graph:
         if needed_signal_names and curve.Name not in needed_signal_names:
             continue
-        signal_data[curve.Name] = list(curve.Values[:curve.Rows])
+        signal_data[curve.Name] = list(curve.Values[: curve.Rows])
 
     results = {}
     windows = {}
@@ -815,7 +809,6 @@ def handle_compute_metrics(params):
         name = spec.get("name", "")
         sig_name = spec.get("signal", "")
         fn_name = spec.get("function", "")
-        kwargs = spec.get("kwargs", {})
 
         if sig_name not in signal_data:
             results[name] = {"error": "signal '%s' not found" % sig_name}
@@ -836,31 +829,26 @@ def handle_compute_metrics(params):
                 windows[name] = evidence
                 metric_skip_ratio = 0.0
 
-            if fn_name in ("overshoot_percent",):
-                target = float(kwargs.get("target", 0))
-                result = fn(metric_values, target, metric_skip_ratio)
-            elif fn_name in ("settling_time",):
-                target = float(kwargs.get("target", 0))
-                band = float(kwargs.get("band", 0.02))
-                result = fn(metric_values, time_step, target, band, metric_skip_ratio)
-            else:
-                result = fn(metric_values, metric_skip_ratio)
+            result = fn(metric_values, metric_skip_ratio)
             results[name] = round(result, 6)
         except Exception as e:
             results[name] = {"error": str(e)}
 
-    return _success({
-        "metrics": results,
-        "available_signals": all_signal_names,
-        "loaded_signals": list(signal_data.keys()),
-        "graph_file": graph_file,
-        "windows": windows,
-    })
+    return _success(
+        {
+            "metrics": results,
+            "available_signals": all_signal_names,
+            "loaded_signals": list(signal_data.keys()),
+            "graph_file": graph_file,
+            "windows": windows,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # Response Helpers
 # ---------------------------------------------------------------------------
+
 
 def _success(data):
     """표준 성공 응답을 생성한다."""
@@ -909,7 +897,8 @@ def main():
             if handler is None:
                 output = _error(
                     "UNKNOWN_ACTION",
-                    "알 수 없는 action: %s. 지원: %s" % (action, ", ".join(_ACTION_HANDLERS.keys())),
+                    "알 수 없는 action: %s. 지원: %s"
+                    % (action, ", ".join(_ACTION_HANDLERS.keys())),
                 )
             else:
                 output = handler(params)

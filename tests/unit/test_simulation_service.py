@@ -8,6 +8,7 @@ import pytest
 
 from psim_mcp.adapters.mock_adapter import MockPsimAdapter
 from psim_mcp.config import AppConfig
+from psim_mcp.services.project_service import ProjectService
 from psim_mcp.services.simulation_service import SimulationService
 
 
@@ -18,7 +19,11 @@ def mock_adapter() -> MockPsimAdapter:
 
 @pytest.fixture
 def service(mock_adapter: MockPsimAdapter, test_config: AppConfig) -> SimulationService:
-    return SimulationService(adapter=mock_adapter, config=test_config)
+    return SimulationService(
+        adapter=mock_adapter,
+        config=test_config,
+        project_service=ProjectService(adapter=mock_adapter, config=test_config),
+    )
 
 
 class TestOpenProject:
@@ -66,7 +71,9 @@ class TestSetParameter:
         assert result["success"] is False
         assert result["error"]["code"] == "NO_PROJECT"
 
-    async def test_invalid_component_id(self, service: SimulationService, sample_project_path: Path):
+    async def test_invalid_component_id(
+        self, service: SimulationService, sample_project_path: Path
+    ):
         await service.open_project(str(sample_project_path))
         result = await service.set_parameter("invalid!@#", "voltage", 24.0)
 
@@ -91,7 +98,9 @@ class TestRunSimulation:
 
 
 class TestExportResults:
-    async def test_success(self, service: SimulationService, sample_project_path: Path, tmp_path: Path):
+    async def test_success(
+        self, service: SimulationService, sample_project_path: Path, tmp_path: Path
+    ):
         await service.open_project(str(sample_project_path))
         await service.run_simulation()
         result = await service.export_results(str(tmp_path), format="json")
@@ -100,7 +109,9 @@ class TestExportResults:
         assert "exported_files" in result["data"]
         assert len(result["data"]["exported_files"]) > 0
 
-    async def test_unsupported_format(self, service: SimulationService, sample_project_path: Path, tmp_path: Path):
+    async def test_unsupported_format(
+        self, service: SimulationService, sample_project_path: Path, tmp_path: Path
+    ):
         await service.open_project(str(sample_project_path))
         await service.run_simulation()
         result = await service.export_results(str(tmp_path), format="xlsx")

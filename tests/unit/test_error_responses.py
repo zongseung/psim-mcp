@@ -8,6 +8,7 @@ import pytest
 
 from psim_mcp.adapters.mock_adapter import MockPsimAdapter
 from psim_mcp.config import AppConfig
+from psim_mcp.services.project_service import ProjectService
 from psim_mcp.services.simulation_service import SimulationService
 
 
@@ -18,7 +19,11 @@ def mock_adapter() -> MockPsimAdapter:
 
 @pytest.fixture
 def service(mock_adapter: MockPsimAdapter, test_config: AppConfig) -> SimulationService:
-    return SimulationService(adapter=mock_adapter, config=test_config)
+    return SimulationService(
+        adapter=mock_adapter,
+        config=test_config,
+        project_service=ProjectService(adapter=mock_adapter, config=test_config),
+    )
 
 
 KNOWN_ERROR_CODES = {
@@ -64,13 +69,17 @@ class TestErrorResponseFormat:
         result = await service.run_simulation()
         _assert_error_response(result)
 
-    async def test_invalid_format_export_error(self, service: SimulationService, sample_project_path: Path):
+    async def test_invalid_format_export_error(
+        self, service: SimulationService, sample_project_path: Path
+    ):
         await service.open_project(str(sample_project_path))
         await service.run_simulation()
         result = await service.export_results("/tmp/out", format="xlsx")
         _assert_error_response(result)
 
-    async def test_validation_error_special_chars(self, service: SimulationService, sample_project_path: Path):
+    async def test_validation_error_special_chars(
+        self, service: SimulationService, sample_project_path: Path
+    ):
         await service.open_project(str(sample_project_path))
         result = await service.set_parameter("bad!id", "voltage", 1.0)
         _assert_error_response(result)
@@ -79,16 +88,22 @@ class TestErrorResponseFormat:
 class TestSuccessResponseFormat:
     """All success responses must have success=True and a data field."""
 
-    async def test_open_project_success_format(self, service: SimulationService, sample_project_path: Path):
+    async def test_open_project_success_format(
+        self, service: SimulationService, sample_project_path: Path
+    ):
         result = await service.open_project(str(sample_project_path))
         _assert_success_response(result)
 
-    async def test_set_parameter_success_format(self, service: SimulationService, sample_project_path: Path):
+    async def test_set_parameter_success_format(
+        self, service: SimulationService, sample_project_path: Path
+    ):
         await service.open_project(str(sample_project_path))
         result = await service.set_parameter("V1", "voltage", 24.0)
         _assert_success_response(result)
 
-    async def test_run_simulation_success_format(self, service: SimulationService, sample_project_path: Path):
+    async def test_run_simulation_success_format(
+        self, service: SimulationService, sample_project_path: Path
+    ):
         await service.open_project(str(sample_project_path))
         result = await service.run_simulation()
         _assert_success_response(result)
@@ -101,7 +116,9 @@ class TestSuccessResponseFormat:
 class TestErrorCodeValidity:
     """Error codes should come from the known standard set."""
 
-    async def test_all_error_codes_are_known(self, service: SimulationService, sample_project_path: Path, tmp_path: Path):
+    async def test_all_error_codes_are_known(
+        self, service: SimulationService, sample_project_path: Path, tmp_path: Path
+    ):
         error_results = []
 
         # Collect various error responses
@@ -124,7 +141,9 @@ class TestErrorCodeValidity:
 class TestServerStability:
     """Server should not crash after multiple error calls."""
 
-    async def test_multiple_errors_then_success(self, service: SimulationService, sample_project_path: Path):
+    async def test_multiple_errors_then_success(
+        self, service: SimulationService, sample_project_path: Path
+    ):
         # Fire several errors first
         for _ in range(5):
             await service.open_project("")
@@ -142,6 +161,7 @@ class TestServerStability:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
 
 def _assert_error_response(result: dict) -> None:
     assert result["success"] is False, f"Expected failure, got: {result}"

@@ -5,14 +5,7 @@ from __future__ import annotations
 from psim_mcp.tools import tool_handler
 
 
-def _get_service():
-    """Lazy import to avoid circular dependency with server.py."""
-    from psim_mcp.server import mcp  # noqa: F811
-
-    return mcp._psim_service
-
-
-def register_tools(mcp, service=None):
+def register_tools(mcp, service):
     """Register simulation-related tools on the given MCP instance."""
 
     @mcp.tool(
@@ -29,7 +22,6 @@ def register_tools(mcp, service=None):
         simview: bool = True,
     ) -> str:
         """Execute the simulation with optional parameter overrides."""
-        svc = service or _get_service()
         # Build options dict from non-None parameters only
         options: dict = {}
         if time_step is not None:
@@ -40,4 +32,4 @@ def register_tools(mcp, service=None):
             options["timeout"] = timeout
         options["simview"] = 1 if simview else 0
 
-        return await svc.run_simulation(options if options else None)
+        return await service.run_simulation(options if options else None)

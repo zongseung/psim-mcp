@@ -6,7 +6,6 @@ from psim_mcp.services.validators import (
     ValidationResult,
     validate_component_id,
     validate_output_format,
-    validate_parameter_name,
     validate_parameter_value,
     validate_project_path,
 )
@@ -17,7 +16,6 @@ __all__ = [
     "ValidationResult",
     "validate_component_id",
     "validate_output_format",
-    "validate_parameter_name",
     "validate_parameter_value",
     "validate_project_path",
 ]

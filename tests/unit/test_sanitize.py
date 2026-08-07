@@ -6,7 +6,6 @@ from psim_mcp.utils.sanitize import (
     sanitize_for_llm_context,
     sanitize_path_for_display,
     truncate_response,
-    sanitize_component_name,
 )
 
 
@@ -116,30 +115,3 @@ class TestTruncateResponse:
         text = "x" * 55_000
         result = truncate_response(text)
         assert result.endswith("]")
-
-
-# ------------------------------------------------------------------
-# sanitize_component_name
-# ------------------------------------------------------------------
-
-
-class TestSanitizeComponentName:
-    """Only allow alphanumeric, underscore, hyphen, dot."""
-
-    def test_clean_name_unchanged(self):
-        assert sanitize_component_name("R1_load") == "R1_load"
-
-    def test_dot_and_hyphen_allowed(self):
-        assert sanitize_component_name("V.in-1") == "V.in-1"
-
-    def test_spaces_replaced(self):
-        assert sanitize_component_name("my component") == "my_component"
-
-    def test_special_chars_replaced(self):
-        result = sanitize_component_name("comp@#$%name")
-        assert "@" not in result
-        assert "#" not in result
-        assert result == "comp____name"
-
-    def test_empty_string(self):
-        assert sanitize_component_name("") == ""

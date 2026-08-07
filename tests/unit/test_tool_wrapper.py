@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from psim_mcp.tools import encode_response, tool_handler
 
@@ -50,7 +49,6 @@ def test_encode_response_truncates_large_responses():
 # ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tool_handler_catches_exceptions():
     """When the wrapped function raises, tool_handler returns format_tool_error."""
 
@@ -69,7 +67,6 @@ async def test_tool_handler_catches_exceptions():
 # ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tool_handler_encodes_successful_result():
     """On success the handler should encode_response the returned dict."""
 
@@ -88,7 +85,6 @@ async def test_tool_handler_encodes_successful_result():
 # ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tool_handler_works_with_async():
     """tool_handler must properly await async handlers."""
     import asyncio

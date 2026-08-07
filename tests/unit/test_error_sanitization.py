@@ -9,6 +9,7 @@ import pytest
 
 from psim_mcp.adapters.mock_adapter import MockPsimAdapter
 from psim_mcp.config import AppConfig
+from psim_mcp.services.project_service import ProjectService
 from psim_mcp.services.simulation_service import SimulationService
 
 
@@ -16,14 +17,22 @@ from psim_mcp.services.simulation_service import SimulationService
 def service(test_config: AppConfig) -> SimulationService:
     """SimulationService backed by a real MockPsimAdapter."""
     adapter = MockPsimAdapter()
-    return SimulationService(adapter=adapter, config=test_config)
+    return SimulationService(
+        adapter=adapter,
+        config=test_config,
+        project_service=ProjectService(adapter=adapter, config=test_config),
+    )
 
 
 @pytest.fixture
 def service_with_failing_adapter(test_config: AppConfig) -> SimulationService:
     """SimulationService whose adapter raises internal exceptions."""
     adapter = MockPsimAdapter()
-    return SimulationService(adapter=adapter, config=test_config)
+    return SimulationService(
+        adapter=adapter,
+        config=test_config,
+        project_service=ProjectService(adapter=adapter, config=test_config),
+    )
 
 
 # ------------------------------------------------------------------
@@ -34,7 +43,6 @@ def service_with_failing_adapter(test_config: AppConfig) -> SimulationService:
 class TestOpenProjectErrorSanitization:
     """Error messages must NOT leak full filesystem paths."""
 
-    @pytest.mark.asyncio
     async def test_nonexistent_file_no_full_path(self, service: SimulationService, tmp_path: Path):
         """Error for a missing file should not contain the full directory path."""
         fake_path = str(tmp_path / "subdir" / "deep" / "secret.psimsch")
@@ -48,7 +56,6 @@ class TestOpenProjectErrorSanitization:
         # It may contain the filename but not the full path
         assert str(tmp_path) not in error_msg
 
-    @pytest.mark.asyncio
     async def test_disallowed_path_no_allowed_dirs_leaked(self, tmp_path: Path):
         """Error for a path outside allowed_dirs should NOT reveal the allowed dirs."""
         allowed = str(tmp_path / "safe_zone")
@@ -59,7 +66,11 @@ class TestOpenProjectErrorSanitization:
             allowed_project_dirs=[allowed],
         )
         adapter = MockPsimAdapter()
-        svc = SimulationService(adapter=adapter, config=config)
+        svc = SimulationService(
+            adapter=adapter,
+            config=config,
+            project_service=ProjectService(adapter=adapter, config=config),
+        )
 
         # Create file outside allowed dir
         outside_file = tmp_path / "outside" / "test.psimsch"
@@ -82,9 +93,10 @@ class TestOpenProjectErrorSanitization:
 class TestSetParameterErrorSanitization:
     """Validation errors should be generic and not echo raw bad input."""
 
-    @pytest.mark.asyncio
     async def test_invalid_component_id_generic_error(
-        self, service: SimulationService, sample_project_path: Path,
+        self,
+        service: SimulationService,
+        sample_project_path: Path,
     ):
         """set_parameter with invalid component_id should return a validation error."""
         # First open a project so the service allows set_parameter
@@ -107,11 +119,16 @@ class TestSetParameterErrorSanitization:
 class TestInternalExceptionSanitization:
     """When the adapter throws, the service must return a generic error, not str(exc)."""
 
-    @pytest.mark.asyncio
-    async def test_adapter_exception_not_leaked(self, test_config: AppConfig, sample_project_path: Path):
+    async def test_adapter_exception_not_leaked(
+        self, test_config: AppConfig, sample_project_path: Path
+    ):
         """An internal adapter exception message must NOT appear in the response."""
         adapter = MockPsimAdapter()
-        svc = SimulationService(adapter=adapter, config=test_config)
+        svc = SimulationService(
+            adapter=adapter,
+            config=test_config,
+            project_service=ProjectService(adapter=adapter, config=test_config),
+        )
 
         # Open project successfully first
         await svc.open_project(str(sample_project_path))
@@ -130,13 +147,18 @@ class TestInternalExceptionSanitization:
         # It should be a generic Korean error message
         assert "오류" in error_msg
 
-    @pytest.mark.asyncio
     async def test_set_parameter_adapter_exception_not_leaked(
-        self, test_config: AppConfig, sample_project_path: Path,
+        self,
+        test_config: AppConfig,
+        sample_project_path: Path,
     ):
         """set_parameter adapter errors must not leak internal details."""
         adapter = MockPsimAdapter()
-        svc = SimulationService(adapter=adapter, config=test_config)
+        svc = SimulationService(
+            adapter=adapter,
+            config=test_config,
+            project_service=ProjectService(adapter=adapter, config=test_config),
+        )
 
         await svc.open_project(str(sample_project_path))
 

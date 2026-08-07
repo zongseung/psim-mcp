@@ -9,9 +9,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from psim_mcp.shared.audit import AuditMiddleware
 from psim_mcp.shared.response import ResponseBuilder
-from psim_mcp.utils.logging import hash_input
+from psim_mcp.utils.logging import SecurityAuditLogger, execute_with_audit, hash_input
 from psim_mcp.utils.sanitize import sanitize_for_llm_context, sanitize_path_for_display
 from psim_mcp.services.validators import validate_project_path
 
@@ -33,7 +32,7 @@ class ProjectService:
         self._adapter = adapter
         self._config = config
         self._logger = logging.getLogger(__name__)
-        self._audit = AuditMiddleware()
+        self._audit = SecurityAuditLogger()
 
     async def open_project(self, path: str) -> dict:
         """Validate and open a PSIM project file."""
@@ -63,7 +62,8 @@ class ProjectService:
                     message="프로젝트를 여는 중 오류가 발생했습니다.",
                 )
 
-        return await self._audit.execute_with_audit(
+        return await execute_with_audit(
+            self._audit,
             "open_project",
             {"path_hash": hash_input(path)},
             _handler,
@@ -90,7 +90,7 @@ class ProjectService:
                     message="프로젝트 정보 조회 중 오류가 발생했습니다.",
                 )
 
-        return await self._audit.execute_with_audit("get_project_info", {}, _handler)
+        return await execute_with_audit(self._audit, "get_project_info", {}, _handler)
 
     async def import_circuit(self, path: str, include_graph: bool = False) -> dict:
         """Reconstruct the full structure (components + nets) of an existing schematic.
@@ -196,7 +196,8 @@ class ProjectService:
             )
             return ResponseBuilder.success(payload, message)
 
-        return await self._audit.execute_with_audit(
+        return await execute_with_audit(
+            self._audit,
             "import_circuit",
             {"path_hash": hash_input(path)},
             _handler,
@@ -216,7 +217,7 @@ class ProjectService:
                     message="상태 확인 중 오류가 발생했습니다.",
                 )
 
-        return await self._audit.execute_with_audit("get_status", {}, _handler)
+        return await execute_with_audit(self._audit, "get_status", {}, _handler)
 
     @property
     def is_project_open(self) -> bool:

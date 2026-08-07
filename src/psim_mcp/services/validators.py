@@ -62,9 +62,7 @@ def validate_project_path(
 
     if allowed_dirs:
         resolved = p.resolve()
-        if not any(
-            _is_subpath(resolved, Path(d).resolve()) for d in allowed_dirs
-        ):
+        if not any(_is_subpath(resolved, Path(d).resolve()) for d in allowed_dirs):
             return ValidationResult(
                 is_valid=False,
                 error_code="PATH_NOT_ALLOWED",
@@ -74,58 +72,9 @@ def validate_project_path(
     return ValidationResult(is_valid=True)
 
 
-def validate_save_path(
-    path: str,
-    allowed_dirs: list[str] | None = None,
-) -> ValidationResult:
-    """Validate an output path for a new PSIM schematic file.
-
-    Checks performed (in order):
-    1. Non-empty string.
-    2. Extension is ``.psimsch``.
-    3. Parent directory falls within *allowed_dirs* (if the list is non-empty).
-    """
-    if not path or not path.strip():
-        return ValidationResult(
-            is_valid=False,
-            error_code="EMPTY_PATH",
-            error_message="Project path must not be empty.",
-        )
-
-    p = Path(path)
-
-    if p.suffix.lower() != ".psimsch":
-        return ValidationResult(
-            is_valid=False,
-            error_code="INVALID_EXTENSION",
-            error_message=(
-                f"Expected a '.psimsch' file, got '{p.suffix}'. "
-                "Please provide a valid PSIM schematic file."
-            ),
-        )
-
-    if allowed_dirs:
-        candidate = p.resolve()
-        if not any(
-            _is_subpath(candidate, Path(d).resolve()) for d in allowed_dirs
-        ):
-            return ValidationResult(
-                is_valid=False,
-                error_code="PATH_NOT_ALLOWED",
-                error_message="지정한 저장 경로가 허용된 디렉터리 범위를 벗어났습니다.",
-            )
-
-    return ValidationResult(is_valid=True)
-
-
 def validate_component_id(component_id: str) -> bool:
     """Return *True* if *component_id* matches ``^[A-Za-z][A-Za-z0-9_]{0,63}$``."""
     return bool(_IDENTIFIER_RE.match(component_id))
-
-
-def validate_parameter_name(name: str) -> bool:
-    """Return *True* if *name* matches ``^[A-Za-z][A-Za-z0-9_]{0,63}$``."""
-    return bool(_IDENTIFIER_RE.match(name))
 
 
 def validate_parameter_value(value: object) -> bool:
@@ -218,6 +167,7 @@ def validate_output_dir(output_dir: str) -> ValidationResult:
         )
 
     import os
+
     if not os.access(dir_path, os.W_OK):
         return ValidationResult(
             is_valid=False,
@@ -251,7 +201,9 @@ def validate_signals_list(signals: list[str] | None, max_signals: int = 100) -> 
     return ValidationResult(is_valid=True)
 
 
-def validate_string_length(value: str, max_length: int = 1024, field_name: str = "값") -> ValidationResult:
+def validate_string_length(
+    value: str, max_length: int = 1024, field_name: str = "값"
+) -> ValidationResult:
     """Validate string value doesn't exceed max length."""
     if isinstance(value, str) and len(value) > max_length:
         return ValidationResult(

@@ -98,6 +98,7 @@ class TestEvaluateAcceptance:
 
     def test_forward_has_criteria(self):
         from psim_mcp.data.topology_metrics import get_acceptance_criteria
+
         criteria = get_acceptance_criteria("forward")
         assert criteria is not None
         assert "output_voltage_mean" in criteria

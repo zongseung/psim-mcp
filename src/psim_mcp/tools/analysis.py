@@ -6,25 +6,7 @@ from psim_mcp.services.optimization_service import OptimizationService
 from psim_mcp.tools import tool_handler
 
 
-def _get_service():
-    from psim_mcp.server import mcp
-
-    return mcp._psim_service
-
-
-def _get_adapter():
-    from psim_mcp.server import mcp
-
-    return mcp._adapter
-
-
-def _get_config():
-    from psim_mcp.server import config
-
-    return config
-
-
-def register_tools(mcp, service=None, adapter=None, config=None):
+def register_tools(mcp, service, adapter, config):
     """Register analysis tools on the given MCP instance."""
 
     @mcp.tool(
@@ -49,14 +31,12 @@ def register_tools(mcp, service=None, adapter=None, config=None):
         from psim_mcp.services.analysis_service import AnalysisService
         from psim_mcp.shared.response import ResponseBuilder
 
-        adp = adapter or _get_adapter()
+        adp = adapter
         analysis = AnalysisService(adp)
 
         # Run simulation first
-        svc = service or _get_service()
-        sim_result = await svc.run_simulation(
-            options={"simview": 1 if open_simview else 0}
-        )
+        svc = service
+        sim_result = await svc.run_simulation(options={"simview": 1 if open_simview else 0})
 
         if not isinstance(sim_result, dict) or not sim_result.get("success"):
             return sim_result
@@ -122,7 +102,7 @@ def register_tools(mcp, service=None, adapter=None, config=None):
         from psim_mcp.services.analysis_service import AnalysisService
         from psim_mcp.shared.response import ResponseBuilder
 
-        adp = adapter or _get_adapter()
+        adp = adapter
         analysis = AnalysisService(adp)
 
         # If graph_file not provided, try to auto-detect the most recent
@@ -162,7 +142,8 @@ def register_tools(mcp, service=None, adapter=None, config=None):
             message += f"\n파형: {result['waveform_path']}"
 
         return ResponseBuilder.success(
-            {"graph_file": resolved_graph, **result}, message,
+            {"graph_file": resolved_graph, **result},
+            message,
         )
 
     @mcp.tool(
@@ -184,16 +165,15 @@ def register_tools(mcp, service=None, adapter=None, config=None):
             parsed = OptimizationRequest.model_validate(request)
         except ValidationError as exc:
             message = "; ".join(
-                str(error["msg"])
-                for error in exc.errors(include_url=False, include_input=False)
+                str(error["msg"]) for error in exc.errors(include_url=False, include_input=False)
             )
             return ResponseBuilder.error(
                 code="VALIDATION_ERROR",
                 message=message,
             )
 
-        adp = adapter or _get_adapter()
-        cfg = config or _get_config()
+        adp = adapter
+        cfg = config
         result = await OptimizationService(adp, cfg).optimize(parsed)
 
         if not result.get("success"):
@@ -204,10 +184,7 @@ def register_tools(mcp, service=None, adapter=None, config=None):
             response["data"] = result
             return response
 
-        message = (
-            f"최적화 완료: {result['trials_complete']}회 평가\n"
-            f"최적 파라미터:\n"
-        )
+        message = f"최적화 완료: {result['trials_complete']}회 평가\n최적 파라미터:\n"
         for k, v in result["best_params"].items():
             message += f"  {k}: {v}\n"
         message += f"최종 비용: {result['best_cost']}"

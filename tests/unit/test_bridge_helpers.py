@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import psim_mcp.bridge.bridge_script as bridge_script
 
+
 class TestHandleSetParameter:
     def test_maps_alias_parameter_and_persists(self, monkeypatch):
         sch = object()
@@ -30,18 +31,16 @@ class TestHandleSetParameter:
         monkeypatch.setattr(bridge_script, "_current_path", "C:/tmp/forward.psimsch")
         monkeypatch.setattr(bridge_script, "_element_cache", {"G1": "GATING"})
 
-        result = bridge_script.handle_set_parameter({
-            "component_id": "G1",
-            "parameter_name": "Switching_Points",
-            "value": "0,181",
-        })
+        result = bridge_script.handle_set_parameter(
+            {
+                "component_id": "G1",
+                "parameter_name": "Switching_Points",
+                "value": "0,181",
+            }
+        )
 
         assert result["success"] is True
         assert result["data"]["psim_parameter_name"] == "Switching_Points"
         assert result["data"]["persisted"] is True
-        assert fake_psim.set_calls == [
-            (sch, "GATING", "G1", "Switching_Points", "0,181")
-        ]
-        assert fake_psim.save_calls == [
-            (sch, "C:/tmp/forward.psimsch")
-        ]
+        assert fake_psim.set_calls == [(sch, "GATING", "G1", "Switching_Points", "0,181")]
+        assert fake_psim.save_calls == [(sch, "C:/tmp/forward.psimsch")]

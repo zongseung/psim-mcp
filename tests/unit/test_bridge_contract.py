@@ -144,11 +144,13 @@ class TestSetParameterValidation:
 
     def test_no_project_open_returns_no_project(self, monkeypatch):
         monkeypatch.setattr(bridge_script, "_current_sch", None)
-        result = handle_set_parameter({
-            "component_id": "R1",
-            "parameter_name": "Resistance",
-            "value": "10",
-        })
+        result = handle_set_parameter(
+            {
+                "component_id": "R1",
+                "parameter_name": "Resistance",
+                "value": "10",
+            }
+        )
         assert result["success"] is False
         assert result["error"]["code"] == "NO_PROJECT"
 
@@ -185,9 +187,7 @@ def _run_bridge_with_stdin(line: str, timeout: float = 10.0) -> dict:
             return json.loads(raw)
         except json.JSONDecodeError:
             continue
-    raise AssertionError(
-        f"Bridge produced no JSON line. stdout={stdout!r} stderr={stderr!r}"
-    )
+    raise AssertionError(f"Bridge produced no JSON line. stdout={stdout!r} stderr={stderr!r}")
 
 
 class TestDispatchSubprocess:
@@ -279,9 +279,7 @@ class TestAdapterPayloadShape:
         fake_proc = _FakeProc(response_bytes)
 
         with patch.object(real_adapter, "_ensure_bridge", AsyncMock(return_value=fake_proc)):
-            result = await real_adapter._call_bridge(
-                "open_project", {"path": "C:/tmp/x.psimsch"}
-            )
+            result = await real_adapter._call_bridge("open_project", {"path": "C:/tmp/x.psimsch"})
 
         # Response parses cleanly
         assert result == {"success": True, "data": {"ok": 1}}

@@ -1,11 +1,6 @@
 """PSIM-MCP server entry point.
 
-Provides an app-factory pattern (``create_app``) for testability while
-keeping module-level ``mcp`` and ``config`` attributes for backward
-compatibility with tool modules that do lazy imports like::
-
-    from psim_mcp.server import mcp
-    from psim_mcp.server import config
+Provides an app-factory pattern (``create_app``) for testability.
 """
 
 from __future__ import annotations
@@ -48,15 +43,9 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
     Returns a dict of service instances keyed by role.
     """
     from psim_mcp.services.project_service import ProjectService
-    from psim_mcp.services.parameter_service import ParameterService
     from psim_mcp.services.simulation_service import SimulationService
 
     project_svc = ProjectService(adapter=adapter, config=config)
-    parameter_svc = ParameterService(
-        adapter=adapter,
-        config=config,
-        project_service=project_svc,
-    )
     simulation_svc = SimulationService(
         adapter=adapter,
         config=config,
@@ -65,23 +54,11 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
 
     return {
         "project": project_svc,
-        "parameter": parameter_svc,
         "simulation": simulation_svc,
         "_adapter": adapter,
         # Legacy: combined service for backward compat
         "_legacy": simulation_svc,
     }
-
-
-def create_service(config: AppConfig):
-    """Create a :class:`SimulationService` wired to the right adapter.
-
-    Backward-compatible factory.  New code should use ``create_services()``.
-    """
-    from psim_mcp.services.simulation_service import SimulationService
-
-    adapter = create_adapter(config)
-    return SimulationService(adapter=adapter, config=config)
 
 
 def register_all_tools(mcp: FastMCP, services: dict, config: AppConfig) -> None:
@@ -90,7 +67,7 @@ def register_all_tools(mcp: FastMCP, services: dict, config: AppConfig) -> None:
 
     # Use dedicated services for each tool module
     project.register_tools(mcp, services["project"])
-    parameter.register_tools(mcp, services["_legacy"])
+    parameter.register_tools(mcp, services["_legacy"], config)
     simulation.register_tools(mcp, services["simulation"])
     results.register_tools(mcp, services["_legacy"])
     analysis.register_tools(mcp, services["simulation"], services["_adapter"], config)
@@ -169,7 +146,7 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
             "Altair PSIM 전력전자 회로 시뮬레이션 자동화 서버. "
             "기존 .psimsch 회로 워크플로: import_circuit(회로 구조·넷 파악) → "
             "open_project → set_parameter(파라미터 수정) → run_simulation → "
-            "analyze_simulation / sweep_parameter / compare_results(분석·비교). "
+            "analyze_simulation / sweep_parameter(분석·스윕). "
             "get_status로 현재 모드(mock/real)와 열린 프로젝트를 확인. "
             "회로 최적화는 optimize_circuit 사용."
         ),
@@ -186,38 +163,6 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
 
 
 # ---------------------------------------------------------------------------
-# Module-level lazy singletons (backward compatibility)
-# ---------------------------------------------------------------------------
-# Tool modules do ``from psim_mcp.server import mcp`` and
-# ``from psim_mcp.server import config`` inside lazy helpers.
-# We satisfy those imports without triggering heavy initialisation at
-# *import time* by using a module-level ``__getattr__``.
-
-_app: FastMCP | None = None
-_config: AppConfig | None = None
-
-
-def _ensure_initialised() -> None:
-    """Lazily initialise the module-level singletons on first access."""
-    global _app, _config
-    if _app is None:
-        _config = AppConfig()
-        _config.validate_real_mode()
-        _app = create_app(_config)
-
-
-def __getattr__(name: str):
-    """Lazy module-level attribute access for ``mcp`` and ``config``."""
-    if name == "mcp":
-        _ensure_initialised()
-        return _app
-    if name == "config":
-        _ensure_initialised()
-        return _config
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -231,13 +176,6 @@ def main() -> None:
     setup_logging(cfg.log_dir, cfg.log_level)
 
     app = create_app(cfg)
-
-    # Also update the module-level singletons so any lazy imports from
-    # tool code during the run see the same instances.
-    global _app, _config
-    _app = app
-    _config = cfg
-
     app.run(transport=cfg.server_transport)
 
 
