@@ -1,0 +1,13 @@
+{
+  "name": "psim-mcp",
+  "version": "0.1.0",
+  "description": "Altair PSIM 전력전자 시뮬레이션: MCP 서버 + 회로 워크플로/최적화 스킬",
+  "author": { "name": "zongseung" },
+  "repository": "https://github.com/zongseung/psim-mcp",
+  "mcpServers": {
+    "psim": {
+      "command": "uvx",
+      "args": ["psim-mcp"]
+    }
+  }
+}
