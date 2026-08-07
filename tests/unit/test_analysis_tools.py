@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -62,52 +60,108 @@ async def test_analyze_simulation_tool_with_mock_adapter(
     assert "output_voltage_mean" in result["data"]["metrics"]
 
 
-async def test_optimize_circuit_tool_with_fake_optuna(
+def _optimization_request(project_path: Path) -> dict:
+    return {
+        "source_project_path": str(project_path),
+        "variables": [
+            {
+                "name": "inductance",
+                "min": 20e-6,
+                "max": 80e-6,
+                "bindings": [
+                    {
+                        "component_id": "L1",
+                        "component_kind": "L",
+                        "parameter_name": "Inductance",
+                    }
+                ],
+            }
+        ],
+        "measurements": [
+            {
+                "name": "vout_mean",
+                "signal": "V(Vout)",
+                "function": "mean",
+                "window": {
+                    "start_fraction": 0.5,
+                    "end_fraction": 1.0,
+                    "min_samples": 20,
+                },
+            },
+            {
+                "name": "inductor_peak",
+                "signal": "I(L1)",
+                "function": "peak",
+                "window": {
+                    "start_fraction": 0.5,
+                    "end_fraction": 1.0,
+                    "min_samples": 20,
+                },
+            },
+        ],
+        "objective": [{"measurement": "vout_mean", "target": 12.0}],
+        "constraints": [
+            {
+                "measurement": "inductor_peak",
+                "operator": "<=",
+                "limit": 10.0,
+                "scale": 1.0,
+            }
+        ],
+        "n_trials": 2,
+        "time_budget_seconds": 30,
+        "seed": 7,
+    }
+
+
+async def test_optimize_circuit_tool_with_dynamic_request(
     mock_config: AppConfig,
     project_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    """optimize_circuit should run end-to-end when optuna is available."""
-
-    class FakeTrial:
-        def __init__(self) -> None:
-            self.params: dict[str, float] = {}
-
-        def suggest_float(self, name: str, low: float, high: float, log: bool = True) -> float:
-            _ = log
-            value = (float(low) + float(high)) / 2.0
-            self.params[name] = value
-            return value
-
-    class FakeStudy:
-        def __init__(self) -> None:
-            self.values: list[float] = []
-
-        def ask(self) -> FakeTrial:
-            return FakeTrial()
-
-        def tell(self, trial: FakeTrial, value: float) -> None:
-            _ = trial
-            self.values.append(value)
-
-    fake_optuna = types.ModuleType("optuna")
-    fake_optuna.logging = types.SimpleNamespace(WARNING=0, set_verbosity=lambda level: None)
-    fake_optuna.samplers = types.SimpleNamespace(TPESampler=lambda **kwargs: object())
-    fake_optuna.create_study = lambda sampler, direction: FakeStudy()
-
-    monkeypatch.setitem(sys.modules, "optuna", fake_optuna)
-
+    # Given
     app = create_app(mock_config)
     service = app._psim_service
     await service.open_project(str(project_path))
+    request = _optimization_request(project_path)
 
+    # When
     raw = await app._tool_manager.call_tool(
         "optimize_circuit",
-        {"topology": "buck", "targets": {"output_voltage_mean": 12.0}, "n_trials": 2},
+        {"request": request},
         convert_result=False,
     )
     result = json.loads(raw)
 
+    # Then
     assert result["success"] is True
-    assert result["data"]["trials_completed"] == 2
-    assert "best_params" in result["data"]
+    assert result["data"]["state"] == "completed"
+    assert result["data"]["trials_complete"] == 2
+    assert Path(result["data"]["best_project_path"]).is_file()
+
+
+async def test_optimize_circuit_rejects_load_resistor(
+    mock_config: AppConfig,
+    project_path: Path,
+) -> None:
+    # Given
+    app = create_app(mock_config)
+    request = _optimization_request(project_path)
+    request["variables"][0]["bindings"][0] = {
+        "component_id": "R1",
+        "component_kind": "R",
+        "parameter_name": "Resistance",
+        "role": "load",
+    }
+
+    # When
+    rejected = json.loads(
+        await app._tool_manager.call_tool(
+            "optimize_circuit",
+            {"request": request},
+            convert_result=False,
+        )
+    )
+
+    # Then
+    assert rejected["success"] is False
+    assert rejected["error"]["code"] == "VALIDATION_ERROR"

@@ -28,6 +28,7 @@ PSIM API 참조 (psimapipy 2026.0):
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -661,6 +662,11 @@ def _metric_min_value(values, skip_ratio=0.5):
     return min(ss) if ss else 0.0
 
 
+def _metric_peak(values, skip_ratio=0.5):
+    ss = _steady_state_slice(values, skip_ratio)
+    return max(abs(value) for value in ss) if ss else 0.0
+
+
 def _metric_overshoot_percent(values, target, skip_ratio=0.0):
     if not values or target == 0:
         return 0.0
@@ -683,6 +689,7 @@ _METRIC_FUNCTIONS = {
     "ripple_pp": _metric_ripple_pp,
     "ripple_percent": _metric_ripple_percent,
     "rms": _metric_rms,
+    "peak": _metric_peak,
     "max": _metric_max_value,
     "min": _metric_min_value,
     "overshoot_percent": _metric_overshoot_percent,
@@ -693,6 +700,28 @@ _METRIC_FUNCTIONS = {
 # ---------------------------------------------------------------------------
 # Signal extraction and metric computation handlers
 # ---------------------------------------------------------------------------
+
+def _slice_metric_values(values, window):
+    start_fraction = float(window["start_fraction"])
+    end_fraction = float(window["end_fraction"])
+    min_samples = int(window["min_samples"])
+    if not 0 <= start_fraction < end_fraction <= 1:
+        raise ValueError("metric window fractions must satisfy 0 <= start < end <= 1")
+    if min_samples < 2:
+        raise ValueError("metric window min_samples must be at least 2")
+
+    start_index = math.floor(len(values) * start_fraction)
+    end_index = math.ceil(len(values) * end_fraction)
+    sliced = values[start_index:end_index]
+    if len(sliced) < min_samples:
+        raise ValueError(
+            "metric window has %d samples; requires %d" % (len(sliced), min_samples)
+        )
+    return sliced, {
+        "start_index": start_index,
+        "end_index": end_index,
+        "point_count": len(sliced),
+    }
 
 def handle_extract_signals(params):
     """Extract raw signal data from the last simulation or a graph file."""
@@ -781,6 +810,7 @@ def handle_compute_metrics(params):
         signal_data[curve.Name] = list(curve.Values[:curve.Rows])
 
     results = {}
+    windows = {}
     for spec in metrics_spec:
         name = spec.get("name", "")
         sig_name = spec.get("signal", "")
@@ -798,15 +828,23 @@ def handle_compute_metrics(params):
 
         values = signal_data[sig_name]
         try:
+            metric_values = values
+            metric_skip_ratio = skip_ratio
+            window = spec.get("window")
+            if window:
+                metric_values, evidence = _slice_metric_values(values, window)
+                windows[name] = evidence
+                metric_skip_ratio = 0.0
+
             if fn_name in ("overshoot_percent",):
                 target = float(kwargs.get("target", 0))
-                result = fn(values, target, skip_ratio)
+                result = fn(metric_values, target, metric_skip_ratio)
             elif fn_name in ("settling_time",):
                 target = float(kwargs.get("target", 0))
                 band = float(kwargs.get("band", 0.02))
-                result = fn(values, time_step, target, band, skip_ratio)
+                result = fn(metric_values, time_step, target, band, metric_skip_ratio)
             else:
-                result = fn(values, skip_ratio)
+                result = fn(metric_values, metric_skip_ratio)
             results[name] = round(result, 6)
         except Exception as e:
             results[name] = {"error": str(e)}
@@ -816,6 +854,7 @@ def handle_compute_metrics(params):
         "available_signals": all_signal_names,
         "loaded_signals": list(signal_data.keys()),
         "graph_file": graph_file,
+        "windows": windows,
     })
 
 

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio  # noqa: F401  # noqa: ANYIO_OK
 import copy
 import math
+import secrets
 import time
-from pathlib import PurePosixPath, PureWindowsPath
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from psim_mcp.adapters.base import BasePsimAdapter
+from psim_mcp.adapters.base import BasePsimAdapter, SessionToken
 
 
 def _stem_from_path(path: str) -> str:
@@ -83,6 +87,8 @@ class MockPsimAdapter(BasePsimAdapter):
     def __init__(self) -> None:
         self._current_project: dict | None = None
         self._last_simulation: dict | None = None
+        self._session_lock = asyncio.Lock()
+        self._session_token: SessionToken | None = None
 
     # ------------------------------------------------------------------
     # BasePsimAdapter interface
@@ -92,8 +98,39 @@ class MockPsimAdapter(BasePsimAdapter):
     def is_project_open(self) -> bool:
         return self._current_project is not None
 
-    async def open_project(self, path: str) -> dict:
+    @property
+    def current_project_path(self) -> str | None:
+        if self._current_project is None:
+            return None
+        return str(Path(self._current_project["path"]).resolve())
+
+    @asynccontextmanager
+    async def session_lease(self, study_dir: str) -> AsyncIterator[SessionToken]:
+        _ = study_dir
+        async with self._session_lock:
+            token = SessionToken(secrets.token_hex(16))
+            self._session_token = token
+            try:
+                yield token
+            finally:
+                self._session_token = None
+
+    async def reset_session(self, token: SessionToken) -> None:
+        self._check_session(token)
+        self._current_project = None
+        self._last_simulation = None
+
+    def _check_session(self, token: SessionToken | None) -> None:
+        if self._session_token is not None and token is not self._session_token:
+            raise RuntimeError("SESSION_BUSY: PSIM session is reserved by an optimization")
+
+    async def open_project(
+        self,
+        path: str,
+        lease_token: SessionToken | None = None,
+    ) -> dict:
         """Store a dummy project with pre-defined components."""
+        self._check_session(lease_token)
         components = copy.deepcopy(_DEFAULT_COMPONENTS)
         param_count = sum(len(c.get("parameters", {})) for c in components)
 
@@ -118,34 +155,48 @@ class MockPsimAdapter(BasePsimAdapter):
         component_id: str,
         parameter_name: str,
         value: int | float | str,
+        lease_token: SessionToken | None = None,
     ) -> dict:
         """Update a parameter on a mock component."""
+        self._check_session(lease_token)
         if self._current_project is None:
             raise RuntimeError("No project is currently open.")
 
         for comp in self._current_project["components"]:
             if comp["id"] == component_id:
                 params = comp["parameters"]
-                if parameter_name not in params:
+                parameter_key = {
+                    "Inductance": "inductance",
+                    "Capacitance": "capacitance",
+                    "Resistance": "resistance",
+                    "CurrentFlag": "CurrentFlag",
+                }.get(parameter_name, parameter_name)
+                if parameter_key not in params and parameter_key != "CurrentFlag":
                     raise ValueError(
                         f"Parameter '{parameter_name}' not found on component '{component_id}'. "
                         f"Available parameters: {list(params.keys())}"
                     )
-                previous = params[parameter_name]
-                params[parameter_name] = value
+                previous = params.get(parameter_key, 0)
+                params[parameter_key] = value
                 return {
                     "component_id": component_id,
                     "parameter_name": parameter_name,
                     "previous_value": previous,
                     "new_value": value,
-                    "unit": _infer_unit(parameter_name),
+                    "unit": _infer_unit(parameter_key),
                 }
 
         available = [c["id"] for c in self._current_project["components"]]
         raise ValueError(f"Component '{component_id}' not found. Available components: {available}")
 
-    async def run_simulation(self, options: dict | None = None) -> dict:
+    async def run_simulation(
+        self,
+        options: dict | None = None,
+        output_path: str = "",
+        lease_token: SessionToken | None = None,
+    ) -> dict:
         """Return a pre-built successful simulation result."""
+        self._check_session(lease_token)
         if self._current_project is None:
             raise RuntimeError("No project is currently open.")
 
@@ -153,10 +204,17 @@ class MockPsimAdapter(BasePsimAdapter):
         # Simulate a tiny processing delay (synchronous, no real work).
         elapsed = round(time.monotonic() - start + 1.23, 2)
 
+        resolved_output = output_path or "/tmp/mock_result.smv"
+        if output_path:
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("mock simulation result", encoding="utf-8")
+
         result = {
             "status": "completed",
             "duration_seconds": elapsed,
-            "result_file": "/tmp/mock_result.smv",
+            "result_file": resolved_output,
+            "output_path": resolved_output,
             "summary": {
                 "output_voltage_avg": 12.01,
                 "output_voltage_ripple": 0.15,
@@ -179,6 +237,7 @@ class MockPsimAdapter(BasePsimAdapter):
         graph_file: str = "",
     ) -> dict:
         """Return a mock list of exported files."""
+        self._check_session(None)
         if self._last_simulation is None:
             raise RuntimeError("No simulation results to export.")
 
@@ -204,8 +263,10 @@ class MockPsimAdapter(BasePsimAdapter):
         signals: list[str] | None = None,
         skip_ratio: float = 0.0,
         max_points: int = 2000,
+        lease_token: SessionToken | None = None,
     ) -> dict:
         """Return synthetic waveform samples derived from current parameters."""
+        self._check_session(lease_token)
         _ = graph_file
         waveform_library = _build_mock_signals(self._current_project, self._last_simulation)
         if signals is None:
@@ -237,17 +298,21 @@ class MockPsimAdapter(BasePsimAdapter):
         graph_file: str = "",
         skip_ratio: float = 0.5,
         time_step: float = 1e-6,
+        lease_token: SessionToken | None = None,
     ) -> dict:
         """Compute metrics from the synthetic waveform samples."""
+        self._check_session(lease_token)
         signal_result = await self.extract_signals(
             graph_file=graph_file,
             signals=None,
             skip_ratio=0.0,
             max_points=5000,
+            lease_token=lease_token,
         )
         signal_data = signal_result.get("signals", {})
 
         results: dict[str, float | dict[str, str]] = {}
+        windows: dict[str, dict[str, int]] = {}
         for spec in metrics_spec:
             metric_name = str(spec.get("name", ""))
             signal_name = str(spec.get("signal", ""))
@@ -260,29 +325,48 @@ class MockPsimAdapter(BasePsimAdapter):
                 continue
 
             try:
+                metric_values = values
+                metric_skip = skip_ratio
+                window = spec.get("window")
+                if window:
+                    start_index = math.floor(len(values) * float(window["start_fraction"]))
+                    end_index = math.ceil(len(values) * float(window["end_fraction"]))
+                    metric_values = values[start_index:end_index]
+                    minimum = int(window["min_samples"])
+                    if len(metric_values) < minimum:
+                        raise ValueError(
+                            f"metric window has {len(metric_values)} samples; requires {minimum}"
+                        )
+                    windows[metric_name] = {
+                        "start_index": start_index,
+                        "end_index": end_index,
+                        "point_count": len(metric_values),
+                    }
+                    metric_skip = 0.0
+
                 if function_name == "mean":
-                    result = _metric_mean(values, skip_ratio)
+                    result = _metric_mean(metric_values, metric_skip)
                 elif function_name == "ripple_pp":
-                    result = _metric_ripple_pp(values, skip_ratio)
+                    result = _metric_ripple_pp(metric_values, metric_skip)
                 elif function_name == "ripple_percent":
-                    result = _metric_ripple_percent(values, skip_ratio)
+                    result = _metric_ripple_percent(metric_values, metric_skip)
                 elif function_name == "rms":
-                    result = _metric_rms(values, skip_ratio)
+                    result = _metric_rms(metric_values, metric_skip)
                 elif function_name == "peak":
-                    result = _metric_peak(values, skip_ratio)
+                    result = _metric_peak(metric_values, metric_skip)
                 elif function_name == "overshoot_percent":
                     result = _metric_overshoot_percent(
-                        values,
+                        metric_values,
                         float(kwargs.get("target", 0.0)),
-                        skip_ratio,
+                        metric_skip,
                     )
                 elif function_name == "settling_time":
                     result = _metric_settling_time(
-                        values,
+                        metric_values,
                         time_step,
                         float(kwargs.get("target", 0.0)),
                         float(kwargs.get("band", 0.02)),
-                        skip_ratio,
+                        metric_skip,
                     )
                 else:
                     results[metric_name] = {"error": f"unknown function '{function_name}'"}
@@ -295,10 +379,12 @@ class MockPsimAdapter(BasePsimAdapter):
             "metrics": results,
             "available_signals": list(signal_data.keys()),
             "graph_file": graph_file or (self._last_simulation or {}).get("output_path", ""),
+            "windows": windows,
         }
 
     async def get_status(self) -> dict:
         """Return current mock adapter status."""
+        self._check_session(None)
         project_info: dict | None = None
         if self._current_project is not None:
             project_info = {
@@ -327,6 +413,7 @@ class MockPsimAdapter(BasePsimAdapter):
 
     async def get_project_info(self) -> dict:
         """Return detailed project information."""
+        self._check_session(None)
         if self._current_project is None:
             raise RuntimeError("No project is currently open.")
 
@@ -345,6 +432,7 @@ class MockPsimAdapter(BasePsimAdapter):
         Mirrors the real bridge response shape:
         ``{"success": True, "data": {"script_path", "script_text", ...}}``.
         """
+        self._check_session(None)
         script_text = _MOCK_CONVERTED_SCRIPT
         return {
             "success": True,

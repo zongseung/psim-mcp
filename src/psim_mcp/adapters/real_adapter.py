@@ -7,12 +7,15 @@ import dataclasses
 import json
 import logging
 import os
+import secrets
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from psim_mcp.adapters.base import BasePsimAdapter
+from psim_mcp.adapters.base import BasePsimAdapter, SessionToken
 from psim_mcp.config import AppConfig
 
 # Bridge script lives inside this package
@@ -64,8 +67,12 @@ class RealPsimAdapter(BasePsimAdapter):
         self._timeout = config.simulation_timeout
         self._psim_path = config.psim_path
         self._project_open = False
+        self._current_project_path: str | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()  # 동시 호출 방지
+        self._session_lock = asyncio.Lock()
+        self._session_token: SessionToken | None = None
+        self._study_dir: Path | None = None
         self._stderr_task: asyncio.Task | None = None
         # Cache of the most recent simulation output (.smv) path so
         # ``analyze_existing`` can auto-resolve graph_file when omitted.
@@ -88,6 +95,59 @@ class RealPsimAdapter(BasePsimAdapter):
     @property
     def is_project_open(self) -> bool:
         return self._project_open
+
+    @property
+    def current_project_path(self) -> str | None:
+        return self._current_project_path
+
+    @asynccontextmanager
+    async def session_lease(self, study_dir: str) -> AsyncIterator[SessionToken]:
+        try:
+            await asyncio.wait_for(
+                self._session_lock.acquire(),
+                timeout=_LOCK_ACQUIRE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError("SESSION_BUSY: PSIM session is already in use") from None
+
+        token = SessionToken(secrets.token_hex(16))
+        self._session_token = token
+        self._study_dir = Path(study_dir).resolve()
+        try:
+            yield token
+        finally:
+            self._study_dir = None
+            self._session_token = None
+            self._session_lock.release()
+
+    async def reset_session(self, token: SessionToken) -> None:
+        if token is not self._session_token:
+            raise RuntimeError("SESSION_BUSY: reset requires the active session lease")
+
+        await self._lock.acquire()
+        try:
+            proc = self._process
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            if self._stderr_task and not self._stderr_task.done():
+                self._stderr_task.cancel()
+            self._process = None
+            self._clear_project_state()
+            self._circuit_state = CircuitState.CLOSED
+            self._circuit_opened_at = None
+            self._consecutive_failures = 0
+            self._metrics.circuit_state = CircuitState.CLOSED.value
+            self._metrics.consecutive_failures = 0
+        finally:
+            self._lock.release()
+
+    def _clear_project_state(self) -> None:
+        self._project_open = False
+        self._current_project_path = None
+        self._last_output_path = ""
 
     # ------------------------------------------------------------------
     # Environment sanitisation
@@ -247,7 +307,37 @@ class RealPsimAdapter(BasePsimAdapter):
         except Exception:
             pass
 
-    async def _call_bridge(self, action: str, params: dict[str, Any] | None = None) -> dict:
+    async def _call_bridge(
+        self,
+        action: str,
+        params: dict[str, Any] | None = None,
+        lease_token: SessionToken | None = None,
+    ) -> dict:
+        session_acquired = False
+        if self._session_token is not None:
+            if lease_token is not self._session_token:
+                raise RuntimeError("SESSION_BUSY: PSIM session is reserved by an optimization")
+        else:
+            try:
+                await asyncio.wait_for(
+                    self._session_lock.acquire(),
+                    timeout=_LOCK_ACQUIRE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError("SESSION_BUSY: PSIM session is already in use") from None
+            session_acquired = True
+
+        try:
+            return await self._call_bridge_transport(action, params)
+        finally:
+            if session_acquired:
+                self._session_lock.release()
+
+    async def _call_bridge_transport(
+        self,
+        action: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict:
         """장기 실행 Bridge 프로세스에 명령을 보내고 응답을 받는다.
 
         Args:
@@ -288,6 +378,7 @@ class RealPsimAdapter(BasePsimAdapter):
                 if self._stderr_task and not self._stderr_task.done():
                     self._stderr_task.cancel()
                 self._process = None
+                self._clear_project_state()
                 proc = await self._ensure_bridge()
 
             try:
@@ -296,6 +387,7 @@ class RealPsimAdapter(BasePsimAdapter):
             except (BrokenPipeError, ConnectionResetError) as exc:
                 logger.warning("Bridge stdin write failed, restarting: %s", exc)
                 self._process = None
+                self._clear_project_state()
                 proc = await self._ensure_bridge()
                 proc.stdin.write((payload + "\n").encode())
                 await proc.stdin.drain()
@@ -312,6 +404,7 @@ class RealPsimAdapter(BasePsimAdapter):
                 except ProcessLookupError:
                     pass
                 self._process = None
+                self._clear_project_state()
                 error_msg = f"PSIM bridge timed out after {self._timeout}s for action '{action}'"
                 self._record_failure(error_msg)
                 raise TimeoutError(error_msg) from None
@@ -319,6 +412,7 @@ class RealPsimAdapter(BasePsimAdapter):
             if not raw:
                 logger.error("Bridge returned empty response (process may have crashed)")
                 self._process = None
+                self._clear_project_state()
                 error_msg = (
                     f"PSIM bridge returned empty response for action '{action}'. "
                     "The bridge process may have crashed."
@@ -363,50 +457,92 @@ class RealPsimAdapter(BasePsimAdapter):
                 logger.exception("Error during bridge shutdown")
             finally:
                 self._process = None
+                self._clear_project_state()
+        self._process = None
+        self._clear_project_state()
 
     # ------------------------------------------------------------------
     # BasePsimAdapter interface
     # ------------------------------------------------------------------
 
-    async def open_project(self, path: str) -> dict:
+    @staticmethod
+    def _require_bridge_data(result: dict) -> dict:
+        if not result.get("success", False):
+            error = result.get("error", {})
+            raise RuntimeError(str(error.get("message", "PSIM bridge call failed")))
+        data = result.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("PSIM bridge returned malformed data")
+        return data
+
+    async def open_project(
+        self,
+        path: str,
+        lease_token: SessionToken | None = None,
+    ) -> dict:
         """Open a PSIM project via the bridge."""
-        result = await self._call_bridge("open_project", {"path": path})
-        if result.get("success", False):
-            self._project_open = True
-        return result
+        result = await self._call_bridge(
+            "open_project",
+            {"path": path},
+            lease_token,
+        )
+        data = self._require_bridge_data(result)
+        self._project_open = True
+        self._current_project_path = str(Path(path).resolve())
+        self._last_output_path = ""
+        return data
 
     async def set_parameter(
         self,
         component_id: str,
         parameter_name: str,
         value: int | float | str,
+        lease_token: SessionToken | None = None,
     ) -> dict:
         """Set a component parameter via the bridge."""
-        return await self._call_bridge(
-            "set_parameter",
-            {
+        result = await self._call_bridge(
+            "set_parameter", {
                 "component_id": component_id,
                 "parameter_name": parameter_name,
                 "value": value,
             },
+            lease_token,
         )
+        return self._require_bridge_data(result)
 
-    async def run_simulation(self, options: dict | None = None) -> dict:
+    async def run_simulation(
+        self,
+        options: dict | None = None,
+        output_path: str = "",
+        lease_token: SessionToken | None = None,
+    ) -> dict:
         """Run a simulation via the bridge.
 
         Caches the resulting ``.smv`` path on ``self._last_output_path`` so
         downstream tools (notably ``analyze_existing``) can resolve it
         without the caller threading the path through every call.
         """
-        result = await self._call_bridge("run_simulation", {"options": options or {}})
-        # _call_bridge returns the raw envelope ``{"success":..., "data":{...}}``
-        # — output_path lives inside ``data``, not at the top level.
-        try:
-            data = result.get("data", {}) if isinstance(result, dict) else {}
-            self._last_output_path = data.get("output_path", "") or ""
-        except Exception:
-            pass
-        return result
+        requested = Path(output_path).resolve() if output_path else None
+        if requested is not None and self._study_dir is not None:
+            try:
+                requested.relative_to(self._study_dir)
+            except ValueError:
+                raise RuntimeError("Simulation output path must stay inside the study directory") from None
+
+        result = await self._call_bridge(
+            "run_simulation",
+            {"options": options or {}, "output_path": output_path},
+            lease_token,
+        )
+        data = self._require_bridge_data(result)
+        returned = Path(str(data.get("output_path", ""))).resolve()
+        if requested is not None:
+            if returned != requested:
+                raise RuntimeError("PSIM returned an unexpected simulation output path")
+            if not requested.is_file():
+                raise RuntimeError("PSIM did not create the requested simulation output file")
+        self._last_output_path = str(returned)
+        return data
 
     async def export_results(
         self,
@@ -451,6 +587,7 @@ class RealPsimAdapter(BasePsimAdapter):
         graph_file: str = "",
         skip_ratio: float = 0.5,
         time_step: float = 1e-6,
+        lease_token: SessionToken | None = None,
     ) -> dict:
         """Compute simulation metrics via the bridge."""
         result = await self._call_bridge(
@@ -461,8 +598,15 @@ class RealPsimAdapter(BasePsimAdapter):
                 "skip_ratio": skip_ratio,
                 "time_step": time_step,
             },
+            lease_token,
         )
-        return result.get("data", result)
+        data = self._require_bridge_data(result)
+        if graph_file:
+            requested = Path(graph_file).resolve()
+            returned = Path(str(data.get("graph_file", ""))).resolve()
+            if returned != requested:
+                raise RuntimeError("PSIM metrics returned an unexpected graph file")
+        return data
 
     async def get_status(self) -> dict:
         """Query PSIM status via the bridge."""

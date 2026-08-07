@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from psim_mcp.services.optimization_service import OptimizationService
 from psim_mcp.tools import tool_handler
 
 
@@ -17,7 +18,13 @@ def _get_adapter():
     return mcp._adapter
 
 
-def register_tools(mcp, service=None, adapter=None):
+def _get_config():
+    from psim_mcp.server import config
+
+    return config
+
+
+def register_tools(mcp, service=None, adapter=None, config=None):
     """Register analysis tools on the given MCP instance."""
 
     @mcp.tool(
@@ -160,46 +167,45 @@ def register_tools(mcp, service=None, adapter=None):
 
     @mcp.tool(
         description=(
-            "회로 파라미터를 자동으로 최적화합니다 (Bayesian optimization). "
-            "50~100회 시뮬레이션을 반복하여 최적값을 찾습니다."
+            "사용자가 지정한 L/C 또는 설계용 R 소자값을 Optuna로 순차 최적화합니다. "
+            "원본 대신 검증된 작업 사본만 변경하고, 각 측정은 명시한 파형 구간에서 계산합니다. "
+            "time_budget_seconds는 다음 trial 시작 여부를 정하는 예산이며 실행 중인 PSIM을 중단하지 않습니다."
         ),
     )
     @tool_handler("optimize_circuit")
-    async def optimize_circuit(
-        topology: str = "buck",
-        targets: dict | None = None,
-        n_trials: int = 50,
-    ) -> str:
-        """Optimize circuit parameters using Bayesian optimization."""
-        from psim_mcp.services.optimization_service import OptimizationService
+    async def optimize_circuit(request: dict) -> str:
+        """Optimize a validated dynamic circuit request on safe working copies."""
+        from pydantic import ValidationError
+
+        from psim_mcp.models.optimization import OptimizationRequest
         from psim_mcp.shared.response import ResponseBuilder
 
-        if not targets:
+        try:
+            parsed = OptimizationRequest.model_validate(request)
+        except ValidationError as exc:
+            message = "; ".join(
+                str(error["msg"])
+                for error in exc.errors(include_url=False, include_input=False)
+            )
             return ResponseBuilder.error(
-                code="NO_TARGETS",
-                message=(
-                    "최적화 목표가 필요합니다. 예: "
-                    "targets={'output_voltage_mean': 12.0, 'output_voltage_ripple_pct': 1.0}"
-                ),
+                code="VALIDATION_ERROR",
+                message=message,
             )
 
         adp = adapter or _get_adapter()
-        opt = OptimizationService(adp)
-
-        result = await opt.optimize(
-            topology=topology,
-            targets=targets,
-            n_trials=n_trials,
-        )
+        cfg = config or _get_config()
+        result = await OptimizationService(adp, cfg).optimize(parsed)
 
         if not result.get("success"):
-            return ResponseBuilder.error(
+            response = ResponseBuilder.error(
                 code="OPTIMIZATION_FAILED",
-                message=result.get("error", "최적화 실패"),
+                message=result.get("error") or result.get("state", "최적화 실패"),
             )
+            response["data"] = result
+            return response
 
         message = (
-            f"최적화 완료: {result['trials_completed']}회 시뮬레이션\n"
+            f"최적화 완료: {result['trials_complete']}회 평가\n"
             f"최적 파라미터:\n"
         )
         for k, v in result["best_params"].items():

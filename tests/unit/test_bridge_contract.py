@@ -311,3 +311,51 @@ class TestAdapterPayloadShape:
         sent = json.loads(fake_proc.stdin.writes[0].rstrip(b"\n").decode())
         assert sent["params"] == {}
         assert sent["params"] is not None
+
+    async def test_run_simulation_forwards_explicit_output_path(
+        self,
+        real_adapter,
+        tmp_path: Path,
+    ) -> None:
+        # Given
+        output_path = tmp_path / "trial-0001.smv"
+        output_path.touch()
+        response = {
+            "success": True,
+            "data": {"status": "completed", "output_path": str(output_path)},
+        }
+        fake_proc = _FakeProc((json.dumps(response) + "\n").encode())
+
+        # When
+        async with real_adapter.session_lease(str(tmp_path)) as token:
+            with patch.object(
+                real_adapter,
+                "_ensure_bridge",
+                AsyncMock(return_value=fake_proc),
+            ):
+                result = await real_adapter.run_simulation(
+                    {"simview": 0},
+                    str(output_path),
+                    lease_token=token,
+                )
+
+        # Then
+        sent = json.loads(fake_proc.stdin.writes[0].rstrip(b"\n").decode())
+        assert sent["params"] == {
+            "options": {"simview": 0},
+            "output_path": str(output_path),
+        }
+        assert result["output_path"] == str(output_path)
+
+
+def test_metric_window_uses_half_open_floor_ceil_slice() -> None:
+    # Given
+    values = list(range(8))
+    window = {"start_fraction": 0.25, "end_fraction": 0.75, "min_samples": 2}
+
+    # When
+    sliced, evidence = bridge_script._slice_metric_values(values, window)
+
+    # Then
+    assert sliced == [2, 3, 4, 5]
+    assert evidence == {"start_index": 2, "end_index": 6, "point_count": 4}

@@ -79,7 +79,7 @@ def create_service(config: AppConfig):
     return SimulationService(adapter=adapter, config=config)
 
 
-def register_all_tools(mcp: FastMCP, services: dict) -> None:
+def register_all_tools(mcp: FastMCP, services: dict, config: AppConfig) -> None:
     """Register every tool module on *mcp* using domain services."""
     from psim_mcp.tools import analysis, parameter, project, results, simulation
 
@@ -88,7 +88,38 @@ def register_all_tools(mcp: FastMCP, services: dict) -> None:
     parameter.register_tools(mcp, services["_legacy"])
     simulation.register_tools(mcp, services["simulation"])
     results.register_tools(mcp, services["_legacy"])
-    analysis.register_tools(mcp, services["simulation"], services["_adapter"])
+    analysis.register_tools(mcp, services["simulation"], services["_adapter"], config)
+
+
+def register_knowledge_resources(mcp: FastMCP) -> None:
+    """Expose the knowledge markdown files as MCP resources.
+
+    Clients (Claude Desktop/Code 등)이 ``guidelines://…`` 리소스로 워크플로우·함정·
+    템플릿 지식을 읽어갈 수 있다 (MATLAB MCP 서버의 guidelines 패턴과 동일).
+    """
+    from pathlib import Path
+
+    knowledge_dir = Path(__file__).parent / "knowledge"
+    resources = {
+        "workflow": "PSIM-MCP 도구 사용 순서와 표준 워크플로우",
+        "gotchas": "PSIM 파라미터 이름 함정과 검증 방법",
+        "templates": "검증된 회로 템플릿 카탈로그 — 새 회로는 생성 대신 복사",
+        "control-patterns": "C-Block 제어 설계 패턴과 실검증 교훈",
+    }
+
+    def _make_reader(path: Path):
+        def _read() -> str:
+            return path.read_text(encoding="utf-8")
+        return _read
+
+    for name, description in resources.items():
+        path = knowledge_dir / f"{name.replace('-', '_')}.md"
+        mcp.resource(
+            f"guidelines://{name}",
+            name=name,
+            description=description,
+            mime_type="text/markdown",
+        )(_make_reader(path))
 
 
 def create_app(config: AppConfig | None = None) -> FastMCP:
@@ -133,7 +164,8 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
     app._adapter = adapter  # type: ignore[attr-defined]
 
     app._services = services  # type: ignore[attr-defined]
-    register_all_tools(app, services)
+    register_all_tools(app, services, config)
+    register_knowledge_resources(app)
     return app
 
 
