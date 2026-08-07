@@ -1,0 +1,4 @@
+interface:
+  display_name: "PSIM Circuit Optimization"
+  short_description: "Safely optimize existing PSIM power circuits"
+  default_prompt: "Use $psim-circuit-optimization to run a bounded Optuna study on this PSIM schematic."
