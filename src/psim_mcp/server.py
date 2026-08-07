@@ -29,6 +29,7 @@ _shutdown_logger = logging.getLogger(__name__)
 # Factory helpers
 # ---------------------------------------------------------------------------
 
+
 def create_adapter(config: AppConfig) -> BasePsimAdapter:
     """Create the appropriate adapter based on *config.psim_mode*."""
     if config.psim_mode == "mock":
@@ -52,10 +53,14 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
 
     project_svc = ProjectService(adapter=adapter, config=config)
     parameter_svc = ParameterService(
-        adapter=adapter, config=config, project_service=project_svc,
+        adapter=adapter,
+        config=config,
+        project_service=project_svc,
     )
     simulation_svc = SimulationService(
-        adapter=adapter, config=config, project_service=project_svc,
+        adapter=adapter,
+        config=config,
+        project_service=project_svc,
     )
 
     return {
@@ -110,6 +115,7 @@ def register_knowledge_resources(mcp: FastMCP) -> None:
     def _make_reader(path: Path):
         def _read() -> str:
             return path.read_text(encoding="utf-8")
+
         return _read
 
     for name, description in resources.items():
@@ -157,7 +163,17 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
 
     atexit.register(_sync_shutdown_adapter)
 
-    app = FastMCP("psim-mcp")
+    app = FastMCP(
+        "psim-mcp",
+        instructions=(
+            "Altair PSIM 전력전자 회로 시뮬레이션 자동화 서버. "
+            "기존 .psimsch 회로 워크플로: import_circuit(회로 구조·넷 파악) → "
+            "open_project → set_parameter(파라미터 수정) → run_simulation → "
+            "analyze_simulation / sweep_parameter / compare_results(분석·비교). "
+            "get_status로 현재 모드(mock/real)와 열린 프로젝트를 확인. "
+            "회로 최적화는 optimize_circuit 사용."
+        ),
+    )
 
     # Expose the legacy service so code that does ``mcp._psim_service`` still works.
     app._psim_service = services["_legacy"]  # type: ignore[attr-defined]
@@ -204,6 +220,7 @@ def __getattr__(name: str):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     """Run the MCP server (used by the ``psim-mcp`` console script)."""

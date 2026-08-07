@@ -1,12 +1,59 @@
 # psim-mcp
 
+<!-- mcp-name: io.github.zongseung/psim-mcp -->
+
 [한국어](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
 <p align="center">
   <img src="assets/psim-mcp-icon.png" alt="PSIM-MCP icon" width="180">
 </p>
 
-## 1. 시스템 개요와 지원 범위
+<p align="center">
+  AI 에이전트가 Altair PSIM 전력전자 회로를 열고, 이해하고, 수정하고, 시뮬레이션하게 하는 MCP 서버.
+</p>
+
+<p align="center">
+  <a href="https://github.com/zongseung/psim-mcp/actions/workflows/ci.yml"><img src="https://github.com/zongseung/psim-mcp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
+</p>
+
+## 주요 기능
+
+- **기존 회로 자동화**: `.psimsch` 회로를 열어 소자·파라미터·전기적 넷을 복원하고 수정합니다.
+- **실제 PSIM 시뮬레이션**: PSIM 2026 엔진으로 시간 영역 시뮬레이션을 실행하고 `.smv` 결과를 분석합니다.
+- **파라미터 스윕과 비교**: 단일 파라미터 범위 실험(`sweep_parameter`)과 결과 간 비교(`compare_results`)를 제공합니다.
+- **제한된 Optuna 최적화**: 원본을 보존하는 격리 사본에서 L/C/설계 저항 값을 최적화합니다(`optimize_circuit`).
+- **에이전트 스킬 내장**: 회로 워크플로·최적화 절차를 스킬로 제공해 Claude Code와 Codex가 같은 원칙으로 작업합니다.
+
+## 빠른 시작
+
+### Claude Code 플러그인 (권장 — MCP 서버 + 스킬 일괄 설치)
+
+```text
+/plugin marketplace add zongseung/psim-mcp
+/plugin install psim-mcp@psim-mcp
+```
+
+플러그인은 MCP 서버(`uvx psim-mcp`)와 `psim-circuit-workflow`, `psim-circuit-optimization` 스킬을 함께 설치합니다. 자세한 내용은 [Claude Code 플러그인과 스킬](#claude-code-플러그인과-스킬)을 참고하세요.
+
+### Claude Code (MCP 서버만)
+
+```bash
+# PyPI 배포 후
+claude mcp add psim-mcp -- uvx psim-mcp
+
+# 저장소 클론 기준 (현재)
+claude mcp add psim-mcp -- uv run --directory C:\path\to\psim-mcp psim-mcp
+```
+
+### Claude Desktop
+
+[MCP 클라이언트 설정](#mcp-클라이언트-설정) 섹션의 `claude_desktop_config.json` 예제를 사용합니다.
+
+`real` 모드(실제 PSIM 실행)는 [환경 변수 설정](#real과-mock-실행-모드)이 필요합니다. 기본값은 `mock` 모드입니다.
+
+## 시스템 개요와 지원 범위
 
 psim-mcp는 MCP 클라이언트가 기존 Altair PSIM 회로를 열고, 구조와 결과를 분석하고, 파라미터를 변경하고, 실제 PSIM 시뮬레이션과 제한된 Optuna 최적화를 실행할 수 있게 하는 서버입니다.
 
@@ -22,7 +69,7 @@ psim-mcp는 MCP 클라이언트가 기존 Altair PSIM 회로를 열고, 구조�
 
 `real` 모드는 실제 PSIM을 사용합니다. `mock` 모드는 개발과 MCP 연결 시험을 위한 결정론적 대체 구현이며 실제 회로 성능의 근거가 아닙니다.
 
-## 2. PSIM MCP 동작 구조
+## PSIM MCP 동작 구조
 
 ```text
 MCP client
@@ -51,13 +98,15 @@ MCP 서버는 Python 3.12 이상에서 동작합니다. `real` adapter는 별도
 
 실패 응답은 `success=false`와 `error.code`, `error.message`를 제공합니다. `optimize_circuit` 실패 응답은 실행 상태를 `data`에도 보존합니다.
 
-## 3. 요구사항과 설치
+서버는 세션 시작 시 MCP server instructions로 표준 워크플로를 안내하고, `guidelines://workflow`, `guidelines://gotchas`, `guidelines://templates`, `guidelines://control-patterns` 리소스로 도메인 지식(파라미터 이름 함정, 검증된 회로 템플릿, C-Block 제어 패턴)을 제공합니다.
+
+## 요구사항과 설치
 
 | 항목 | 필수 조건 | 용도 |
 | --- | --- | --- |
 | Python | 3.12 이상 | MCP 서버 |
 | [uv](https://docs.astral.sh/uv/) | 최신 안정 버전 | 의존성·실행 관리 |
-| MCP 클라이언트 | 선택 | Claude Desktop, Codex 등 |
+| MCP 클라이언트 | 선택 | Claude Desktop, Claude Code, Codex 등 |
 | Altair PSIM | 2026, `real` 모드에서 필수 | 실제 시뮬레이션 |
 | PSIM 호환 Python | 3.9, `real` 모드에서 필수 | PSIM 브리지 |
 
@@ -69,7 +118,7 @@ uv sync
 
 Optuna `>=4.9,<5`는 기본 dependency입니다. 별도 설치가 필요하지 않습니다. 개발 도구까지 설치하려면 `uv sync --all-extras`를 사용합니다.
 
-## 4. `real`과 `mock` 실행 모드
+## `real`과 `mock` 실행 모드
 
 | 모드 | PSIM 필요 | 목적 | 결과 해석 |
 | --- | --- | --- | --- |
@@ -103,7 +152,7 @@ ALLOWED_PROJECT_DIRS=C:\work\psim-projects,D:\shared\verified-circuits
 | `SIMULATION_TIMEOUT` | `300` | 기본 시뮬레이션 제한 시간(초) |
 | `MAX_SWEEP_STEPS` | `100` | `sweep_parameter` 최대 단계 수 |
 
-## 5. MCP 클라이언트 설정
+## MCP 클라이언트 설정
 
 Claude Desktop의 `claude_desktop_config.json`에 다음 서버 정의를 추가합니다.
 
@@ -130,7 +179,26 @@ Claude Desktop의 `claude_desktop_config.json`에 다음 서버 정의를 추가
 
 설정 후 MCP 클라이언트를 완전히 종료하고 다시 시작합니다. 서버만 직접 실행하려면 저장소 루트에서 `uv run psim-mcp`를 사용합니다.
 
-## 6. 공개 도구 12개 기술 명세
+## Claude Code 플러그인과 스킬
+
+이 저장소는 그 자체로 Claude Code 플러그인 마켓플레이스입니다. 플러그인 하나로 MCP 서버와 스킬이 함께 설치됩니다.
+
+```text
+/plugin marketplace add zongseung/psim-mcp
+/plugin install psim-mcp@psim-mcp
+```
+
+번들 구성:
+
+| 구성 요소 | 내용 |
+| --- | --- |
+| MCP 서버 | `uvx psim-mcp` (기본 `mock` 모드; `real` 모드는 환경 변수 설정 필요) |
+| `psim-circuit-workflow` 스킬 | 기존 회로 읽기 → 파라미터 수정 → 시뮬레이션 → 분석의 표준 절차와 silent no-op 파라미터 함정 검증 루프 |
+| `psim-circuit-optimization` 스킬 | 원본 보존·증거 기반의 제한된 Optuna 최적화 절차 |
+
+Codex 등 [agentskills.io](https://agentskills.io) 스펙을 따르는 에이전트는 저장소의 `.agents/skills/` 디렉터리에서 동일한 스킬을 사용합니다. 두 위치의 스킬 파일은 CI 테스트(`tests/unit/test_skills_sync.py`)로 동기화가 강제됩니다.
+
+## 공개 도구 12개 기술 명세
 
 | 도구 | 입력 개요 | 동작과 파일 영향 |
 | --- | --- | --- |
@@ -149,11 +217,11 @@ Claude Desktop의 `claude_desktop_config.json`에 다음 서버 정의를 추가
 
 `set_parameter`와 `sweep_parameter`는 현재 열린 파일을 변경합니다. 원본을 보존해야 하는 수동 실험에는 사용자가 작업 사본을 준비해야 합니다. `optimize_circuit`는 아래의 별도 사본·복원 계약을 갖습니다.
 
-## 7. `optimize_circuit` 요청·실행·결과 계약
+## `optimize_circuit` 요청·실행·결과 계약
 
-프로젝트에 포함된 `$psim-circuit-optimization` 스킬을 사용하면 에이전트가 이 계약에 따라 제한된 study를 구성하도록 지시할 수 있습니다.
+프로젝트에 포함된 `psim-circuit-optimization` 스킬을 사용하면 에이전트가 이 계약에 따라 제한된 study를 구성하도록 지시할 수 있습니다.
 
-### 7.1 최상위 요청
+### 최상위 요청
 
 | 필드 | 형식 | 제약과 의미 |
 | --- | --- | --- |
@@ -168,7 +236,7 @@ Claude Desktop의 `claude_desktop_config.json`에 다음 서버 정의를 추가
 
 알 수 없는 필드는 거부됩니다. 이름은 영문자로 시작하고 영문자·숫자·밑줄만 포함하며 최대 64자입니다.
 
-### 7.2 Decision variable과 binding
+### Decision variable과 binding
 
 | 필드 | 형식 | 제약 |
 | --- | --- | --- |
@@ -185,7 +253,7 @@ Claude Desktop의 `claude_desktop_config.json`에 다음 서버 정의를 추가
 
 하나의 variable에 여러 binding을 넣으면 같은 제안값이 모든 binding에 적용됩니다. 소자 ID와 범위는 실제 프로젝트 정보와 설계 근거로 확인해야 합니다.
 
-### 7.3 Measurement, objective, constraint
+### Measurement, objective, constraint
 
 | Measurement 필드 | 형식 | 제약 |
 | --- | --- | --- |
@@ -211,7 +279,7 @@ operator <= : residual = (measurement - limit) / scale
 operator >= : residual = (limit - measurement) / scale
 ```
 
-### 7.4 Study 생명주기
+### Study 생명주기
 
 1. 소스 경로와 `PSIM_OUTPUT_DIR`를 검증합니다.
 2. `optuna-*` study 디렉터리와 `study.jsonl`을 생성합니다.
@@ -224,7 +292,7 @@ operator >= : residual = (limit - measurement) / scale
 9. 이전 프로젝트를 다시 열고 소스 SHA-256을 재확인합니다.
 10. trial·terminal 레코드를 JSONL ledger에 기록하고 결과를 반환합니다.
 
-### 7.5 결과 필드와 상태
+### 결과 필드와 상태
 
 | 필드 | 의미 |
 | --- | --- |
@@ -243,7 +311,7 @@ operator >= : residual = (limit - measurement) / scale
 
 누락 신호, 표본 부족, 비유한 수치, binding 오류, 실행 실패, feasible trial 부재, 소스 변경, 세션 복원 실패는 성공으로 보고되지 않습니다.
 
-## 8. JSON 요청·응답 예제
+## JSON 요청·응답 예제
 
 다음 수치와 신호명은 특정 회로를 위한 형식 예제입니다. 다른 회로에 그대로 적용할 설계 권장값이 아닙니다.
 
@@ -359,7 +427,7 @@ operator >= : residual = (limit - measurement) / scale
 }
 ```
 
-## 9. 안전 규칙과 제외 대상
+## 안전 규칙과 제외 대상
 
 - 신뢰할 수 있는 `.psimsch`와 `.smv` 파일만 사용합니다.
 - `ALLOWED_PROJECT_DIRS`로 접근 가능한 프로젝트 경로를 최소화합니다.
@@ -371,14 +439,17 @@ operator >= : residual = (limit - measurement) / scale
 - 성공 보고에는 feasible best trial, 최종 rerun artifact, 복원 상태와 동일한 before/after 소스 해시가 필요합니다.
 - `mock` 결과는 실제 PSIM 성능 또는 안전성의 증거가 아닙니다.
 
-## 10. 개발과 검증
+## 개발과 검증
 
 ```bash
 uv sync --all-extras
 uv run pytest tests/unit -q
 uv run ruff check src/ tests/
 uv run mcp dev src/psim_mcp/server.py
+claude plugin validate . --strict
 ```
+
+CI(GitHub Actions)는 push/PR마다 ruff lint·format 검사, ubuntu·windows 매트릭스에서 `PSIM_MODE=mock` 단위 테스트, 플러그인 매니페스트 검증을 실행합니다. `v*` 태그를 push하면 release 워크플로가 빌드 후 PyPI Trusted Publishing으로 배포합니다.
 
 실제 PSIM이 필요한 검증은 Windows 호스트에서 `PSIM_MODE=real`과 필수 경로를 설정한 뒤 별도로 실행합니다. 저장소에는 단위 테스트, stdio integration test, opt-in real-PSIM marker가 분리되어 있습니다.
 
