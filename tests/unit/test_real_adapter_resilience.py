@@ -170,3 +170,22 @@ async def test_shutdown_clears_project_state_without_live_bridge(
     assert adapter.is_project_open is False
     assert adapter.current_project_path is None
     assert adapter._last_output_path == ""
+
+
+class TestSanitizedEnv:
+    def test_passes_appdata_for_user_site_packages(self, adapter: RealPsimAdapter, monkeypatch):
+        # APPDATA가 빠지면 브리지 Python이 사용자 site-packages의 psimapipy를 못 찾는다.
+        monkeypatch.setenv("APPDATA", r"C:\Users\u\AppData\Roaming")
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\u\AppData\Local")
+
+        env = adapter._get_sanitized_env()
+
+        assert env["APPDATA"] == r"C:\Users\u\AppData\Roaming"
+        assert env["LOCALAPPDATA"] == r"C:\Users\u\AppData\Local"
+
+    def test_does_not_leak_unrelated_vars(self, adapter: RealPsimAdapter, monkeypatch):
+        monkeypatch.setenv("SOME_SECRET_TOKEN", "x")
+
+        env = adapter._get_sanitized_env()
+
+        assert "SOME_SECRET_TOKEN" not in env

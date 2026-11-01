@@ -151,6 +151,10 @@ class RealPsimAdapter(BasePsimAdapter):
             "TMP",  # Temp directories
             "HOME",
             "USERPROFILE",  # Home directory
+            # Windows Python은 APPDATA로 사용자 site-packages 경로를 정한다.
+            # 없으면 `pip install --user`로 설치한 psimapipy를 찾지 못한다.
+            "APPDATA",
+            "LOCALAPPDATA",
             "PSIM_PATH",  # PSIM installation
         ]
         for var in essential_vars:
