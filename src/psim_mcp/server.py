@@ -44,6 +44,7 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
     """
     from psim_mcp.services.project_service import ProjectService
     from psim_mcp.services.simulation_service import SimulationService
+    from psim_mcp.services.vault_service import VaultService
 
     project_svc = ProjectService(adapter=adapter, config=config)
     simulation_svc = SimulationService(
@@ -52,9 +53,15 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
         project_service=project_svc,
     )
 
+    vault_svc = VaultService(
+        drive_root=config.vault_drive_root,
+        local_root=config.vault_local_root,
+    )
+
     return {
         "project": project_svc,
         "simulation": simulation_svc,
+        "vault": vault_svc,
         "_adapter": adapter,
         # Legacy: combined service for backward compat
         "_legacy": simulation_svc,
@@ -63,7 +70,7 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
 
 def register_all_tools(mcp: FastMCP, services: dict, config: AppConfig) -> None:
     """Register every tool module on *mcp* using domain services."""
-    from psim_mcp.tools import analysis, parameter, project, results, simulation
+    from psim_mcp.tools import analysis, parameter, project, results, simulation, vault
 
     # Use dedicated services for each tool module
     project.register_tools(mcp, services["project"])
@@ -71,6 +78,7 @@ def register_all_tools(mcp: FastMCP, services: dict, config: AppConfig) -> None:
     simulation.register_tools(mcp, services["simulation"])
     results.register_tools(mcp, services["_legacy"])
     analysis.register_tools(mcp, services["simulation"], services["_adapter"], config)
+    vault.register_tools(mcp, services, services["vault"])
 
 
 def register_knowledge_resources(mcp: FastMCP) -> None:
@@ -148,7 +156,9 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
             "open_project → set_parameter(파라미터 수정) → run_simulation → "
             "analyze_simulation / sweep_parameter(분석·스윕). "
             "get_status로 현재 모드(mock/real)와 열린 프로젝트를 확인. "
-            "회로 최적화는 optimize_circuit 사용."
+            "회로 최적화는 optimize_circuit 사용. "
+            "드라이브 원본/로컬 사본 저장 루틴: 신규는 vault_register, "
+            "수정·실행·저장을 한 번에 하려면 vault_edit_and_run(원본 보호·버전 기록)."
         ),
     )
 

@@ -45,6 +45,11 @@ class AppConfig(BaseSettings):
     # --- Security ---
     allowed_project_dirs: list[str] = []
 
+    # --- Vault (드라이브 원본 / 로컬 사본) ---
+    # 미설정 시 VaultService 기본값 사용: G:\내 드라이브\PSIM, ~/psim-projects
+    vault_drive_root: Path | None = None
+    vault_local_root: Path | None = None
+
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------

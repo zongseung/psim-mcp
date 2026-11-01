@@ -153,6 +153,8 @@ ALLOWED_PROJECT_DIRS=C:\work\psim-projects,D:\shared\verified-circuits
 | `SERVER_PORT` | `8000` | SSE port |
 | `SIMULATION_TIMEOUT` | `300` | 기본 시뮬레이션 제한 시간(초) |
 | `MAX_SWEEP_STEPS` | `100` | `sweep_parameter` 최대 단계 수 |
+| `VAULT_DRIVE_ROOT` | `G:\내 드라이브\PSIM` | vault 드라이브 원본 폴더 |
+| `VAULT_LOCAL_ROOT` | `~/psim-projects` | vault 로컬 사본·작업 폴더 |
 
 ## MCP 클라이언트 설정
 
@@ -200,7 +202,7 @@ Claude Desktop의 `claude_desktop_config.json`에 다음 서버 정의를 추가
 
 Codex 등 [agentskills.io](https://agentskills.io) 스펙을 따르는 에이전트는 저장소의 `.agents/skills/` 디렉터리에서 동일한 스킬을 사용합니다. 두 위치의 스킬 파일은 CI 테스트(`tests/unit/test_skills_sync.py`)로 동기화가 강제됩니다.
 
-## 공개 도구 11개 기술 명세
+## 공개 도구 17개 기술 명세
 
 | 도구 | 입력 개요 | 동작과 파일 영향 |
 | --- | --- | --- |
@@ -215,8 +217,31 @@ Codex 등 [agentskills.io](https://agentskills.io) 스펙을 따르는 에이전
 | `analyze_simulation` | topology, 목표, 파형 옵션 | 시뮬레이션 후 topology별 메트릭·샘플·선택적 PNG 생성 |
 | `analyze_existing` | `.smv`, topology, 목표, 파형 옵션 | 재실행 없이 기존 결과 분석; 메트릭이 비면 `available_signals` 확인 필요 |
 | `optimize_circuit` | 동적 최적화 request | 원본이 아닌 격리된 사본에서 순차 Optuna study 실행 |
+| `vault_status` | 없음 | 드라이브 원본·로컬 사본 경로 상태와 프로젝트·현재 버전 목록 |
+| `vault_history` | 프로젝트 이름 | 버전 이력(manifest) 조회 |
+| `vault_register` | `.psimsch` 경로, 프로젝트 이름 | 드라이브 원본 v001 + 로컬 사본 v001 최초 저장 |
+| `vault_checkout` | 프로젝트 이름, `force` | 드라이브 원본을 로컬 작업 폴더로 가져와 열기; 미커밋 작업이 있으면 거부 |
+| `vault_commit` | 프로젝트 이름, 메시지, `force` | 작업 파일을 다음 버전으로 저장(드라이브 원본 갱신 + history + 로컬 사본); 드라이브가 바뀌었으면 충돌로 거부 |
+| `vault_edit_and_run` | 프로젝트 이름, 변경 목록, 시뮬레이션 옵션 | 가져오기 → 변경·재확인 → 시뮬레이션 → 새 버전 저장 → 결과 요약 저장을 한 번에; 실패 시 드라이브 원본 유지 |
 
-`set_parameter`와 `sweep_parameter`는 현재 열린 파일을 변경합니다. 원본을 보존해야 하는 수동 실험에는 사용자가 작업 사본을 준비해야 합니다. `optimize_circuit`는 아래의 별도 사본·복원 계약을 갖습니다.
+`set_parameter`와 `sweep_parameter`는 현재 열린 파일을 변경합니다. 원본을 보존해야 하는 수동 실험에는 사용자가 작업 사본을 준비하거나 `vault_*` 도구를 사용합니다. `optimize_circuit`는 아래의 별도 사본·복원 계약을 갖습니다.
+
+### Vault: 드라이브 원본 / 로컬 사본 루틴
+
+원본은 드라이브(예: Google Drive for Desktop의 `G:\내 드라이브\PSIM`)에, 사본과 작업 파일은 로컬에 둡니다. PSIM은 항상 로컬 작업 파일에서 실행하고, 완성된 파일만 드라이브로 원자적으로 복사합니다.
+
+```text
+VAULT_DRIVE_ROOT/<p>/<p>.psimsch        최신 원본
+VAULT_DRIVE_ROOT/<p>/history/<p>_v00N   모든 버전
+VAULT_DRIVE_ROOT/<p>/results/v00N/      시뮬레이션 요약(+선택적 .smv)
+VAULT_DRIVE_ROOT/<p>/manifest.json      버전·sha256·시각·메시지
+VAULT_LOCAL_ROOT/<p>/<p>_v00N.psimsch   버전별 로컬 사본
+VAULT_LOCAL_ROOT/<p>/work/              작업 파일과 체크아웃 기준
+```
+
+- 드라이브가 항상 우선합니다. 체크아웃 이후 드라이브 원본이 바뀌면 커밋을 `CONFLICT`로 거부합니다.
+- `vault_edit_and_run`은 파라미터를 쓴 뒤 다시 읽어 실제 적용 여부를 확인합니다. PSIM이 틀린 파라미터 이름을 조용히 무시하면 `PARAM_NOT_APPLIED`로 중단하고 드라이브 원본은 그대로 둡니다.
+- `ALLOWED_PROJECT_DIRS`를 쓰는 경우 `VAULT_LOCAL_ROOT`가 포함되어야 작업 파일을 열 수 있습니다.
 
 ## `optimize_circuit` 요청·실행·결과 계약
 
