@@ -58,6 +58,7 @@ async def test_run_batch_writes_run_folders_and_returns_table(env):
         schematic_path=str(sch),
         conditions=[{"Lx": 0.001}, {"Lx": "2m"}, {"L1.Inductance": 0.004, "Rload": 5}],
         workers=2,
+        keep_smv="all",
     )
     await _close(app)
     assert res["success"], res
@@ -122,7 +123,9 @@ def _bad_mix() -> list[dict]:
 
 async def test_invalid_condition_only_marks_its_row(env):
     app, _, sch = env
-    res = await _call(app, "run_batch", schematic_path=str(sch), conditions=_bad_mix(), workers=2)
+    res = await _call(
+        app, "run_batch", schematic_path=str(sch), conditions=_bad_mix(), workers=2, keep_smv="all"
+    )
     await _close(app)
     assert res["success"], res
     data = res["data"]

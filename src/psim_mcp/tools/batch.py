@@ -23,7 +23,13 @@ def register_tools(mcp, batch_service):
             "실행 중 실패한 조건도 status에 오류로 표시됩니다. 개수는 succeeded(성공)·failed(실행했지만 실패)·"
             "invalid(형식 오류로 미실행)로 나뉘며 합계는 조건 수와 같습니다. 뷰어는 띄우지 않습니다(Simview=0). "
             "workers 생략 시 저장된 벤치마크 값 또는 물리 코어 수를 씁니다. "
-            "결과 폴더: runs/<study_id>/run_000/ (config.json, summary.json, result.smv), 전체 표는 results.csv."
+            "결과 폴더: runs/<study_id>/run_000/ (config.json, summary.json, result.smv), 전체 표는 results.csv. "
+            "저장 정책: rank_by(표 열 이름 '신호.지표', 예 'I(L1).ripple' 오름차순, '-Vo1.mean' 내림차순, "
+            "지표는 mean·ripple·max·min)로 순위를 매기고 표에 rank 열을 붙입니다. "
+            "keep_smv는 'all'(파형 전부 보존)·'top_k'(순위 상위 top_k개만, 기본 3)·'none'(파형 안 남김) 중 하나이며, "
+            "생략하면 rank_by가 있을 때 'top_k', 없을 때 'none'입니다 — 즉 기본적으로 파형(.smv)은 "
+            "전부 남지 않습니다. 파형이 모두 필요하면 keep_smv='all'을 주세요. "
+            "동점은 run 번호가 작은 쪽이 앞이고, 실패·형식 오류 행과 값이 없거나 NaN인 행은 순위에서 빠집니다."
         ),
     )
     @tool_handler("run_batch")
@@ -37,6 +43,9 @@ def register_tools(mcp, batch_service):
         study_name: str | None = None,
         skip_ratio: float = 0.5,
         strict: bool = False,
+        rank_by: str | None = None,
+        top_k: int = 3,
+        keep_smv: str | None = None,
     ) -> dict:
         return await batch_service.run_batch(
             conditions,
@@ -48,6 +57,9 @@ def register_tools(mcp, batch_service):
             study_name=study_name,
             skip_ratio=skip_ratio,
             strict=strict,
+            rank_by=rank_by,
+            top_k=top_k,
+            keep_smv=keep_smv,
         )
 
     @mcp.tool(

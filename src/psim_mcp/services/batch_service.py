@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from psim_mcp.parallel import settings as parallel_settings
 from psim_mcp.parallel.cpu import logical_cores, physical_cores
 from psim_mcp.parallel.pool import PoolError, WorkerError
+from psim_mcp.services import storage_policy as sp
 from psim_mcp.services.validators import (
     normalize_parameter_name,
     validate_component_id,
@@ -309,8 +310,15 @@ class BatchService:
         study_name: str | None = None,
         skip_ratio: float = 0.5,
         strict: bool = False,
+        rank_by: str | None = None,
+        top_k: int | None = sp.DEFAULT_TOP_K,
+        keep_smv: str | None = None,
     ) -> dict:
         try:
+            try:
+                policy = sp.resolve_policy(rank_by, keep_smv, top_k)
+            except sp.StoragePolicyError as e:
+                raise BatchInputError(e.code, str(e), e.suggestion) from e
             return await self._run_batch(
                 conditions,
                 schematic_path,
@@ -321,6 +329,7 @@ class BatchService:
                 study_name,
                 skip_ratio,
                 strict,
+                policy,
             )
         except BatchInputError as e:
             return ResponseBuilder.error(e.code, str(e), e.suggestion, e.details)
@@ -345,6 +354,7 @@ class BatchService:
         study_name,
         skip_ratio,
         strict,
+        policy: sp.StoragePolicy,
     ) -> dict:
         schematic = self._resolve_schematic(schematic_path)
         # strict=False: 형식이 틀린 조건은 그 행만 오류로 남기고 나머지를 실행한다.
@@ -425,6 +435,7 @@ class BatchService:
                     "time_step": time_step,
                     "signals": signals,
                     "skip_ratio": float(skip_ratio),
+                    # 실행 중에는 모두 저장하고, 전체 결과를 모은 뒤 저장 정책으로 정리한다.
                     "keep_smv": True,
                 }
             )
@@ -442,9 +453,6 @@ class BatchService:
                     "executed": False,
                     "error": cond["error"],
                 }
-                (study_dir / f"run_{i:03d}" / "summary.json").write_text(
-                    json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
-                )
                 records.append(rec)
                 continue
             res = results[job_index[i]]
@@ -465,12 +473,16 @@ class BatchService:
             else:
                 err = res.get("error") or {}
                 rec["error"] = {"code": err.get("code"), "message": err.get("message")}
-            (study_dir / f"run_{i:03d}" / "summary.json").write_text(
-                json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
             records.append(rec)
 
-        table = self._build_table(records, signals)
+        # 모든 워커의 결과 수집이 끝난 뒤에 순위를 매기고 .smv를 정리한다.
+        storage, storage_notes = self._apply_storage(policy, records, study_dir)
+        for rec in records:
+            (study_dir / f"run_{rec['run']:03d}" / "summary.json").write_text(
+                json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+
+        table = self._build_table(records, signals, with_rank=policy.rank is not None)
         counts = self._count_records(records)
         ok, invalid = counts["succeeded"], counts["invalid"]
         sum_wall = sum(r.get("wall_s") or 0.0 for r in records)
@@ -491,9 +503,16 @@ class BatchService:
             "init_errors": info["init_errors"],
             "restarted_workers": info["restarted"],
             "simview": 0,
+            "storage": storage,
         }
         self._write_study_files(study_dir, summary, records, table)
         data = dict(summary)
+        # 응답에는 삭제 파일 목록 대신 개수만 싣는다(전체 목록은 study.json).
+        data["storage"] = {
+            **{k: v for k, v in storage.items() if k not in ("deleted", "rejected")},
+            "deleted_count": len(storage["deleted"]),
+            "rejected": storage["rejected"][:10],
+        }
         data["columns"] = table["columns"]
         data["rows"] = table["rows"][:_MAX_TABLE_ROWS]
         if len(table["rows"]) > _MAX_TABLE_ROWS:
@@ -509,6 +528,7 @@ class BatchService:
                 f"형식이 틀린 조건 {invalid}개는 실행하지 않았습니다(invalid_conditions·suggestions 참고). "
                 "하나라도 틀리면 전체를 거부하려면 strict=true를 쓰세요."
             )
+        notes.extend(storage_notes)
         if info["workers"] < n_workers:
             notes.append(f"워커 {n_workers}개 중 {info['workers']}개만 시작됨(init_errors 참고).")
         if ok and sum_wall / max(ok, 1) < _SHORT_RUN_WARNING_S:
@@ -558,7 +578,92 @@ class BatchService:
             report["suggestions"] = suggestions
         return report
 
-    def _build_table(self, records: list[dict], signals: list[str] | None) -> dict:
+    @staticmethod
+    def _apply_storage(
+        policy: sp.StoragePolicy, records: list[dict], study_dir: Path
+    ) -> tuple[dict, list[str]]:
+        """저장 정책 적용: 순위를 매기고 대상 외 .smv를 지운다. 행마다 rank·smv_kept를 기록."""
+        notes: list[str] = []
+        applied = policy.keep_smv
+        ranked: list[tuple[int, float]] = []
+        if policy.rank is not None:
+            if sp.column_exists(records, policy.rank):
+                ranked = sp.rank_records(records, policy.rank)
+            else:
+                signals = sorted(
+                    {s for r in records if r.get("ok") for s in (r.get("summary") or {})}
+                )
+                note = (
+                    f"rank_by 열 '{policy.rank.column}'가 결과에 없어 순위를 매기지 않았습니다"
+                    f"(결과 신호: {', '.join(signals) or '없음'})."
+                )
+                if applied == "top_k":
+                    applied = "none"
+                    note += ' 그래서 keep_smv="none"으로 처리했습니다.'
+                notes.append(note)
+        if applied == "top_k" and policy.top_k > len(ranked):
+            notes.append(
+                f"top_k={policy.top_k}이지만 순위 대상이 {len(ranked)}개라 "
+                f"{len(ranked)}개만 남겼습니다."
+            )
+
+        candidates: dict[int, list[str]] = {}
+        for r in records:
+            run_dir = study_dir / f"run_{r['run']:03d}"
+            paths = [str(p) for p in sorted(run_dir.glob("*.smv"))] if run_dir.is_dir() else []
+            if r.get("smv_path") and str(r["smv_path"]) not in paths:
+                paths.append(str(r["smv_path"]))
+            candidates[r["run"]] = paths
+        plan = sp.plan_smv_deletion(candidates, ranked, applied, policy.top_k, study_dir)
+        deleted, delete_failed = sp.delete_files(plan.delete)
+        deleted_set = set(deleted)
+
+        rank_of = {run: i + 1 for i, (run, _) in enumerate(ranked)}
+        for r in records:
+            remaining = [p for p in candidates[r["run"]] if p not in deleted_set]
+            if policy.rank is not None:
+                r["rank"] = rank_of.get(r["run"])
+            r["smv_kept"] = bool(remaining)
+            if r.get("smv_path") and str(r["smv_path"]) in deleted_set:
+                r["smv_path"] = None
+
+        kept_runs = [r["run"] for r in records if r["smv_kept"]]
+        if applied == "top_k":
+            runs_text = ", ".join(map(str, plan.keep_runs)) or "없음"
+            notes.append(
+                f"파형(.smv)은 rank_by({policy.rank.text}) 상위 {len(plan.keep_runs)}개"
+                f"(run {runs_text})만 남겼습니다. "
+                '전부 필요하면 keep_smv="all"로 다시 요청하세요.'
+            )
+        elif applied == "none" and any(candidates.values()):
+            notes.append(
+                "파형(.smv)은 남기지 않았습니다(config.json·summary.json·results.csv만 보존). "
+                '전부 필요하면 keep_smv="all"로 다시 요청하세요.'
+            )
+        if delete_failed:
+            notes.append(
+                f".smv {len(delete_failed)}개를 지우지 못했습니다(파일 잠금 등). "
+                "storage.delete_failed 참고 — 배치 결과에는 영향이 없습니다."
+            )
+        if plan.rejected:
+            notes.append(
+                f"study 폴더의 run_NNN/*.smv가 아닌 경로 {len(plan.rejected)}개는 "
+                "지우지 않았습니다(storage.rejected 참고)."
+            )
+        storage = {
+            **policy.as_dict(),
+            "applied_keep_smv": applied,
+            "ranked": len(ranked),
+            "kept_runs": kept_runs,
+            "deleted": deleted,
+            "delete_failed": delete_failed,
+            "rejected": plan.rejected,
+        }
+        return storage, notes
+
+    def _build_table(
+        self, records: list[dict], signals: list[str] | None, with_rank: bool = False
+    ) -> dict:
         input_keys: list[str] = []
         all_signals: list[str] = []
         for r in records:
@@ -573,15 +678,20 @@ class BatchService:
             omitted: list[str] = []
         else:
             shown, omitted = all_signals[:_MAX_TABLE_SIGNALS], all_signals[_MAX_TABLE_SIGNALS:]
-        columns = ["run", *input_keys, "status", "executed", "sim_s"] + [
-            f"{s}.{m}" for s in shown for m in _METRICS
-        ]
+        columns = ["run", *input_keys, "status", "executed"]
+        columns += (
+            (["rank"] if with_rank else [])
+            + ["sim_s"]
+            + [f"{s}.{m}" for s in shown for m in _METRICS]
+        )
         rows = []
         messages: dict[int, str] = {}  # results.csv 전용 오류 메시지 열
         for r in records:
             row: dict[str, Any] = {"run": r["run"]}
             for k in input_keys:
                 row[k] = r["inputs"].get(k)
+            if with_rank:
+                row["rank"] = r.get("rank")
             if r["ok"]:
                 row["status"] = "ok"
                 row["executed"] = True
@@ -641,6 +751,7 @@ class BatchService:
             workers=workers,
             study_name=f"sweep_{component_id}_{parameter_name}",
             strict=True,  # 스윕은 모든 단계가 같은 키라 기존처럼 전체 거부
+            keep_smv="all",  # 병렬 스윕은 저장 정책과 무관하게 .smv를 모두 보존
         )
         if not res.get("success"):
             return res
