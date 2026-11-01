@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from psim_mcp.services.validators import normalize_parameter_name
 from psim_mcp.services.vault_service import VaultError, VaultService, vfmt
 from psim_mcp.shared.response import ResponseBuilder
 from psim_mcp.tools import tool_handler
@@ -95,7 +96,26 @@ def _find_components(info: Any) -> list[dict]:
     return []
 
 
-async def _verify(project_svc, component_id: str, parameter_name: str, value: Any) -> dict:
+def _resolve_key(params: dict, parameter_name: str, resolved_name: str | None) -> list[str]:
+    """Return the parameter key(s) in *params* that correspond to the request.
+
+    순서: 브리지가 해석한 실제 이름 → 요청 이름 그대로 → 정규화 키 일치
+    ('On_Resistance' ↔ 'On Resistance', 'Init__Cap__Voltage' ↔ 'Init. Cap. Voltage').
+    """
+    for name in (resolved_name, parameter_name):
+        if name and name in params:
+            return [name]
+    key = normalize_parameter_name(parameter_name)
+    return [k for k in params if normalize_parameter_name(k) == key]
+
+
+async def _verify(
+    project_svc,
+    component_id: str,
+    parameter_name: str,
+    value: Any,
+    resolved_name: str | None = None,
+) -> dict:
     """Read the parameter back to catch PSIM's silent no-op on wrong names."""
     try:
         info = await project_svc.get_project_info()
@@ -105,16 +125,22 @@ async def _verify(project_svc, component_id: str, parameter_name: str, value: An
         if str(comp.get("name", comp.get("id", ""))) != component_id:
             continue
         params = comp.get("parameters") or {}
-        if parameter_name not in params:
+        keys = _resolve_key(params, parameter_name, resolved_name)
+        if len(keys) != 1:
+            reason = (
+                f"'{component_id}'에 '{parameter_name}' 파라미터가 없습니다(이름 오류 가능)."
+                if not keys
+                else f"'{parameter_name}'이(가) 여러 파라미터와 맞습니다: {', '.join(keys)}"
+            )
             return {
                 "status": "not_applied",
-                "reason": f"'{component_id}'에 '{parameter_name}' 파라미터가 없습니다(이름 오류 가능).",
+                "reason": reason,
                 "available": sorted(params.keys())[:40],
             }
-        actual = params[parameter_name]
+        actual = params[keys[0]]
         cmp = _compare(actual, value)
         if cmp == "same":
-            return {"status": "verified", "actual": actual}
+            return {"status": "verified", "actual": actual, "psim_parameter_name": keys[0]}
         if cmp == "unknown":
             return {
                 "status": "unverified",
@@ -270,11 +296,19 @@ def register_tools(mcp, services: dict, vault: VaultService | None = None) -> Va
                     )
                 res = await sim_svc.set_parameter(cid, pname, ch["value"])
                 if not res.get("success"):
+                    err = res.get("error") or {}
+                    cause = err.get("code")
+                    details = dict(err.get("details") or {})
+                    if cause:
+                        details["cause"] = cause
                     return ResponseBuilder.error(
                         "SET_PARAMETER_FAILED",
-                        f"{cid}.{pname} 변경 실패: {str(res.get('error', {}).get('message')).rstrip('.')}. 드라이브 원본은 변경되지 않았습니다.",
+                        f"{cid}.{pname} 변경 실패({cause}): {str(err.get('message')).rstrip('.')}. 드라이브 원본은 변경되지 않았습니다.",
+                        err.get("suggestion"),
+                        details or None,
                     )
-                check = await _verify(project_svc, cid, pname, ch["value"])
+                resolved = (res.get("data") or {}).get("psim_parameter_name")
+                check = await _verify(project_svc, cid, pname, ch["value"], resolved)
                 applied.append(
                     {
                         "component_id": cid,
