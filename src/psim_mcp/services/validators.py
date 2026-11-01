@@ -10,6 +10,10 @@ from psim_mcp.utils.sanitize import sanitize_path_for_display
 
 # Pre-compiled patterns
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+# 파라미터 이름: PSIM 표시 이름('On Resistance', 'Init. Cap. Voltage', 'Np (primary)')과
+# 변환 스크립트 이름('On_Resistance')을 모두 받는다. 끝 공백은 허용하지 않는다.
+_PARAMETER_NAME_RE = re.compile(r"^[A-Za-z](?:[A-Za-z0-9 ._()]{0,62}[A-Za-z0-9._()])?$")
+_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 _VALID_FORMATS = frozenset({"json", "csv"})
 
 
@@ -75,6 +79,25 @@ def validate_project_path(
 def validate_component_id(component_id: str) -> bool:
     """Return *True* if *component_id* matches ``^[A-Za-z][A-Za-z0-9_]{0,63}$``."""
     return bool(_IDENTIFIER_RE.match(component_id))
+
+
+def validate_parameter_name(parameter_name: str) -> bool:
+    """Return *True* for PSIM parameter names, display or script style.
+
+    Allowed: letters, digits, space, ``.``, ``_``, ``(``, ``)``; starts with a
+    letter, no trailing space, at most 64 characters.
+    """
+    return bool(_PARAMETER_NAME_RE.match(parameter_name))
+
+
+def normalize_parameter_name(name: str) -> str:
+    """Comparison key shared by display and script names.
+
+    ``'On Resistance'``, ``'On_Resistance'`` → ``'on_resistance'``;
+    ``'Init. Cap. Voltage'`` → ``'init__cap__voltage'`` (= ``Init__Cap__Voltage``).
+    Must stay identical to ``_normalize_param_key`` in ``bridge/bridge_script.py``.
+    """
+    return _NON_ALNUM_RE.sub("_", str(name)).lower()
 
 
 def validate_parameter_value(value: object) -> bool:

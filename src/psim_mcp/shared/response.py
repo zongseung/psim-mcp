@@ -11,8 +11,13 @@ class ResponseBuilder:
         return {"success": True, "data": data, "message": message}
 
     @staticmethod
-    def error(code: str, message: str, suggestion: str | None = None) -> dict:
-        return {
-            "success": False,
-            "error": {"code": code, "message": message, "suggestion": suggestion},
-        }
+    def error(
+        code: str,
+        message: str,
+        suggestion: str | None = None,
+        details: dict | None = None,
+    ) -> dict:
+        error: dict = {"code": code, "message": message, "suggestion": suggestion}
+        if details:
+            error["details"] = details
+        return {"success": False, "error": error}

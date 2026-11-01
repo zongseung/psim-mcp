@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import optuna
 from optuna.trial import TrialState
 
+from psim_mcp.adapters.base import ParameterError
 from psim_mcp.models.optimization import ConstraintOperator, OptimizationRequest
 
 if TYPE_CHECKING:
@@ -164,7 +165,12 @@ class OptimizationStudy:
             if measurement.signal.startswith("I(") and measurement.signal.endswith(")")
         }
         for component in sorted(components):
-            await self._adapter.set_parameter(component, "CurrentFlag", 1, lease_token=token)
+            try:
+                await self._adapter.set_parameter(component, "CurrentFlag", 1, lease_token=token)
+            except ParameterError as exc:
+                # 전류 플래그가 없는 소자(프로브 등)는 기존처럼 건너뛴다.
+                if exc.code not in {"PARAMETER_NOT_FOUND", "PARAMETER_REJECTED"}:
+                    raise
 
     async def _apply(self, params: dict[str, float], token: SessionToken) -> None:
         for variable in self._request.variables:
