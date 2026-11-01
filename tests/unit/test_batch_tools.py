@@ -99,16 +99,118 @@ async def test_run_batch_marks_failed_conditions_in_table(env):
         workers=2,
     )
     await _close(app)
-    # 시험용 변수(__fail__, __crash__)는 회로가 참조하지 않으므로 사전 검사에서 막힌다
+    # 시험용 변수(__fail__, __crash__)는 회로가 참조하지 않으므로 사전 검사에서 걸러져
+    # 실행되지 않고(워커 크래시 없음) 그 행만 오류로 표시된다
+    assert res["success"], res
+    data = res["data"]
+    assert data["ok"] == 1 and data["failed"] == 2 and data["invalid"] == 2
+    rows = data["rows"]
+    assert rows[0]["status"] == "ok"
+    assert rows[1]["status"].startswith("error: VARIABLE_NOT_REFERENCED")
+    assert rows[2]["status"].startswith("error: VARIABLE_NOT_REFERENCED")
+    assert data["restarted_workers"] == []
+
+
+def _bad_mix() -> list[dict]:
+    conds = [{"Lx": round(0.0005 + i * 0.0005, 6)} for i in range(6)]
+    conds.insert(3, {"L1": 0.002})
+    return conds
+
+
+async def test_invalid_condition_only_marks_its_row(env):
+    app, _, sch = env
+    res = await _call(app, "run_batch", schematic_path=str(sch), conditions=_bad_mix(), workers=2)
+    await _close(app)
+    assert res["success"], res
+    data = res["data"]
+    assert data["conditions"] == 7 and data["ok"] == 6
+    assert data["failed"] == 1 and data["invalid"] == 1 and data["strict"] is False
+    rows = data["rows"]
+    assert [r["run"] for r in rows] == list(range(7))
+    assert rows[3]["L1"] == 0.002
+    assert rows[3]["status"].startswith("error: VARIABLE_NOT_REFERENCED")
+    assert all(r["status"] == "ok" for i, r in enumerate(rows) if i != 3)
+    # 실행된 조건은 순서·값이 그대로(Lx가 클수록 리플 감소)
+    ripples = [r["Vo1.ripple"] for i, r in enumerate(rows) if i != 3]
+    assert ripples == sorted(ripples, reverse=True)
+    assert any("strict=true" in n for n in data["notes"])
+    assert "형식 오류 1" in res["message"]
+
+    study = Path(data["study_dir"])
+    bad = json.loads((study / "run_003" / "config.json").read_text(encoding="utf-8"))
+    assert bad["executed"] is False and bad["error"]["code"] == "VARIABLE_NOT_REFERENCED"
+    assert bad["error"]["suggestion"]
+    assert not (study / "run_003" / "result.smv").exists()
+    summary = json.loads((study / "run_003" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["ok"] is False and summary["executed"] is False
+    assert (study / "run_004" / "result.smv").exists()
+
+
+async def test_invalid_format_condition_only_marks_its_row(env):
+    app, _, sch = env
+    res = await _call(
+        app,
+        "run_batch",
+        schematic_path=str(sch),
+        conditions=[{"Lx": 0.001}, {"Lx": None}, {"bad name": 1}, {"Q9.Inductance": 1}],
+    )
+    await _close(app)
+    assert res["success"], res
+    rows = res["data"]["rows"]
+    assert rows[0]["status"] == "ok"
+    assert rows[1]["status"].startswith("error: INVALID_CONDITION")
+    assert rows[2]["status"].startswith("error: INVALID_CONDITION")
+    assert rows[3]["status"].startswith("error: COMPONENT_NOT_FOUND")
+    assert res["data"]["invalid"] == 3
+
+
+async def test_strict_rejects_whole_batch(env):
+    app, cfg, sch = env
+    res = await _call(app, "run_batch", schematic_path=str(sch), conditions=_bad_mix(), strict=True)
+    await _close(app)
     assert res["success"] is False
     assert res["error"]["code"] == "VARIABLE_NOT_REFERENCED"
+    assert res["error"]["message"].startswith("조건 3:")
+    assert res["error"]["suggestion"]
+    # 실행 전에 거부되므로 study 폴더도 만들지 않는다
+    assert not cfg.runs_dir.exists() or not any(cfg.runs_dir.iterdir())
+
+
+async def test_all_invalid_conditions_reject_batch(env):
+    app, cfg, sch = env
+    res = await _call(
+        app,
+        "run_batch",
+        schematic_path=str(sch),
+        conditions=[{"L1": 0.002}, {"Q9.Inductance": 1}, {"Lx": None}],
+    )
+    await _close(app)
+    assert res["success"] is False
+    err = res["error"]
+    assert err["code"] == "VARIABLE_NOT_REFERENCED"
+    assert "3개 조건이 모두" in err["message"]
+    codes = [c["code"] for c in err["details"]["invalid_conditions"]]
+    assert codes == ["VARIABLE_NOT_REFERENCED", "COMPONENT_NOT_FOUND", "INVALID_CONDITION"]
+    assert not cfg.runs_dir.exists() or not any(cfg.runs_dir.iterdir())
+
+
+async def test_variable_not_referenced_has_suggestion(env):
+    app, _, sch = env
+    res = await _call(app, "run_batch", schematic_path=str(sch), conditions=[{"Lout": 1e-3}])
+    await _close(app)
+    err = res["error"]
+    assert err["code"] == "VARIABLE_NOT_REFERENCED"
+    # 회로가 참조하는 변수 목록과 '소자.파라미터' 형식 예시
+    assert "Lx" in err["suggestion"] and "Rload" in err["suggestion"]
+    assert "L1.Inductance" in err["suggestion"]
+    assert err["details"]["referenced_variables"] == ["Lx", "Rload"]
 
 
 async def test_run_batch_failed_rows_show_error(env, monkeypatch):
     app, _, sch = env
     batch = app._services["batch"]
 
-    async def no_precheck(schematic, parsed):
+    async def no_precheck(schematic, parsed, strict=True):
         return {}
 
     monkeypatch.setattr(batch, "precheck", no_precheck)
@@ -136,6 +238,9 @@ async def test_numeric_element_value_is_not_treated_as_variable(env):
     assert res["success"] is False
     assert res["error"]["code"] == "VARIABLE_NOT_REFERENCED"
     assert "L1.파라미터" in res["error"]["message"]
+    # 소자 이름과 같은 키면 그 소자의 실제 파라미터로 예시를 든다
+    assert '"L1.Inductance"' in res["error"]["suggestion"]
+    assert "Lx" in res["error"]["suggestion"]
 
 
 @pytest.mark.parametrize(

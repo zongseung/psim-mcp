@@ -16,7 +16,9 @@ def register_tools(mcp, batch_service):
             "숫자로 적힌 소자 값(예: L1 Inductance=0.002)은 변수 덮어쓰기로 바뀌지 않으므로 'L1.Inductance' 형식을 쓰세요. "
             "schematic_path를 생략하면 열린 회로를 쓰며, 원본 파일은 수정하지 않습니다. "
             "표에는 신호별 정상상태(앞 skip_ratio 제외) 평균·리플(p-p)·최대·최소가 들어가고, "
-            "실패한 조건은 status에 오류로 표시됩니다. 뷰어는 띄우지 않습니다(Simview=0). "
+            "형식이 틀린 조건(회로가 참조하지 않는 변수, 없는 소자·파라미터 등)은 실행하지 않고 그 행의 status에 "
+            "오류로 표시하며 나머지 조건은 실행합니다. 모든 조건이 틀렸거나 strict=true면 실행 전에 배치 전체를 거부합니다. "
+            "실행 중 실패한 조건도 status에 오류로 표시됩니다. 뷰어는 띄우지 않습니다(Simview=0). "
             "workers 생략 시 저장된 벤치마크 값 또는 물리 코어 수를 씁니다. "
             "결과 폴더: runs/<study_id>/run_000/ (config.json, summary.json, result.smv), 전체 표는 results.csv."
         ),
@@ -31,6 +33,7 @@ def register_tools(mcp, batch_service):
         workers: int | None = None,
         study_name: str | None = None,
         skip_ratio: float = 0.5,
+        strict: bool = False,
     ) -> dict:
         return await batch_service.run_batch(
             conditions,
@@ -41,6 +44,7 @@ def register_tools(mcp, batch_service):
             workers=workers,
             study_name=study_name,
             skip_ratio=skip_ratio,
+            strict=strict,
         )
 
     @mcp.tool(

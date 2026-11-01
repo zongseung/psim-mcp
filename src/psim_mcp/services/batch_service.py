@@ -5,7 +5,9 @@
 
 - 점이 없는 키(``Lx``)는 회로 변수다. 파일 복제 없이 ``PsimSimulate`` kwargs로 넘긴다.
   변수 덮어쓰기는 회로가 그 변수를 실제로 참조할 때만 효과가 있으므로, 참조하지 않는 이름은
-  실행 전에 거부한다(숫자 값인 ``L1`` 인덕턴스 같은 것은 덮어쓰기가 조용히 무시된다).
+  실행하지 않는다(숫자 값인 ``L1`` 인덕턴스 같은 것은 덮어쓰기가 조용히 무시된다).
+- 형식이 틀린 조건은 기본적으로 그 행만 오류로 표시하고 나머지를 실행한다. 모든 조건이 틀렸거나
+  ``strict=True``면 배치 전체를 실행 전에 거부한다.
 - ``소자.파라미터`` 키나 ``total_time``/``time_step``은 run 폴더에 회로 사본을 만들어 수정한다.
 
 작업 폴더: ``<runs_dir>/<study_id>/run_000/``마다 ``config.json``(넣은 값), ``summary.json``
@@ -59,6 +61,15 @@ class BatchInputError(ValueError):
         self.code = code
         self.suggestion = suggestion
         self.details = details
+
+
+def _error_doc(e: BatchInputError) -> dict:
+    doc: dict[str, Any] = {"code": e.code, "message": str(e)}
+    if e.suggestion:
+        doc["suggestion"] = e.suggestion
+    if e.details:
+        doc["details"] = e.details
+    return doc
 
 
 def _round(value: Any) -> Any:
@@ -117,7 +128,13 @@ class BatchService:
     # 조건 해석·검사
     # ------------------------------------------------------------------
 
-    def parse_conditions(self, conditions: list[dict]) -> list[dict]:
+    def parse_conditions(self, conditions: list[dict], strict: bool = True) -> list[dict]:
+        """조건 목록을 해석한다.
+
+        strict=True면 형식이 틀린 조건이 하나라도 있으면 BatchInputError를 낸다.
+        strict=False면 틀린 조건은 ``error``를 붙인 항목으로 남기고 나머지를 계속 해석한다.
+        목록 자체의 오류(비어 있음, 개수 초과)는 항상 거부한다.
+        """
         if not isinstance(conditions, list) or not conditions:
             raise BatchInputError("INVALID_INPUT", "conditions는 비어 있지 않은 목록이어야 합니다.")
         limit = self._config.max_batch_conditions
@@ -128,97 +145,154 @@ class BatchService:
             )
         parsed = []
         for i, cond in enumerate(conditions):
-            if not isinstance(cond, dict) or not cond:
-                raise BatchInputError(
-                    "INVALID_CONDITION",
-                    f'조건 {i}: 비어 있지 않은 객체여야 합니다. 예: {{"Lx": 0.002}}',
+            try:
+                parsed.append(self._parse_one(i, cond))
+            except BatchInputError as e:
+                if strict:
+                    raise
+                inputs = dict(cond) if isinstance(cond, dict) else {}
+                parsed.append(
+                    {"inputs": inputs, "variables": {}, "elements": [], "error": _error_doc(e)}
                 )
-            variables: dict[str, str] = {}
-            elements: list[dict] = []
-            for key, value in cond.items():
-                if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-                    raise BatchInputError(
-                        "INVALID_CONDITION",
-                        f"조건 {i}: '{key}' 값은 숫자 또는 문자열이어야 합니다.",
-                    )
-                text = str(value).strip()
-                if not text or len(text) > 200:
-                    raise BatchInputError(
-                        "INVALID_CONDITION", f"조건 {i}: '{key}' 값이 비어 있거나 너무 깁니다."
-                    )
-                if "." in key:
-                    cid, pname = key.split(".", 1)
-                    if not validate_component_id(cid) or not validate_parameter_name(pname):
-                        raise BatchInputError(
-                            "INVALID_CONDITION",
-                            f"조건 {i}: '{key}'는 '소자.파라미터' 형식이어야 합니다(예: L1.Inductance).",
-                        )
-                    elements.append({"component_id": cid, "parameter_name": pname, "value": text})
-                else:
-                    if not _VARIABLE_RE.match(key):
-                        raise BatchInputError(
-                            "INVALID_CONDITION", f"조건 {i}: 변수 이름 '{key}'가 올바르지 않습니다."
-                        )
-                    variables[key] = text
-            parsed.append({"inputs": dict(cond), "variables": variables, "elements": elements})
         return parsed
 
-    async def precheck(self, schematic: Path, parsed: list[dict]) -> dict:
-        """워커 하나로 회로를 읽어 조건이 실제로 적용될 수 있는지 확인한다."""
+    @staticmethod
+    def _parse_one(i: int, cond: Any) -> dict:
+        if not isinstance(cond, dict) or not cond:
+            raise BatchInputError(
+                "INVALID_CONDITION",
+                f'조건 {i}: 비어 있지 않은 객체여야 합니다. 예: {{"Lx": 0.002}}',
+            )
+        variables: dict[str, str] = {}
+        elements: list[dict] = []
+        for key, value in cond.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                raise BatchInputError(
+                    "INVALID_CONDITION",
+                    f"조건 {i}: '{key}' 값은 숫자 또는 문자열이어야 합니다.",
+                )
+            text = str(value).strip()
+            if not text or len(text) > 200:
+                raise BatchInputError(
+                    "INVALID_CONDITION", f"조건 {i}: '{key}' 값이 비어 있거나 너무 깁니다."
+                )
+            if "." in key:
+                cid, pname = key.split(".", 1)
+                if not validate_component_id(cid) or not validate_parameter_name(pname):
+                    raise BatchInputError(
+                        "INVALID_CONDITION",
+                        f"조건 {i}: '{key}'는 '소자.파라미터' 형식이어야 합니다(예: L1.Inductance).",
+                    )
+                elements.append({"component_id": cid, "parameter_name": pname, "value": text})
+            else:
+                if not _VARIABLE_RE.match(key):
+                    raise BatchInputError(
+                        "INVALID_CONDITION", f"조건 {i}: 변수 이름 '{key}'가 올바르지 않습니다."
+                    )
+                variables[key] = text
+        return {"inputs": dict(cond), "variables": variables, "elements": elements}
+
+    async def precheck(self, schematic: Path, parsed: list[dict], strict: bool = True) -> dict:
+        """워커 하나로 회로를 읽어 조건이 실제로 적용될 수 있는지 확인한다.
+
+        strict=False면 적용할 수 없는 조건에 ``error``를 붙이고 계속 검사한다.
+        이미 ``error``가 붙은 조건은 건너뛴다.
+        """
         res = await self._pool.call_one("inspect_schematic", {"path": str(schematic)})
         if not res.get("success"):
             err = res.get("error") or {}
             raise BatchInputError(err.get("code", "INSPECT_FAILED"), str(err.get("message")))
         info = res.get("data") or {}
+        for i, cond in enumerate(parsed):
+            if "error" in cond:
+                continue
+            try:
+                self._check_one(i, cond, info)
+            except BatchInputError as e:
+                if strict:
+                    raise
+                cond["error"] = _error_doc(e)
+        return info
+
+    @staticmethod
+    def _check_one(i: int, cond: dict, info: dict) -> None:
         elements: dict = info.get("elements") or {}
         referenced = {str(n).lower(): str(n) for n in info.get("referenced_identifiers") or []}
         undefined = [str(n) for n in info.get("undefined_variables") or []]
         elem_lower = {name.lower(): name for name in elements}
 
-        for i, cond in enumerate(parsed):
-            for var in cond["variables"]:
-                if var.lower() not in referenced:
-                    hint = (
-                        f" 소자 값을 바꾸려면 '{elem_lower[var.lower()]}.파라미터' 형식을 쓰세요."
-                        if var.lower() in elem_lower
-                        else " 소자 값을 바꾸려면 'L1.Inductance'처럼 '소자.파라미터' 형식을 쓰세요."
-                    )
-                    raise BatchInputError(
-                        "VARIABLE_NOT_REFERENCED",
-                        f"조건 {i}: '{var}'는 회로에서 참조하지 않는 변수라 덮어써도 효과가 없습니다.{hint}",
-                        details={"referenced_variables": sorted(referenced.values())},
-                    )
-            for ch in cond["elements"]:
-                name = elem_lower.get(ch["component_id"].lower())
-                if name is None:
-                    raise BatchInputError(
-                        "COMPONENT_NOT_FOUND",
-                        f"조건 {i}: 소자 '{ch['component_id']}'가 회로에 없습니다.",
-                        details={"available_components": sorted(elements)},
-                    )
-                ch["component_id"] = name
-                actual = [p for p in (elements[name].get("params") or {}) if p != "Name"]
-                key = normalize_parameter_name(ch["parameter_name"])
-                matches = [p for p in actual if p == ch["parameter_name"]] or [
-                    p for p in actual if normalize_parameter_name(p) == key
-                ]
-                if len(matches) != 1:
-                    raise BatchInputError(
-                        "AMBIGUOUS_PARAMETER" if matches else "PARAMETER_NOT_FOUND",
-                        f"조건 {i}: {name}의 파라미터 '{ch['parameter_name']}'를 찾을 수 없습니다.",
-                        "사용 가능한 파라미터: " + ", ".join(actual),
-                        {"available_parameters": actual},
-                    )
-                ch["parameter_name"] = matches[0]
-            provided = {v.lower() for v in cond["variables"]}
-            missing = [u for u in undefined if u.lower() not in provided]
-            if missing:
-                raise BatchInputError(
-                    "UNDEFINED_VARIABLE",
-                    f"조건 {i}: 회로의 정의되지 않은 변수 {missing}에 값을 주지 않았습니다.",
-                    "모든 조건에 이 변수 값을 넣으세요.",
+        for var in cond["variables"]:
+            if var.lower() not in referenced:
+                elem = elem_lower.get(var.lower())
+                hint = (
+                    f" 소자 값을 바꾸려면 '{elem}.파라미터' 형식을 쓰세요."
+                    if elem
+                    else " 소자 값을 바꾸려면 'L1.Inductance'처럼 '소자.파라미터' 형식을 쓰세요."
                 )
-        return info
+                refs = sorted(referenced.values())
+                example = "L1.Inductance"
+                if elem:
+                    params = [p for p in (elements[elem].get("params") or {}) if p != "Name"]
+                    if params:
+                        example = f"{elem}.{params[0]}"
+                var_example = f'{{"{refs[0]}": 값}}' if refs else '{"변수": 값}'
+                suggestion = (
+                    f"회로에서 참조하는 변수: {', '.join(refs) if refs else '없음'}. "
+                    f"회로 변수는 {var_example}, 소자 값은 "
+                    f'{{"{example}": 값}}처럼 "소자.파라미터" 형식으로 쓰세요.'
+                )
+                raise BatchInputError(
+                    "VARIABLE_NOT_REFERENCED",
+                    f"조건 {i}: '{var}'는 회로에서 참조하지 않는 변수라 덮어써도 효과가 없습니다.{hint}",
+                    suggestion,
+                    {"referenced_variables": refs, "example": example},
+                )
+        for ch in cond["elements"]:
+            name = elem_lower.get(ch["component_id"].lower())
+            if name is None:
+                raise BatchInputError(
+                    "COMPONENT_NOT_FOUND",
+                    f"조건 {i}: 소자 '{ch['component_id']}'가 회로에 없습니다.",
+                    details={"available_components": sorted(elements)},
+                )
+            ch["component_id"] = name
+            actual = [p for p in (elements[name].get("params") or {}) if p != "Name"]
+            key = normalize_parameter_name(ch["parameter_name"])
+            matches = [p for p in actual if p == ch["parameter_name"]] or [
+                p for p in actual if normalize_parameter_name(p) == key
+            ]
+            if len(matches) != 1:
+                raise BatchInputError(
+                    "AMBIGUOUS_PARAMETER" if matches else "PARAMETER_NOT_FOUND",
+                    f"조건 {i}: {name}의 파라미터 '{ch['parameter_name']}'를 찾을 수 없습니다.",
+                    "사용 가능한 파라미터: " + ", ".join(actual),
+                    {"available_parameters": actual},
+                )
+            ch["parameter_name"] = matches[0]
+        provided = {v.lower() for v in cond["variables"]}
+        missing = [u for u in undefined if u.lower() not in provided]
+        if missing:
+            raise BatchInputError(
+                "UNDEFINED_VARIABLE",
+                f"조건 {i}: 회로의 정의되지 않은 변수 {missing}에 값을 주지 않았습니다.",
+                "모든 조건에 이 변수 값을 넣으세요.",
+            )
+
+    @staticmethod
+    def _reject_if_all_invalid(parsed: list[dict]) -> None:
+        """모든 조건이 틀렸으면 첫 오류로 배치 전체를 거부한다."""
+        if not parsed or any("error" not in c for c in parsed):
+            return
+        first = parsed[0]["error"]
+        details = dict(first.get("details") or {})
+        message = first["message"]
+        if len(parsed) > 1:
+            details["invalid_conditions"] = [
+                {"run": i, "code": c["error"]["code"], "message": c["error"]["message"]}
+                for i, c in enumerate(parsed)
+            ]
+            message = f"{len(parsed)}개 조건이 모두 실행할 수 없는 형식입니다. 첫 오류: {message}"
+        raise BatchInputError(first["code"], message, first.get("suggestion"), details or None)
 
     # ------------------------------------------------------------------
     # 실행
@@ -234,6 +308,7 @@ class BatchService:
         workers: int | None = None,
         study_name: str | None = None,
         skip_ratio: float = 0.5,
+        strict: bool = False,
     ) -> dict:
         try:
             return await self._run_batch(
@@ -245,6 +320,7 @@ class BatchService:
                 workers,
                 study_name,
                 skip_ratio,
+                strict,
             )
         except BatchInputError as e:
             return ResponseBuilder.error(e.code, str(e), e.suggestion, e.details)
@@ -268,9 +344,12 @@ class BatchService:
         workers,
         study_name,
         skip_ratio,
+        strict,
     ) -> dict:
         schematic = self._resolve_schematic(schematic_path)
-        parsed = self.parse_conditions(conditions)
+        # strict=False: 형식이 틀린 조건은 그 행만 오류로 남기고 나머지를 실행한다.
+        parsed = self.parse_conditions(conditions, strict=strict)
+        self._reject_if_all_invalid(parsed)
         sim_opts = {
             k: v for k, v in (("total_time", total_time), ("time_step", time_step)) if v is not None
         }
@@ -290,16 +369,36 @@ class BatchService:
             )
 
         n_workers, source = parallel_settings.resolve_workers(self._config, workers)
-        n_workers = min(n_workers, len(parsed))
+        n_workers = min(n_workers, sum(1 for c in parsed if "error" not in c))
         # 필요한 워커를 먼저 한꺼번에 띄운다(PSIM() 생성 ~17 s를 병렬로 한 번만).
         warm = await self._pool.warm(n_workers)
-        await self.precheck(schematic, parsed)
+        await self.precheck(schematic, parsed, strict=strict)
+        self._reject_if_all_invalid(parsed)
+        n_workers = min(n_workers, sum(1 for c in parsed if "error" not in c))
 
         study_id, study_dir = self._new_study_dir(study_name, "batch")
         jobs = []
+        job_index: dict[int, int] = {}  # 조건 번호 → jobs 위치(형식 오류 조건은 실행하지 않음)
         for i, cond in enumerate(parsed):
             run_dir = study_dir / f"run_{i:03d}"
             run_dir.mkdir()
+            if "error" in cond:
+                (run_dir / "config.json").write_text(
+                    json.dumps(
+                        {
+                            "study_id": study_id,
+                            "run": i,
+                            "schematic": str(schematic),
+                            "inputs": cond["inputs"],
+                            "executed": False,
+                            "error": cond["error"],
+                        },
+                        ensure_ascii=False,
+                        indent=1,
+                    ),
+                    encoding="utf-8",
+                )
+                continue
             uses_copy = bool(cond["elements"] or sim_opts)
             config_doc = {
                 "study_id": study_id,
@@ -315,6 +414,7 @@ class BatchService:
             (run_dir / "config.json").write_text(
                 json.dumps(config_doc, ensure_ascii=False, indent=1), encoding="utf-8"
             )
+            job_index[i] = len(jobs)
             jobs.append(
                 {
                     "schematic": str(schematic),
@@ -333,11 +433,26 @@ class BatchService:
         info["pool_start_s"] = round(warm["start_s"] + info["pool_start_s"], 2)
         info["init_errors"] = warm["init_errors"] + info["init_errors"]
         records = []
-        for i, (cond, res) in enumerate(zip(parsed, results)):
+        for i, cond in enumerate(parsed):
+            if i not in job_index:
+                rec = {
+                    "run": i,
+                    "inputs": cond["inputs"],
+                    "ok": False,
+                    "executed": False,
+                    "error": cond["error"],
+                }
+                (study_dir / f"run_{i:03d}" / "summary.json").write_text(
+                    json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8"
+                )
+                records.append(rec)
+                continue
+            res = results[job_index[i]]
             rec = {
                 "run": i,
                 "inputs": cond["inputs"],
                 "ok": bool(res.get("success")),
+                "executed": True,
                 "wall_s": res.get("wall_s"),
                 "worker": res.get("worker"),
             }
@@ -357,6 +472,7 @@ class BatchService:
 
         table = self._build_table(records, signals)
         ok = sum(1 for r in records if r["ok"])
+        invalid = sum(1 for r in records if not r["executed"])
         sum_wall = sum(r.get("wall_s") or 0.0 for r in records)
         total_s = info["total_s"]
         summary = {
@@ -366,6 +482,8 @@ class BatchService:
             "conditions": len(records),
             "ok": ok,
             "failed": len(records) - ok,
+            "invalid": invalid,
+            "strict": bool(strict),
             "workers": info["workers"],
             "workers_source": source,
             "total_s": total_s,
@@ -385,13 +503,21 @@ class BatchService:
             data["omitted_signals"] = table["omitted_signals"]
         data["results_csv"] = str(study_dir / "results.csv")
         notes = []
+        if invalid:
+            notes.append(
+                f"형식이 틀린 조건 {invalid}개는 실행하지 않았습니다(status 참고). "
+                "하나라도 틀리면 전체를 거부하려면 strict=true를 쓰세요."
+            )
         if info["workers"] < n_workers:
             notes.append(f"워커 {n_workers}개 중 {info['workers']}개만 시작됨(init_errors 참고).")
         if ok and sum_wall / max(ok, 1) < _SHORT_RUN_WARNING_S:
             notes.append("실행당 시간이 짧아 병렬 효과보다 오버헤드 비중이 큽니다.")
         if notes:
             data["notes"] = notes
-        msg = f"{len(records)}개 조건 실행 완료(성공 {ok}, 실패 {len(records) - ok}), 워커 {info['workers']}개, {total_s:.1f}초."
+        failed_text = f"실패 {len(records) - ok}" + (
+            f", 그중 형식 오류 {invalid}" if invalid else ""
+        )
+        msg = f"{len(records)}개 조건 실행 완료(성공 {ok}, {failed_text}), 워커 {info['workers']}개, {total_s:.1f}초."
         return ResponseBuilder.success(data, msg)
 
     def _build_table(self, records: list[dict], signals: list[str] | None) -> dict:
@@ -460,6 +586,7 @@ class BatchService:
             [{key: v} for v in values],
             workers=workers,
             study_name=f"sweep_{component_id}_{parameter_name}",
+            strict=True,  # 스윕은 모든 단계가 같은 키라 기존처럼 전체 거부
         )
         if not res.get("success"):
             return res
