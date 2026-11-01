@@ -146,8 +146,14 @@ After changing the configuration, fully quit and restart the MCP client. To run 
 | `analyze_simulation` | Topology, targets, waveform options | Simulates and produces topology-specific metrics, samples, and an optional PNG |
 | `analyze_existing` | `.smv`, topology, targets, waveform options | Analyzes an existing result without rerunning; inspect `available_signals` when metrics are empty |
 | `optimize_circuit` | Dynamic optimization request | Runs a sequential Optuna study on isolated copies rather than the source |
+| `vault_status` | None | Drive-original / local-copy roots and the registered projects with current versions |
+| `vault_history` | Project name | Version log (manifest) |
+| `vault_register` | `.psimsch` path, project name | Stores v001 as the Drive original plus a local copy |
+| `vault_checkout` | Project name, `force` | Copies the Drive original into the local work folder and opens it; refuses uncommitted work |
+| `vault_commit` | Project name, message, `force` | Saves the work file as the next version (Drive original + history + local copy); refuses on Drive conflict |
+| `vault_edit_and_run` | Project name, changes, simulation options | Checkout → change and read back → simulate → commit → store result summary in one call; the Drive original is untouched on failure |
 
-`set_parameter` and `sweep_parameter` modify the currently open file. For manual experiments that must preserve the source, the user must prepare a working copy. `optimize_circuit` provides the separate copy and restoration contract described below.
+`set_parameter` and `sweep_parameter` modify the currently open file. For manual experiments that must preserve the source, prepare a working copy or use the `vault_*` tools (configured by `VAULT_DRIVE_ROOT` and `VAULT_LOCAL_ROOT`). `optimize_circuit` provides the separate copy and restoration contract described below.
 
 ## 7. `optimize_circuit` request, execution, and result contract
 

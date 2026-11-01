@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from psim_mcp.adapters.base import ParameterError
 from psim_mcp.shared.response import ResponseBuilder
 from psim_mcp.utils.logging import SecurityAuditLogger, execute_with_audit, hash_input
 from psim_mcp.services.validators import (
     validate_component_id,
     validate_output_dir,
     validate_output_format,
+    validate_parameter_name,
     validate_parameter_value,
     validate_signals_list,
     validate_simulation_options,
@@ -21,6 +23,20 @@ if TYPE_CHECKING:
     from psim_mcp.adapters.base import BasePsimAdapter
     from psim_mcp.config import AppConfig
     from psim_mcp.services.project_service import ProjectService
+
+
+def _parameter_error_suggestion(exc: ParameterError) -> str | None:
+    """사용자에게 보여 줄 다음 행동 안내(후보·실제 파라미터 목록)."""
+    details = exc.details or {}
+    if exc.code == "AMBIGUOUS_PARAMETER" and details.get("candidates"):
+        return "이름이 여러 파라미터와 맞습니다. 정확한 이름 중 하나를 쓰세요: " + ", ".join(
+            map(str, details["candidates"])
+        )
+    if details.get("available_parameters"):
+        return "사용 가능한 파라미터: " + ", ".join(map(str, details["available_parameters"]))
+    if details.get("available_components"):
+        return "사용 가능한 소자: " + ", ".join(map(str, details["available_components"]))
+    return None
 
 
 class SimulationService:
@@ -191,7 +207,7 @@ class SimulationService:
 
             try:
                 self._validate_identifier(component_id, "component_id")
-                self._validate_identifier(parameter_name, "parameter_name")
+                self._validate_parameter_name(parameter_name)
             except ValueError as exc:
                 self._audit.log_invalid_input(
                     "set_parameter",
@@ -225,6 +241,14 @@ class SimulationService:
                     data,
                     f"Parameter '{parameter_name}' on '{component_id}' set to {value}.",
                 )
+            except ParameterError as exc:
+                self._logger.warning("set_parameter rejected (%s): %s", exc.code, exc.message)
+                return ResponseBuilder.error(
+                    code=exc.code,
+                    message=exc.message,
+                    suggestion=_parameter_error_suggestion(exc),
+                    details=exc.details or None,
+                )
             except ValueError:
                 self._logger.warning("Component not found: %s", component_id)
                 return ResponseBuilder.error(
@@ -250,6 +274,18 @@ class SimulationService:
     @property
     def _is_project_open(self) -> bool:
         return self._project.is_project_open
+
+    @staticmethod
+    def _validate_parameter_name(value: str) -> None:
+        if not value:
+            raise ValueError("parameter_name must not be empty.")
+        if not validate_parameter_name(value):
+            raise ValueError(
+                f"Invalid parameter_name: '{value}'. "
+                "Must start with a letter, contain only letters/digits/spaces/"
+                "periods/underscores/parentheses, not end with a space, "
+                "and be at most 64 characters."
+            )
 
     @staticmethod
     def _validate_identifier(value: str, field_name: str) -> None:

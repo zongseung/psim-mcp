@@ -18,6 +18,16 @@ PSIM은 존재하지 않는 파라미터 이름을 받으면 **에러 없이 무
 **검증 방법**: `set_parameter` 후 `import_circuit`으로 다시 읽어 값이 실제로
 바뀌었는지 확인한다. 값이 그대로면 파라미터 이름이 틀린 것.
 
+### 기존 회로 수정(`PsimSetElmValue2`)의 이름 규칙 — 2026.1 실측
+
+- 수정 경로는 `PsimGetElementList`의 **표시 이름**(`On Resistance`, `Init. Cap. Voltage`, `No. of Points`)과
+  **실제 Type**(`MOSFET`, `C`, `L`)만 받는다. 생성용 이름(`On_Resistance`)이나 `MULTI_MOSFET`을 넘기면
+  **False를 반환**하고 stdout에 `Unable to update element...`를 찍는다(예외 없음).
+- `import_circuit` 이름은 표시 이름에서 영문·숫자 외 문자를 `_`로 바꾼 것이다(`Init. Cap. Voltage` → `Init__Cap__Voltage`).
+- `set_parameter`는 두 형식을 모두 받아 소자의 실제 이름으로 해석한다. 없으면 `PARAMETER_NOT_FOUND`(실제 이름 목록),
+  여러 개와 맞으면 `AMBIGUOUS_PARAMETER`, PSIM이 거부하면 `PARAMETER_REJECTED`(PSIM 출력 포함).
+- 위 표의 `On_Resistance` 등은 **새 소자 생성**(`PsimCreateNewElement`) 기준 이름이다.
+
 ## C-Block (CBLOCK)
 
 - C 소스 코드는 `CONTENT` 파라미터다: `set_parameter(component_id="SCB1", parameter_name="CONTENT", value="...C코드...")`

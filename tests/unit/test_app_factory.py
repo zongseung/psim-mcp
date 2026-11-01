@@ -37,6 +37,12 @@ EXPECTED_TOOLS = {
     "analyze_simulation",
     "analyze_existing",
     "optimize_circuit",
+    "vault_status",
+    "vault_history",
+    "vault_register",
+    "vault_checkout",
+    "vault_commit",
+    "vault_edit_and_run",
 }
 
 

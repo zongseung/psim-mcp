@@ -12,6 +12,21 @@ class SessionToken:
     value: str
 
 
+class ParameterError(ValueError):
+    """set_parameter failure that should reach the user with its code and details.
+
+    codes: COMPONENT_NOT_FOUND, PARAMETER_NOT_FOUND, AMBIGUOUS_PARAMETER,
+    PARAMETER_REJECTED, UNSUPPORTED_PARAMETER.
+    ``details`` may hold ``available_parameters``, ``candidates``, ``psim_output``.
+    """
+
+    def __init__(self, code: str, message: str, details: dict | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+
 class BasePsimAdapter(ABC):
     """Contract that every PSIM adapter must satisfy.
 
