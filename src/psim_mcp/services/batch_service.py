@@ -471,8 +471,8 @@ class BatchService:
             records.append(rec)
 
         table = self._build_table(records, signals)
-        ok = sum(1 for r in records if r["ok"])
-        invalid = sum(1 for r in records if not r["executed"])
+        counts = self._count_records(records)
+        ok, invalid = counts["succeeded"], counts["invalid"]
         sum_wall = sum(r.get("wall_s") or 0.0 for r in records)
         total_s = info["total_s"]
         summary = {
@@ -480,9 +480,8 @@ class BatchService:
             "study_dir": str(study_dir),
             "schematic": str(schematic),
             "conditions": len(records),
-            "ok": ok,
-            "failed": len(records) - ok,
-            "invalid": invalid,
+            # succeeded + failed + invalid == conditions
+            **counts,
             "strict": bool(strict),
             "workers": info["workers"],
             "workers_source": source,
@@ -502,10 +501,12 @@ class BatchService:
         if table["omitted_signals"]:
             data["omitted_signals"] = table["omitted_signals"]
         data["results_csv"] = str(study_dir / "results.csv")
+        if invalid:
+            data.update(self._invalid_report(records))
         notes = []
         if invalid:
             notes.append(
-                f"형식이 틀린 조건 {invalid}개는 실행하지 않았습니다(status 참고). "
+                f"형식이 틀린 조건 {invalid}개는 실행하지 않았습니다(invalid_conditions·suggestions 참고). "
                 "하나라도 틀리면 전체를 거부하려면 strict=true를 쓰세요."
             )
         if info["workers"] < n_workers:
@@ -514,11 +515,48 @@ class BatchService:
             notes.append("실행당 시간이 짧아 병렬 효과보다 오버헤드 비중이 큽니다.")
         if notes:
             data["notes"] = notes
-        failed_text = f"실패 {len(records) - ok}" + (
-            f", 그중 형식 오류 {invalid}" if invalid else ""
+        msg = (
+            f"{len(records)}개 조건 중 성공 {ok}, 실행 실패 {counts['failed']}, "
+            f"형식 오류(미실행) {invalid}. 워커 {info['workers']}개, {total_s:.1f}초."
         )
-        msg = f"{len(records)}개 조건 실행 완료(성공 {ok}, {failed_text}), 워커 {info['workers']}개, {total_s:.1f}초."
         return ResponseBuilder.success(data, msg)
+
+    @staticmethod
+    def _count_records(records: list[dict]) -> dict:
+        """실행·성공 / 실행했지만 실패 / 형식 오류로 미실행. 세 값의 합 = 조건 수."""
+        succeeded = sum(1 for r in records if r["executed"] and r["ok"])
+        failed = sum(1 for r in records if r["executed"] and not r["ok"])
+        invalid = sum(1 for r in records if not r["executed"])
+        return {"succeeded": succeeded, "failed": failed, "invalid": invalid}
+
+    @staticmethod
+    def _invalid_report(records: list[dict]) -> dict:
+        """형식 오류 조건 목록과 오류 코드별 suggestion(중복 제거).
+
+        같은 코드의 suggestion이 대부분 같으므로 ``suggestions``에 코드당 한 번만 넣고,
+        코드 대표 문장과 다른 경우에만 해당 조건 항목에 ``suggestion``을 붙인다(응답 크기 절약).
+        """
+        suggestions: dict[str, str] = {}
+        items: list[dict] = []
+        for r in records:
+            if r["executed"]:
+                continue
+            err = r.get("error") or {}
+            code = str(err.get("code"))
+            item: dict[str, Any] = {"run": r["run"], "code": code, "message": err.get("message")}
+            text = err.get("suggestion")
+            if text:
+                if code not in suggestions:
+                    suggestions[code] = text
+                elif suggestions[code] != text:
+                    item["suggestion"] = text
+            items.append(item)
+        report: dict[str, Any] = {"invalid_conditions": items[:_MAX_TABLE_ROWS]}
+        if len(items) > _MAX_TABLE_ROWS:
+            report["invalid_conditions_truncated"] = len(items)
+        if suggestions:
+            report["suggestions"] = suggestions
+        return report
 
     def _build_table(self, records: list[dict], signals: list[str] | None) -> dict:
         input_keys: list[str] = []
@@ -535,16 +573,18 @@ class BatchService:
             omitted: list[str] = []
         else:
             shown, omitted = all_signals[:_MAX_TABLE_SIGNALS], all_signals[_MAX_TABLE_SIGNALS:]
-        columns = ["run", *input_keys, "status", "sim_s"] + [
+        columns = ["run", *input_keys, "status", "executed", "sim_s"] + [
             f"{s}.{m}" for s in shown for m in _METRICS
         ]
         rows = []
+        messages: dict[int, str] = {}  # results.csv 전용 오류 메시지 열
         for r in records:
             row: dict[str, Any] = {"run": r["run"]}
             for k in input_keys:
                 row[k] = r["inputs"].get(k)
             if r["ok"]:
                 row["status"] = "ok"
+                row["executed"] = True
                 row["sim_s"] = _round(r.get("sim_s"))
                 for s in shown:
                     m = (r.get("summary") or {}).get(s) or {}
@@ -552,9 +592,21 @@ class BatchService:
                         row[f"{s}.{metric}"] = _round(m.get(metric))
             else:
                 err = r.get("error") or {}
-                row["status"] = f"error: {err.get('code')}: {str(err.get('message'))[:200]}"
+                message = str(err.get("message"))[:200]
+                messages[r["run"]] = message
+                if r["executed"]:
+                    row["status"] = f"error: {err.get('code')}: {message}"
+                else:
+                    # 메시지·suggestion은 응답의 invalid_conditions·suggestions에 있다(크기 절약).
+                    row["status"] = f"error: {err.get('code')}"
+                row["executed"] = bool(r["executed"])
             rows.append(row)
-        return {"columns": columns, "rows": rows, "omitted_signals": omitted}
+        return {
+            "columns": columns,
+            "rows": rows,
+            "omitted_signals": omitted,
+            "messages": messages,
+        }
 
     @staticmethod
     def _write_study_files(
@@ -564,10 +616,12 @@ class BatchService:
             json.dumps({"summary": summary, "runs": records}, ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
+        columns = [*table["columns"], "message"]
         with (study_dir / "results.csv").open("w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=table["columns"], extrasaction="ignore")
+            writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows(table["rows"])
+            for row in table["rows"]:
+                writer.writerow({**row, "message": table["messages"].get(row["run"], "")})
 
     # ------------------------------------------------------------------
     # 병렬 스윕 (sweep_parameter parallel=True)

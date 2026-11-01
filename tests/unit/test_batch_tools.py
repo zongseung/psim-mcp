@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from psim_mcp.config import AppConfig
 from psim_mcp.parallel import settings as parallel_settings
 from psim_mcp.parallel.cpu import physical_cores
 from psim_mcp.server import create_app
+from psim_mcp.services.batch_service import BatchService
 
 
 @pytest.fixture
@@ -60,7 +62,8 @@ async def test_run_batch_writes_run_folders_and_returns_table(env):
     await _close(app)
     assert res["success"], res
     data = res["data"]
-    assert data["ok"] == 3 and data["failed"] == 0 and data["workers"] == 2
+    assert data["succeeded"] == 3 and data["failed"] == 0 and data["invalid"] == 0
+    assert data["workers"] == 2
     assert data["simview"] == 0
     assert data["columns"][:5] == ["run", "Lx", "L1.Inductance", "Rload", "status"]
     assert "Vo1.mean" in data["columns"] and "Vo1.ripple" in data["columns"]
@@ -103,7 +106,7 @@ async def test_run_batch_marks_failed_conditions_in_table(env):
     # 실행되지 않고(워커 크래시 없음) 그 행만 오류로 표시된다
     assert res["success"], res
     data = res["data"]
-    assert data["ok"] == 1 and data["failed"] == 2 and data["invalid"] == 2
+    assert data["succeeded"] == 1 and data["failed"] == 0 and data["invalid"] == 2
     rows = data["rows"]
     assert rows[0]["status"] == "ok"
     assert rows[1]["status"].startswith("error: VARIABLE_NOT_REFERENCED")
@@ -123,8 +126,8 @@ async def test_invalid_condition_only_marks_its_row(env):
     await _close(app)
     assert res["success"], res
     data = res["data"]
-    assert data["conditions"] == 7 and data["ok"] == 6
-    assert data["failed"] == 1 and data["invalid"] == 1 and data["strict"] is False
+    assert data["conditions"] == 7 and data["succeeded"] == 6
+    assert data["failed"] == 0 and data["invalid"] == 1 and data["strict"] is False
     rows = data["rows"]
     assert [r["run"] for r in rows] == list(range(7))
     assert rows[3]["L1"] == 0.002
@@ -134,9 +137,27 @@ async def test_invalid_condition_only_marks_its_row(env):
     ripples = [r["Vo1.ripple"] for i, r in enumerate(rows) if i != 3]
     assert ripples == sorted(ripples, reverse=True)
     assert any("strict=true" in n for n in data["notes"])
-    assert "형식 오류 1" in res["message"]
+    assert "형식 오류(미실행) 1" in res["message"]
+    # 응답만 보고도 고칠 수 있어야 한다: executed, invalid_conditions, suggestions
+    assert rows[3]["executed"] is False
+    assert all(r["executed"] is True for i, r in enumerate(rows) if i != 3)
+    assert "executed" in data["columns"]
+    [item] = data["invalid_conditions"]
+    assert item["run"] == 3 and item["code"] == "VARIABLE_NOT_REFERENCED"
+    assert item["message"].startswith("조건 3:") and "suggestion" not in item
+    assert rows[3]["status"] == "error: VARIABLE_NOT_REFERENCED"
+    sugg = data["suggestions"]["VARIABLE_NOT_REFERENCED"]
+    assert "Lx" in sugg and "Rload" in sugg and '"L1.Inductance"' in sugg
+    assert data["succeeded"] + data["failed"] + data["invalid"] == data["conditions"]
 
     study = Path(data["study_dir"])
+    saved = json.loads((study / "study.json").read_text(encoding="utf-8"))["summary"]
+    assert (saved["succeeded"], saved["failed"], saved["invalid"]) == (6, 0, 1)
+    assert "ok" not in saved
+    with (study / "results.csv").open(encoding="utf-8-sig") as f:
+        csv_rows = list(csv.DictReader(f))
+    assert csv_rows[3]["executed"] == "False" and csv_rows[3]["message"].startswith("조건 3:")
+    assert csv_rows[0]["executed"] == "True" and csv_rows[0]["message"] == ""
     bad = json.loads((study / "run_003" / "config.json").read_text(encoding="utf-8"))
     assert bad["executed"] is False and bad["error"]["code"] == "VARIABLE_NOT_REFERENCED"
     assert bad["error"]["suggestion"]
@@ -161,7 +182,100 @@ async def test_invalid_format_condition_only_marks_its_row(env):
     assert rows[1]["status"].startswith("error: INVALID_CONDITION")
     assert rows[2]["status"].startswith("error: INVALID_CONDITION")
     assert rows[3]["status"].startswith("error: COMPONENT_NOT_FOUND")
-    assert res["data"]["invalid"] == 3
+    data = res["data"]
+    assert (data["succeeded"], data["failed"], data["invalid"]) == (1, 0, 3)
+    assert [c["run"] for c in data["invalid_conditions"]] == [1, 2, 3]
+    assert [c["code"] for c in data["invalid_conditions"]] == [
+        "INVALID_CONDITION",
+        "INVALID_CONDITION",
+        "COMPONENT_NOT_FOUND",
+    ]
+    assert [r["executed"] for r in rows] == [True, False, False, False]
+
+
+async def test_suggestions_are_deduplicated_by_code(env):
+    app, _, sch = env
+    conds = [{"Lx": 0.001}] + [{"L1": 0.002 + i * 1e-4} for i in range(5)]
+    res = await _call(app, "run_batch", schematic_path=str(sch), conditions=conds)
+    await _close(app)
+    data = res["data"]
+    assert data["invalid"] == 5
+    # 같은 문장은 코드당 한 번만 싣는다
+    assert list(data["suggestions"]) == ["VARIABLE_NOT_REFERENCED"]
+    assert all("suggestion" not in c for c in data["invalid_conditions"])
+
+
+def test_invalid_report_keeps_distinct_suggestions():
+    def rec(run, code, suggestion=None):
+        err = {"code": code, "message": f"조건 {run}"}
+        if suggestion:
+            err["suggestion"] = suggestion
+        return {"run": run, "executed": False, "ok": False, "error": err}
+
+    records = [
+        {"run": 0, "executed": True, "ok": True},
+        rec(1, "PARAMETER_NOT_FOUND", "사용 가능한 파라미터: Inductance"),
+        rec(2, "PARAMETER_NOT_FOUND", "사용 가능한 파라미터: Resistance"),
+        rec(3, "PARAMETER_NOT_FOUND", "사용 가능한 파라미터: Inductance"),
+        rec(4, "INVALID_CONDITION"),
+    ]
+    report = BatchService._invalid_report(records)
+    assert report["suggestions"] == {"PARAMETER_NOT_FOUND": "사용 가능한 파라미터: Inductance"}
+    items = {c["run"]: c for c in report["invalid_conditions"]}
+    assert list(items) == [1, 2, 3, 4]
+    assert "suggestion" not in items[1] and "suggestion" not in items[3]
+    assert items[2]["suggestion"] == "사용 가능한 파라미터: Resistance"
+    assert "suggestion" not in items[4]
+
+
+async def test_counts_split_succeeded_failed_invalid(env, monkeypatch):
+    app, _, sch = env
+    batch = app._services["batch"]
+    real_precheck = batch.precheck
+
+    async def precheck_let_fail_through(schematic, parsed, strict=True):
+        # __fail__ 조건만 사전 검사를 통과시켜 '실행했지만 실패'를 만든다
+        info = await real_precheck(schematic, parsed, strict=strict)
+        for c in parsed:
+            if "__fail__" in c["variables"]:
+                c.pop("error", None)
+        return info
+
+    monkeypatch.setattr(batch, "precheck", precheck_let_fail_through)
+    res = await _call(
+        app,
+        "run_batch",
+        schematic_path=str(sch),
+        conditions=[{"Lx": 0.001}, {"Lx": 0.001, "__fail__": 1}, {"L1": 0.002}, {"Lx": 0.002}],
+        workers=2,
+    )
+    await _close(app)
+    data = res["data"]
+    assert (data["succeeded"], data["failed"], data["invalid"]) == (2, 1, 1)
+    assert data["succeeded"] + data["failed"] + data["invalid"] == data["conditions"] == 4
+    assert [r["executed"] for r in data["rows"]] == [True, True, False, True]
+    assert data["rows"][1]["status"].startswith("error: SIMULATION_FAILED: ")
+    assert [c["run"] for c in data["invalid_conditions"]] == [2]
+    assert "실행 실패 1" in res["message"] and "형식 오류(미실행) 1" in res["message"]
+    saved = json.loads((Path(data["study_dir"]) / "study.json").read_text(encoding="utf-8"))
+    s = saved["summary"]
+    assert (s["succeeded"], s["failed"], s["invalid"]) == (2, 1, 1)
+
+
+async def test_many_invalid_conditions_stay_under_response_limit(env):
+    app, cfg, sch = env
+    conds = [{"Lx": 0.001}] + [
+        {"L1": 0.001 + i * 1e-6} for i in range(cfg.max_batch_conditions - 1)
+    ]
+    result = await app.call_tool("run_batch", {"schematic_path": str(sch), "conditions": conds})
+    await _close(app)
+    blocks = result[0] if isinstance(result, tuple) else result
+    text = blocks[0].text
+    assert len(text.encode("utf-8")) < 50_000
+    data = json.loads(text)["data"]  # 잘리지 않은 올바른 JSON
+    assert data["invalid"] == cfg.max_batch_conditions - 1
+    assert data["invalid_conditions_truncated"] == cfg.max_batch_conditions - 1
+    assert len(data["invalid_conditions"]) == 100
 
 
 async def test_strict_rejects_whole_batch(env):
