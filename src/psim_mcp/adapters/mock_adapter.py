@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PureWindowsPath
 
-from psim_mcp.adapters.base import BasePsimAdapter, SessionToken
+from psim_mcp.adapters.base import BasePsimAdapter, ParameterError, SessionToken
 
 
 def _stem_from_path(path: str) -> str:
@@ -170,9 +170,11 @@ class MockPsimAdapter(BasePsimAdapter):
                     "CurrentFlag": "CurrentFlag",
                 }.get(parameter_name, parameter_name)
                 if parameter_key not in params and parameter_key != "CurrentFlag":
-                    raise ValueError(
+                    raise ParameterError(
+                        "PARAMETER_NOT_FOUND",
                         f"Parameter '{parameter_name}' not found on component '{component_id}'. "
-                        f"Available parameters: {list(params.keys())}"
+                        f"Available parameters: {list(params.keys())}",
+                        {"available_parameters": list(params.keys())},
                     )
                 previous = params.get(parameter_key, 0)
                 params[parameter_key] = value
@@ -185,7 +187,11 @@ class MockPsimAdapter(BasePsimAdapter):
                 }
 
         available = [c["id"] for c in self._current_project["components"]]
-        raise ValueError(f"Component '{component_id}' not found. Available components: {available}")
+        raise ParameterError(
+            "COMPONENT_NOT_FOUND",
+            f"Component '{component_id}' not found. Available components: {available}",
+            {"available_components": available},
+        )
 
     async def run_simulation(
         self,
