@@ -27,6 +27,7 @@ PSIM API 참조 (psimapipy 2026.0):
     - p.PsimReadGraphFile(path) → result with .Graph
 """
 
+import io
 import json
 import math
 import os
@@ -196,21 +197,65 @@ _psim_instance = None
 _current_sch = None
 _current_path = None
 _element_cache = {}  # name → type 매핑 (set_parameter에서 component_type 자동 조회용)
+_element_params = {}  # name → 실제 파라미터 이름 목록 (PsimGetElementList 기준)
 
 
-def _build_element_cache():
-    """열린 schematic의 모든 소자를 캐시한다 (name → type 매핑)."""
-    global _element_cache
-    _element_cache = {}
+def _build_element_cache(reset=False):
+    """열린 schematic의 모든 소자를 캐시한다 (name → type, name → 파라미터 이름).
+
+    reset=True(새 파일을 열 때)면 먼저 비운다. 그 외에는 조회에 성공했을 때만
+    캐시를 교체해, 일시적 실패로 기존 캐시를 잃지 않게 한다.
+    """
+    global _element_cache, _element_params
+    if reset:
+        _element_cache = {}
+        _element_params = {}
     if _current_sch is None:
         return
     try:
         p = _get_psim()
         elm_list = p.PsimGetElementList(_current_sch, 0)
         if elm_list:
-            _element_cache = {elem.Name: elem.Type for elem in elm_list}
+            types = {}
+            params_by_name = {}
+            for elem in elm_list:
+                types[elem.Name] = elem.Type
+                params = getattr(elem, "Params", None) or []
+                params_by_name[elem.Name] = [param.Name for param in params]
+            _element_cache = types
+            _element_params = params_by_name
     except Exception:
         pass  # 캐시 빌드 실패해도 치명적이지 않음
+
+
+def _normalize_param_key(name):
+    """파라미터 이름 비교용 키: 영문·숫자 외 문자를 '_'로 바꾸고 소문자화.
+
+    PsimGetElementList 이름('On Resistance', 'Init. Cap. Voltage')과
+    PsimConvertToPython 이름('On_Resistance', 'Init__Cap__Voltage')이 같은 키가 된다.
+    psim_mcp.services.validators.normalize_parameter_name과 같은 규칙을 유지할 것.
+    """
+    return "".join(ch if (ch.isascii() and ch.isalnum()) else "_" for ch in str(name)).lower()
+
+
+def _resolve_param_name(requested_names, actual_names):
+    """요청 이름을 소자의 실제 파라미터 이름으로 해석한다.
+
+    requested_names: 우선순위 순 후보(매핑된 이름, 원래 이름).
+    반환: (resolved, matches). resolved가 None이면 matches 길이로 원인 판단
+    (0개 = 없음, 2개 이상 = 모호).
+    """
+    for req in requested_names:
+        if req in actual_names:
+            return req, [req]
+    for req in requested_names:
+        key = _normalize_param_key(req)
+        matches = [name for name in actual_names if _normalize_param_key(name) == key]
+        if len(matches) == 1:
+            return matches[0], matches
+        if len(matches) > 1:
+            return None, matches
+    return None, []
 
 
 class _suppress_stdout(object):
@@ -234,6 +279,25 @@ class _suppress_stdout(object):
     def __exit__(self, *_):
         sys.stdout.close()
         sys.stdout = self._real
+
+
+class _capture_stdout(object):
+    """_suppress_stdout과 같지만 PSIM이 출력한 내용을 ``text``로 보관한다.
+
+    PSIM은 PsimSetElmValue2 실패 시 'Unable to update element...'를
+    Python stdout으로 출력하므로, 이를 에러 메시지에 실어 보낼 때 쓴다.
+    """
+
+    def __enter__(self):
+        self._real = sys.stdout
+        self._buf = io.StringIO()
+        sys.stdout = self._buf
+        self.text = ""
+        return self
+
+    def __exit__(self, *_):
+        sys.stdout = self._real
+        self.text = self._buf.getvalue().strip()
 
 
 def _get_psim():
@@ -289,7 +353,7 @@ def handle_open_project(params):
         _current_path = path
 
         # element cache 빌드 (set_parameter에서 component_type 자동 조회용)
-        _build_element_cache()
+        _build_element_cache(reset=True)
 
         # 소자 목록 조회
         components = []
@@ -336,25 +400,51 @@ def handle_set_parameter(params):
     if _current_sch is None:
         return _error("NO_PROJECT", "No project is open. Call open_project first.")
 
-    if not component_type and not _element_cache:
+    # 실제 Type/파라미터 목록이 캐시에 없으면 한 번 다시 읽는다(오래된 캐시 대비).
+    if component_id not in _element_cache or component_id not in _element_params:
         _build_element_cache()
-    if not component_type:
-        component_type = _element_cache.get(component_id, "")
+    # PsimSetElmValue2에는 PsimGetElementList가 돌려준 실제 Type(예: MOSFET)을 넘긴다.
+    # 호출자가 준 component_type(예: MULTI_MOSFET)은 실제 Type을 모를 때만 쓴다.
+    component_type = _element_cache.get(component_id) or component_type
     if not component_type:
         return _error("COMPONENT_NOT_FOUND", "Unknown component '%s'" % component_id)
 
     try:
         p = _get_psim()
         parameter_map = _get_parameter_name_mapping(component_type)
-        psim_parameter_name = parameter_map.get(parameter_name, parameter_name)
-        if psim_parameter_name is None:
+        mapped_name = parameter_map.get(parameter_name, parameter_name)
+        if mapped_name is None:
             return _error(
                 "UNSUPPORTED_PARAMETER",
                 "Parameter '%s' is not directly writable for component type '%s'"
                 % (parameter_name, component_type),
             )
 
-        with _suppress_stdout():
+        actual_names = _element_params.get(component_id) or []
+        if actual_names:
+            requested = [mapped_name]
+            if parameter_name != mapped_name:
+                requested.append(parameter_name)
+            psim_parameter_name, matches = _resolve_param_name(requested, actual_names)
+            if psim_parameter_name is None:
+                if matches:
+                    return _error(
+                        "AMBIGUOUS_PARAMETER",
+                        "Parameter '%s' matches several parameters of '%s': %s"
+                        % (parameter_name, component_id, ", ".join(matches)),
+                        {"candidates": matches, "available_parameters": actual_names},
+                    )
+                return _error(
+                    "PARAMETER_NOT_FOUND",
+                    "Component '%s' (%s) has no parameter '%s'. Available: %s"
+                    % (component_id, component_type, parameter_name, ", ".join(actual_names)),
+                    {"available_parameters": actual_names},
+                )
+        else:
+            # 파라미터 목록을 얻지 못하면 기존 동작(매핑된 이름 그대로)을 유지한다.
+            psim_parameter_name = mapped_name
+
+        with _capture_stdout() as captured:
             result = p.PsimSetElmValue2(
                 _current_sch,
                 component_type,
@@ -362,19 +452,43 @@ def handle_set_parameter(params):
                 psim_parameter_name,
                 str(value),
             )
+        if result is False:
+            # PSIM은 실패를 예외가 아니라 False + stdout 경고로 알린다. 저장하지 않는다.
+            return _error(
+                "PARAMETER_REJECTED",
+                "PSIM rejected %s.%s = %s (type %s)%s"
+                % (
+                    component_id,
+                    psim_parameter_name,
+                    value,
+                    component_type,
+                    (": " + captured.text) if captured.text else "",
+                ),
+                {
+                    "psim_output": captured.text,
+                    "psim_parameter_name": psim_parameter_name,
+                    "component_type": component_type,
+                    "available_parameters": actual_names,
+                },
+            )
+
+        with _capture_stdout() as save_out:
             if _current_path:
                 p.PsimFileSave(_current_sch, _current_path)
 
-        return _success(
-            {
-                "component_id": component_id,
-                "parameter_name": parameter_name,
-                "psim_parameter_name": psim_parameter_name,
-                "new_value": str(value),
-                "persisted": bool(_current_path),
-                "raw_result": result,
-            }
-        )
+        data = {
+            "component_id": component_id,
+            "component_type": component_type,
+            "parameter_name": parameter_name,
+            "psim_parameter_name": psim_parameter_name,
+            "new_value": str(value),
+            "persisted": bool(_current_path),
+            "raw_result": result,
+        }
+        psim_output = "\n".join(t for t in (captured.text, save_out.text) if t)
+        if psim_output:
+            data["psim_output"] = psim_output
+        return _success(data)
 
     except Exception as e:
         return _error("PSIM_ERROR", "Parameter update failed: %s" % str(e))
@@ -855,9 +969,12 @@ def _success(data):
     return {"success": True, "data": data}
 
 
-def _error(code, message):
-    """표준 에러 응답을 생성한다."""
-    return {"success": False, "error": {"code": code, "message": message}}
+def _error(code, message, details=None):
+    """표준 에러 응답을 생성한다. details는 JSON 호환 dict(선택)."""
+    error = {"code": code, "message": message}
+    if details:
+        error["details"] = details
+    return {"success": False, "error": error}
 
 
 # ---------------------------------------------------------------------------

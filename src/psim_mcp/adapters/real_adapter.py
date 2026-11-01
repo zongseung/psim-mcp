@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from psim_mcp.adapters.base import BasePsimAdapter, SessionToken
+from psim_mcp.adapters.base import BasePsimAdapter, ParameterError, SessionToken
 from psim_mcp.config import AppConfig
 
 # Bridge script lives inside this package
@@ -29,6 +29,18 @@ _MAX_CONSECUTIVE_FAILURES = 5
 _CIRCUIT_BREAKER_COOLDOWN = 30.0  # seconds before HALF_OPEN probe
 _LOCK_ACQUIRE_TIMEOUT = 10.0  # seconds to wait for asyncio.Lock
 _MAX_RESTARTS = 10  # lifetime restart cap
+
+
+# 브리지 set_parameter 에러 중 사용자에게 코드·상세를 그대로 전달할 것들
+_PARAMETER_ERROR_CODES = frozenset(
+    {
+        "COMPONENT_NOT_FOUND",
+        "PARAMETER_NOT_FOUND",
+        "AMBIGUOUS_PARAMETER",
+        "PARAMETER_REJECTED",
+        "UNSUPPORTED_PARAMETER",
+    }
+)
 
 
 class CircuitState(Enum):
@@ -468,6 +480,15 @@ class RealPsimAdapter(BasePsimAdapter):
             },
             lease_token,
         )
+        if not result.get("success", False):
+            error = result.get("error") or {}
+            code = str(error.get("code", ""))
+            if code in _PARAMETER_ERROR_CODES:
+                raise ParameterError(
+                    code,
+                    str(error.get("message", "Parameter update failed")),
+                    error.get("details") if isinstance(error.get("details"), dict) else None,
+                )
         return self._require_bridge_data(result)
 
     async def run_simulation(
