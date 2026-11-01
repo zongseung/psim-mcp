@@ -201,3 +201,10 @@ class BasePsimAdapter(ABC):
             Dict with ``script_path`` and ``script_text``.
         """
         raise NotImplementedError(f"{type(self).__name__} does not support convert_to_python.")
+
+    async def open_in_viewer(self, graph_file: str) -> dict:
+        """결과 파일(.smv) 하나를 PSIM Simview로 연다.
+
+        자동·병렬 실행은 뷰어를 띄우지 않으므로, 사용자가 명시적으로 볼 파일만 이 경로로 연다.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support open_in_viewer.")

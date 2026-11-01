@@ -48,6 +48,61 @@ _PARAMETER_ERROR_CODES = frozenset(
 )
 
 
+def build_bridge_env(psim_path: Path | str | None) -> dict[str, str]:
+    """Create a minimal, sanitized environment for the PSIM subprocess.
+
+    Only passes the minimum required environment variables to prevent
+    information leakage and reduce attack surface. 병렬 워커도 같은 환경을 쓴다.
+    """
+    env: dict[str, str] = {}
+    # Only pass essential variables
+    essential_vars = [
+        "PATH",  # Required for subprocess execution
+        "SystemRoot",  # Required on Windows
+        "TEMP",
+        "TMP",  # Temp directories
+        "HOME",
+        "USERPROFILE",  # Home directory
+        # Windows Python은 APPDATA로 사용자 site-packages 경로를 정한다.
+        # 없으면 `pip install --user`로 설치한 psimapipy를 찾지 못한다.
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PSIM_PATH",  # PSIM installation
+        # PSIM DLL과 Altair 라이선스 클라이언트가 참조하는 Windows 기본 변수.
+        "COMPUTERNAME",
+        "USERNAME",
+        "USERDOMAIN",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "windir",
+        "SystemDrive",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "LM_LICENSE_FILE",  # FlexLM 라이선스 경로
+    ]
+    for var in essential_vars:
+        val = os.environ.get(var)
+        if val is not None:
+            env[var] = val
+
+    # Altair 라이선스 설정(ALM_HHWU, ALTAIR_LICENSE_PATH 등)이 빠지면
+    # PSIM() 생성이 응답 없이 멈춘다. 이 접두사만 골라 전달한다.
+    for key, val in os.environ.items():
+        if key.upper().startswith(_LICENSE_ENV_PREFIXES):
+            env[key] = val
+
+    # Add PSIM-specific paths if configured
+    if psim_path:
+        env["PSIM_PATH"] = str(psim_path)
+
+    # Force UTF-8 encoding for the subprocess on Windows
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+
+    return env
+
+
 class CircuitState(Enum):
     """Three-state circuit breaker model (Nygard, *Release It!*)."""
 
@@ -154,58 +209,8 @@ class RealPsimAdapter(BasePsimAdapter):
     # ------------------------------------------------------------------
 
     def _get_sanitized_env(self) -> dict[str, str]:
-        """Create a minimal, sanitized environment for the PSIM subprocess.
-
-        Only passes the minimum required environment variables to prevent
-        information leakage and reduce attack surface.
-        """
-        env: dict[str, str] = {}
-        # Only pass essential variables
-        essential_vars = [
-            "PATH",  # Required for subprocess execution
-            "SystemRoot",  # Required on Windows
-            "TEMP",
-            "TMP",  # Temp directories
-            "HOME",
-            "USERPROFILE",  # Home directory
-            # Windows Python은 APPDATA로 사용자 site-packages 경로를 정한다.
-            # 없으면 `pip install --user`로 설치한 psimapipy를 찾지 못한다.
-            "APPDATA",
-            "LOCALAPPDATA",
-            "PSIM_PATH",  # PSIM installation
-            # PSIM DLL과 Altair 라이선스 클라이언트가 참조하는 Windows 기본 변수.
-            "COMPUTERNAME",
-            "USERNAME",
-            "USERDOMAIN",
-            "ProgramData",
-            "ProgramFiles",
-            "ProgramFiles(x86)",
-            "windir",
-            "SystemDrive",
-            "NUMBER_OF_PROCESSORS",
-            "PROCESSOR_ARCHITECTURE",
-            "LM_LICENSE_FILE",  # FlexLM 라이선스 경로
-        ]
-        for var in essential_vars:
-            val = os.environ.get(var)
-            if val is not None:
-                env[var] = val
-
-        # Altair 라이선스 설정(ALM_HHWU, ALTAIR_LICENSE_PATH 등)이 빠지면
-        # PSIM() 생성이 응답 없이 멈춘다. 이 접두사만 골라 전달한다.
-        for key, val in os.environ.items():
-            if key.upper().startswith(_LICENSE_ENV_PREFIXES):
-                env[key] = val
-
-        # Add PSIM-specific paths if configured
-        if self._psim_path:
-            env["PSIM_PATH"] = str(self._psim_path)
-
-        # Force UTF-8 encoding for the subprocess on Windows
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-
-        return env
+        """Create a minimal, sanitized environment for the PSIM subprocess."""
+        return build_bridge_env(self._psim_path)
 
     # ------------------------------------------------------------------
     # Circuit breaker
@@ -666,3 +671,8 @@ class RealPsimAdapter(BasePsimAdapter):
         if output_path:
             params["output_path"] = output_path
         return await self._call_bridge("convert_to_python", params)
+
+    async def open_in_viewer(self, graph_file: str) -> dict:
+        """결과 파일(.smv) 하나를 Simview로 연다(RunSimview)."""
+        result = await self._call_bridge("open_in_viewer", {"graph_file": graph_file})
+        return self._require_bridge_data(result)

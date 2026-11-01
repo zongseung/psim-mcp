@@ -7,7 +7,7 @@ import math
 from psim_mcp.tools import tool_handler
 
 
-def register_tools(mcp, service, config):
+def register_tools(mcp, service, config, batch_service=None):
     """Register parameter-related tools on the given MCP instance."""
 
     @mcp.tool(
@@ -23,7 +23,11 @@ def register_tools(mcp, service, config):
         return await service.set_parameter(component_id, parameter_name, value)
 
     @mcp.tool(
-        description="파라미터를 범위 내에서 변경하며 반복 시뮬레이션을 실행합니다.",
+        description=(
+            "파라미터를 범위 내에서 변경하며 반복 시뮬레이션을 실행합니다. "
+            "parallel=true이면 워커 풀로 동시에 실행하고(열린 회로 파일은 바꾸지 않고 run 폴더 사본을 수정, "
+            "뷰어 없음) 단계별 요약을 반환합니다. 기본값(false)은 기존 순차 동작입니다."
+        ),
     )
     @tool_handler("sweep_parameter")
     async def sweep_parameter(
@@ -33,6 +37,8 @@ def register_tools(mcp, service, config):
         end: float,
         step: float,
         metrics: list[str] | None = None,
+        parallel: bool = False,
+        workers: int | None = None,
     ) -> str:
         """Run a parameter sweep: iterate over a value range, simulate, collect results."""
         # --- Validate step size and count --------------------------------
@@ -56,6 +62,23 @@ def register_tools(mcp, service, config):
                     "suggestion": None,
                 },
             }
+
+        # --- Parallel sweep (worker pool) -------------------------------
+        if parallel:
+            if batch_service is None:
+                return {
+                    "success": False,
+                    "error": {
+                        "code": "NOT_SUPPORTED",
+                        "message": "병렬 실행 엔진이 구성되지 않았습니다.",
+                        "suggestion": None,
+                    },
+                }
+            values = [start + i * step for i in range(num_steps)]
+            values = [v for v in values if v <= end + 1e-12]
+            return await batch_service.sweep(
+                component_id, parameter_name, values, metrics=metrics, workers=workers
+            )
 
         # --- Sweep loop --------------------------------------------------
         sweep_results: list[dict] = []

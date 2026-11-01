@@ -960,6 +960,228 @@ def handle_compute_metrics(params):
 
 
 # ---------------------------------------------------------------------------
+# Parallel worker actions (병렬 워커 풀 전용 — 열린 프로젝트 상태를 쓰지 않는다)
+# ---------------------------------------------------------------------------
+
+# 수식 안의 식별자(변수 이름). 숫자 뒤 SI 접미사(100u, 1e-3)는 제외한다.
+_IDENT_RE = None
+
+
+def _referenced_identifiers(value):
+    """파라미터 값 문자열에서 변수로 보이는 식별자 집합을 돌려준다."""
+    global _IDENT_RE
+    if _IDENT_RE is None:
+        import re
+
+        _IDENT_RE = re.compile(r"(?<![0-9A-Za-z_.])[A-Za-z_][A-Za-z0-9_]*")
+    return set(_IDENT_RE.findall(str(value or "")))
+
+
+def _element_table(p, sch):
+    """{name: {"type": ..., "params": {param_name: value}}}"""
+    table = {}
+    elm_list = p.PsimGetElementList(sch, 0) or []
+    for elem in elm_list:
+        params = {}
+        for param in getattr(elem, "Params", None) or []:
+            params[param.Name] = param.Value
+        table[elem.Name] = {"type": elem.Type, "params": params}
+    return table
+
+
+def handle_inspect_schematic(params):
+    """회로의 소자·파라미터 값과 값 안에서 참조하는 변수 이름을 돌려준다.
+
+    병렬 실행 전 조건 검증용: 변수 덮어쓰기(kwargs)는 회로가 실제로 참조하는
+    변수에만 효과가 있다. 숫자 값(예: L1 Inductance=0.002)은 덮어쓰기가 무시된다.
+    """
+    path = params.get("path")
+    if not path or not os.path.isfile(path):
+        return _error("FILE_NOT_FOUND", "파일을 찾을 수 없습니다: %s" % path)
+    try:
+        p = _get_psim()
+        with _capture_stdout():
+            sch = p.PsimFileOpen(path)
+            if not sch:
+                return _error("PSIM_API_ERROR", "스키매틱 파일을 열 수 없습니다: %s" % path)
+            table = _element_table(p, sch)
+            undefined = []
+            try:
+                res = p.Psim_GetUndefinedParameters(sch)
+                if isinstance(res, tuple) and len(res) > 1 and res[1]:
+                    undefined = [s for s in str(res[1]).split("\n") if s.strip()]
+            except Exception:
+                pass
+        referenced = set()
+        for info in table.values():
+            for name, value in info["params"].items():
+                if name == "Name":
+                    continue
+                referenced |= _referenced_identifiers(value)
+        return _success(
+            {
+                "path": path,
+                "elements": table,
+                "referenced_identifiers": sorted(referenced),
+                "undefined_variables": undefined,
+            }
+        )
+    except Exception as e:
+        return _error("PSIM_ERROR", "회로 검사 실패: %s" % str(e))
+
+
+def _summarize_graph(graph, signals, skip_ratio):
+    """신호별 정상상태 구간(앞 skip_ratio 제외) 평균·리플(p-p)·최대·최소·마지막 값."""
+    summary = {}
+    rows = 0
+    for curve in graph or []:
+        name = curve.Name
+        if name == "Time" or (signals and name not in signals):
+            continue
+        n = curve.Rows
+        rows = max(rows, n)
+        if n <= 0:
+            continue
+        start = int(n * skip_ratio)
+        if start >= n:
+            start = n - 1
+        vals = [curve.Values[i] for i in range(start, n)]
+        lo, hi = min(vals), max(vals)
+        summary[name] = {
+            "mean": sum(vals) / len(vals),
+            "ripple": hi - lo,
+            "max": hi,
+            "min": lo,
+            "last": vals[-1],
+        }
+    return summary, rows
+
+
+def handle_run_job(params):
+    """병렬 워커용 단일 조건 실행. 항상 Simview=0 (뷰어를 띄우지 않는다).
+
+    params:
+        schematic: 원본(또는 측정용 사본) 회로 경로 — 읽기만 한다
+        run_dir: 이 조건의 작업 폴더 (결과 .smv, 필요하면 회로 사본)
+        variables: {변수: 값} — 파일 복제 없이 PsimSimulate kwargs로 덮어쓴다
+        elements: [{component_id, parameter_name, value}] — 회로 사본을 만들어 수정
+        total_time / time_step: Simulation Control 값 — 회로 사본을 만들어 수정
+        signals: 요약할 신호 이름 목록(생략 시 전부)
+        skip_ratio: 요약 시 앞에서 버릴 비율(기본 0.5)
+        keep_smv: False면 요약 후 .smv 삭제
+    """
+    schematic = params.get("schematic")
+    run_dir = params.get("run_dir")
+    if not schematic or not os.path.isfile(schematic):
+        return _error("FILE_NOT_FOUND", "회로 파일을 찾을 수 없습니다: %s" % schematic)
+    if not run_dir:
+        return _error("INVALID_INPUT", "run_dir가 필요합니다.")
+    variables = params.get("variables") or {}
+    elements = params.get("elements") or []
+    total_time = params.get("total_time")
+    time_step = params.get("time_step")
+    signals = params.get("signals") or None
+    skip_ratio = float(params.get("skip_ratio", 0.5))
+    keep_smv = bool(params.get("keep_smv", True))
+
+    try:
+        os.makedirs(run_dir, exist_ok=True)
+        p = _get_psim()
+        target = schematic
+        copy_path = None
+
+        if elements or total_time is not None or time_step is not None:
+            with _capture_stdout() as out:
+                sch = p.PsimFileOpen(schematic)
+            if not sch:
+                return _error("PSIM_API_ERROR", "스키매틱 파일을 열 수 없습니다: %s" % schematic)
+            with _capture_stdout():
+                table = _element_table(p, sch)
+            for ch in elements:
+                cid = ch.get("component_id")
+                pname = ch.get("parameter_name")
+                info = table.get(cid)
+                if info is None:
+                    return _error(
+                        "COMPONENT_NOT_FOUND",
+                        "소자 '%s'가 없습니다." % cid,
+                        {"available_components": sorted(table)},
+                    )
+                actual = [n for n in info["params"] if n != "Name"]
+                resolved, matches = _resolve_param_name([pname], actual)
+                if resolved is None:
+                    code = "AMBIGUOUS_PARAMETER" if matches else "PARAMETER_NOT_FOUND"
+                    return _error(
+                        code,
+                        "소자 '%s'(%s)의 파라미터 '%s'를 해석할 수 없습니다."
+                        % (cid, info["type"], pname),
+                        {"available_parameters": actual, "candidates": matches},
+                    )
+                with _capture_stdout() as out:
+                    ok = p.PsimSetElmValue2(sch, info["type"], cid, resolved, str(ch.get("value")))
+                if ok is False:
+                    return _error(
+                        "PARAMETER_REJECTED",
+                        "PSIM이 %s.%s = %s 를 거부했습니다%s"
+                        % (cid, resolved, ch.get("value"), (": " + out.text) if out.text else ""),
+                    )
+            for key, val in (("TOTALTIME", total_time), ("TIMESTEP", time_step)):
+                if val is not None:
+                    with _capture_stdout():
+                        p.PsimSetElmValue(sch, None, key, str(val))
+            copy_path = os.path.join(run_dir, "circuit.psimsch")
+            with _capture_stdout():
+                p.PsimFileSave(sch, copy_path)
+            if not os.path.isfile(copy_path):
+                return _error("SAVE_FAILED", "회로 사본을 저장하지 못했습니다: %s" % copy_path)
+            target = copy_path
+
+        graph_path = os.path.join(run_dir, "result.smv")
+        if os.path.exists(graph_path):
+            os.remove(graph_path)
+        kwargs = dict((str(k), str(v)) for k, v in variables.items())
+        kwargs["Simview"] = 0  # 병렬·자동 실행은 뷰어를 절대 띄우지 않는다
+        start = time.time()
+        with _capture_stdout() as sim_out:
+            result = p.PsimSimulate(target, graph_path, **kwargs)
+        duration = time.time() - start
+        if not result or result.Result == 0:
+            message = getattr(result, "ErrorMessage", None) or sim_out.text or "unknown"
+            return _error("SIMULATION_FAILED", "시뮬레이션 실패: %s" % message)
+
+        summary, rows = _summarize_graph(getattr(result, "Graph", None), signals, skip_ratio)
+        smv_kept = keep_smv and os.path.isfile(graph_path)
+        if not keep_smv and os.path.exists(graph_path):
+            os.remove(graph_path)
+        return _success(
+            {
+                "duration_seconds": round(duration, 4),
+                "rows": rows,
+                "summary": summary,
+                "smv_path": graph_path if smv_kept else None,
+                "circuit_copy": copy_path,
+                "pid": os.getpid(),
+            }
+        )
+    except Exception as e:
+        return _error("SIMULATION_FAILED", "조건 실행 실패: %s" % str(e))
+
+
+def handle_open_in_viewer(params):
+    """지정한 결과 파일(.smv) 하나를 Simview로 연다 (RunSimview)."""
+    graph_file = params.get("graph_file")
+    if not graph_file or not os.path.isfile(graph_file):
+        return _error("NO_GRAPH_FILE", "결과 파일을 찾을 수 없습니다: %s" % graph_file)
+    try:
+        p = _get_psim()
+        with _capture_stdout() as out:
+            ret = p.RunSimview(graph_file)
+        return _success({"graph_file": graph_file, "result": str(ret), "psim_output": out.text})
+    except Exception as e:
+        return _error("PSIM_ERROR", "Simview 실행 실패: %s" % str(e))
+
+
+# ---------------------------------------------------------------------------
 # Response Helpers
 # ---------------------------------------------------------------------------
 
@@ -991,6 +1213,9 @@ _ACTION_HANDLERS = {
     "convert_to_python": handle_convert_to_python,
     "extract_signals": handle_extract_signals,
     "compute_metrics": handle_compute_metrics,
+    "inspect_schematic": handle_inspect_schematic,
+    "run_job": handle_run_job,
+    "open_in_viewer": handle_open_in_viewer,
 }
 
 

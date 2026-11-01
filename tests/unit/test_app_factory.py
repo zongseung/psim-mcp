@@ -43,6 +43,9 @@ EXPECTED_TOOLS = {
     "vault_checkout",
     "vault_commit",
     "vault_edit_and_run",
+    "run_batch",
+    "benchmark_parallel",
+    "open_in_viewer",
 }
 
 

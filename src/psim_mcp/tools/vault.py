@@ -332,7 +332,9 @@ def register_tools(mcp, services: dict, vault: VaultService | None = None) -> Va
                     for k, v in {"total_time": total_time, "time_step": time_step}.items()
                     if v is not None
                 }
-                sim = await sim_svc.run_simulation(opts or None)
+                # 자동 실행은 뷰어를 띄우지 않는다(브리지 run_simulation 기본값은 simview=1).
+                opts["simview"] = 0
+                sim = await sim_svc.run_simulation(opts)
                 sim_ok = bool(sim.get("success"))
                 sim_summary = _compact(sim)
                 smv = ((sim.get("data") or {}).get("output_path")) if sim_ok else None
