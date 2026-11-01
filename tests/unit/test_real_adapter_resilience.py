@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -189,3 +190,92 @@ class TestSanitizedEnv:
         env = adapter._get_sanitized_env()
 
         assert "SOME_SECRET_TOKEN" not in env
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "ALM_HHWU",
+            "ALTAIR_LICENSE_PATH",
+            "LM_LICENSE_FILE",
+            "COMPUTERNAME",
+            "USERNAME",
+            "USERDOMAIN",
+            "ProgramData",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "windir",
+            "SystemDrive",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+        ],
+    )
+    def test_passes_license_and_windows_vars(self, adapter: RealPsimAdapter, monkeypatch, name):
+        # ALM_HHWU가 빠지면 PSIM() 생성이 라이선스 확인에서 응답 없이 멈춘다.
+        monkeypatch.setenv(name, "value-" + name)
+
+        env = adapter._get_sanitized_env()
+
+        assert {k.upper(): v for k, v in env.items()}[name.upper()] == "value-" + name
+
+    @pytest.mark.parametrize("name", ["GITHUB_TOKEN", "ALMANAC_PASSWORD", "MY_ALTAIR_SECRET"])
+    def test_does_not_pass_lookalike_secrets(self, adapter: RealPsimAdapter, monkeypatch, name):
+        monkeypatch.setenv(name, "x")
+
+        env = adapter._get_sanitized_env()
+
+        assert name.upper() not in {k.upper() for k in env}
+
+
+def _fake_bridge(tmp_path, body: str) -> str:
+    script = tmp_path / "fake_bridge.py"
+    script.write_text("import sys, time\nline = sys.stdin.readline()\n" + body)
+    return str(script)
+
+
+class TestGetStatusInitTimeout:
+    async def test_returns_clear_error_when_psim_init_hangs(
+        self, adapter: RealPsimAdapter, tmp_path, monkeypatch
+    ):
+        # Given: 라이선스 확인에서 멈춘 브리지(응답 없음)
+        import psim_mcp.adapters.real_adapter as mod
+
+        monkeypatch.setattr(mod, "_PSIM_INIT_TIMEOUT", 0.5)
+        adapter._python_exe = sys.executable
+        adapter._bridge_script = _fake_bridge(tmp_path, "time.sleep(30)\n")
+
+        # When
+        result = await adapter.get_status()
+
+        # Then
+        assert result["success"] is True
+        assert result["data"]["psim_available"] is False
+        assert result["data"]["error_code"] == "PSIM_INIT_TIMEOUT"
+        assert "라이선스 확인 중 응답 없음" in result["data"]["error"]
+        assert adapter._process is None  # 멈춘 브리지는 정리된다
+
+    async def test_passes_through_normal_bridge_response(self, adapter: RealPsimAdapter, tmp_path):
+        adapter._python_exe = sys.executable
+        adapter._bridge_script = _fake_bridge(
+            tmp_path,
+            'print(\'{"success": true, "data": {"psim_available": true}}\', flush=True)\n'
+            "sys.stdin.read()\n",  # shutdown()이 stdin을 닫으면 종료
+        )
+
+        try:
+            result = await adapter.get_status()
+        finally:
+            await adapter.shutdown()
+
+        assert result == {"success": True, "data": {"psim_available": True}}
+
+    async def test_other_actions_keep_simulation_timeout(self, adapter: RealPsimAdapter):
+        seen = {}
+
+        async def fake_transport(action, params=None, timeout=None):
+            seen["timeout"] = timeout
+            return {"success": True, "data": {}}
+
+        with patch.object(adapter, "_call_bridge_transport", side_effect=fake_transport):
+            await adapter._call_bridge("open_project", {"path": "x"})
+
+        assert seen["timeout"] is None  # None → simulation_timeout 사용
