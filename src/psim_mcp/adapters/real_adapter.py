@@ -30,6 +30,11 @@ _CIRCUIT_BREAKER_COOLDOWN = 30.0  # seconds before HALF_OPEN probe
 _LOCK_ACQUIRE_TIMEOUT = 10.0  # seconds to wait for asyncio.Lock
 _MAX_RESTARTS = 10  # lifetime restart cap
 
+# get_status는 브리지의 첫 PSIM() 생성(라이선스 확인)을 유발한다. 정상 기동은
+# 20초 안팎이므로, 이 시간 안에 응답이 없으면 멈춘 것으로 보고 오류를 돌려준다.
+_PSIM_INIT_TIMEOUT = 60.0
+_LICENSE_ENV_PREFIXES = ("ALM_", "ALTAIR_")
+
 
 class CircuitState(Enum):
     """Three-state circuit breaker model (Nygard, *Release It!*)."""
@@ -151,12 +156,34 @@ class RealPsimAdapter(BasePsimAdapter):
             "TMP",  # Temp directories
             "HOME",
             "USERPROFILE",  # Home directory
+            # Windows Python은 APPDATA로 사용자 site-packages 경로를 정한다.
+            # 없으면 `pip install --user`로 설치한 psimapipy를 찾지 못한다.
+            "APPDATA",
+            "LOCALAPPDATA",
             "PSIM_PATH",  # PSIM installation
+            # PSIM DLL과 Altair 라이선스 클라이언트가 참조하는 Windows 기본 변수.
+            "COMPUTERNAME",
+            "USERNAME",
+            "USERDOMAIN",
+            "ProgramData",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "windir",
+            "SystemDrive",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+            "LM_LICENSE_FILE",  # FlexLM 라이선스 경로
         ]
         for var in essential_vars:
             val = os.environ.get(var)
             if val is not None:
                 env[var] = val
+
+        # Altair 라이선스 설정(ALM_HHWU, ALTAIR_LICENSE_PATH 등)이 빠지면
+        # PSIM() 생성이 응답 없이 멈춘다. 이 접두사만 골라 전달한다.
+        for key, val in os.environ.items():
+            if key.upper().startswith(_LICENSE_ENV_PREFIXES):
+                env[key] = val
 
         # Add PSIM-specific paths if configured
         if self._psim_path:
@@ -272,6 +299,7 @@ class RealPsimAdapter(BasePsimAdapter):
         action: str,
         params: dict[str, Any] | None = None,
         lease_token: SessionToken | None = None,
+        timeout: float | None = None,
     ) -> dict:
         session_acquired = False
         if self._session_token is not None:
@@ -288,7 +316,7 @@ class RealPsimAdapter(BasePsimAdapter):
             session_acquired = True
 
         try:
-            return await self._call_bridge_transport(action, params)
+            return await self._call_bridge_transport(action, params, timeout)
         finally:
             if session_acquired:
                 self._session_lock.release()
@@ -297,12 +325,14 @@ class RealPsimAdapter(BasePsimAdapter):
         self,
         action: str,
         params: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict:
         """장기 실행 Bridge 프로세스에 명령을 보내고 응답을 받는다.
 
         Args:
             action: The action name (e.g. ``"open_project"``).
             params: Optional parameter dict passed as JSON via stdin.
+            timeout: 응답 대기 시간(초). 생략하면 ``simulation_timeout``.
 
         Returns:
             Parsed JSON response from the bridge script.
@@ -313,6 +343,7 @@ class RealPsimAdapter(BasePsimAdapter):
                 or the circuit breaker is open.
         """
         self._check_circuit_breaker()
+        timeout = self._timeout if timeout is None else timeout
 
         payload = json.dumps({"action": action, "params": params or {}})
         logger.debug("Bridge call: action=%s params=%s", action, params)
@@ -354,7 +385,7 @@ class RealPsimAdapter(BasePsimAdapter):
             try:
                 raw = await asyncio.wait_for(
                     proc.stdout.readline(),
-                    timeout=self._timeout,
+                    timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 logger.error("Bridge call timed out: action=%s", action)
@@ -362,9 +393,16 @@ class RealPsimAdapter(BasePsimAdapter):
                     proc.kill()
                 except ProcessLookupError:
                     pass
+                # 종료를 기다려 프로세스·파이프가 정리되지 않고 남지 않게 한다.
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Killed bridge did not exit within 5s")
+                if self._stderr_task and not self._stderr_task.done():
+                    self._stderr_task.cancel()
                 self._process = None
                 self._clear_project_state()
-                error_msg = f"PSIM bridge timed out after {self._timeout}s for action '{action}'"
+                error_msg = f"PSIM bridge timed out after {timeout}s for action '{action}'"
                 self._record_failure(error_msg)
                 raise TimeoutError(error_msg) from None
 
@@ -571,8 +609,31 @@ class RealPsimAdapter(BasePsimAdapter):
         return data
 
     async def get_status(self) -> dict:
-        """Query PSIM status via the bridge."""
-        return await self._call_bridge("get_status")
+        """Query PSIM status via the bridge.
+
+        첫 호출은 브리지에서 PSIM()을 생성하며 라이선스를 확인한다. 라이선스
+        설정이 맞지 않으면 응답 없이 멈추므로, ``_PSIM_INIT_TIMEOUT`` 안에
+        응답이 없으면 브리지를 정리하고 원인을 담은 상태를 돌려준다.
+        """
+        timeout = min(self._timeout, _PSIM_INIT_TIMEOUT)
+        try:
+            return await self._call_bridge("get_status", timeout=timeout)
+        except TimeoutError:
+            return {
+                "success": True,
+                "data": {
+                    "psim_available": False,
+                    "psim_version": None,
+                    "psim_version_name": None,
+                    "error_code": "PSIM_INIT_TIMEOUT",
+                    "error": (
+                        f"PSIM 라이선스 확인 중 응답 없음: {timeout:.0f}초 안에 "
+                        "PSIM이 초기화되지 않았습니다. Altair 라이선스 환경변수"
+                        "(ALM_HHWU, ALTAIR_LICENSE_PATH 등)와 라이선스 서버 연결을 "
+                        "확인하세요."
+                    ),
+                },
+            }
 
     async def get_project_info(self) -> dict:
         """Query project info via the bridge."""
