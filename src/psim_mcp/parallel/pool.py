@@ -210,6 +210,9 @@ def _to_float(value: Any, default: float) -> float:
 MOCK_WAVE_POINTS = 20000
 MOCK_WAVE_DT = 1e-6
 MOCK_WAVE_PERIOD = 40
+# 첫 저장 시각. 실제 PSIM .smv처럼 t=0이 아니라 첫 출력 시각(저장 간격 1개)에서 시작한다.
+# 테스트에서 크게 바꿔 저장 시작을 늦춘 회로(PRINTTIME > 0)를 흉내 낸다.
+MOCK_WAVE_T0 = MOCK_WAVE_DT
 
 
 class MockWorker:
@@ -291,13 +294,14 @@ class MockWorker:
         t_start, t_end = params.get("t_start"), params.get("t_end")
         total = MOCK_WAVE_POINTS
         period = MOCK_WAVE_PERIOD
+        t0 = MOCK_WAVE_T0
         idx = [
             i
             for i in range(int(total * skip), total)
-            if (t_start is None or i * MOCK_WAVE_DT >= t_start - 1e-15)
-            and (t_end is None or i * MOCK_WAVE_DT <= t_end + 1e-15)
+            if (t_start is None or t0 + i * MOCK_WAVE_DT >= t_start - 1e-15)
+            and (t_end is None or t0 + i * MOCK_WAVE_DT <= t_end + 1e-15)
         ]
-        full: dict[str, list[float]] = {"Time": [round(i * MOCK_WAVE_DT, 12) for i in idx]}
+        full: dict[str, list[float]] = {"Time": [round(t0 + i * MOCK_WAVE_DT, 12) for i in idx]}
         half = period / 2.0
         for name, m in summary.items():
             mean, ripple = float(m["mean"]), float(m["ripple"])

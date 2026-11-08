@@ -819,6 +819,21 @@ def render_waveform_plot(*args, **kwargs) -> bytes:
     return _to_png(build_waveform_figure(*args, **kwargs))
 
 
+RUN_START_ZERO_FACTOR = 1.5  # run 첫 시각이 저장 간격의 이 배수 이하면 t=0부터로 본다
+
+
+def run_start_from_zero(start: float, interval: float | None) -> float:
+    """run 전체 구간의 시작 시각을 표시용으로 정한다.
+
+    PSIM .smv는 t=0이 아니라 첫 출력 시각(저장 간격 1개)부터 저장되므로, 첫 시각이 저장 간격의
+    ``RUN_START_ZERO_FACTOR``배 이하이면 0으로 본다. 그보다 크면(저장 시작을 늦춘 회로 등)
+    실제 시작 시각을 그대로 둔다. 저장 간격을 모르면 그대로 둔다.
+    """
+    if interval and interval > 0 and 0 <= start <= RUN_START_ZERO_FACTOR * interval:
+        return 0.0
+    return start
+
+
 def bottom_title_text(
     run_start: float, run_end: float, zoom_window: float | None, bins: int = BOTTOM_BINS
 ) -> str:

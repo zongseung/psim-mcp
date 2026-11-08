@@ -564,7 +564,10 @@ async def test_waveform_uses_measurement_window_and_point_cap(env, monkeypatch):
 
 
 async def test_waveform_bottom_is_full_run_bins_per_run(env, monkeypatch):
-    """아래 칸: run 전체(t=0부터) 구간 통계, 확대 음영 = 위 칸 범위, 측정 구간 시작 표시."""
+    """아래 칸: run 전체(t=0부터) 구간 통계, 확대 음영 = 위 칸 범위, 측정 구간 시작 표시.
+
+    mock 파형은 실제 PSIM처럼 첫 저장 시각이 t=0이 아니라 저장 간격 1개(MOCK_WAVE_T0 = dt)다.
+    """
     app, cfg, sch = env
     calls: list[tuple] = []
     original = br.render_waveform_plot
@@ -587,9 +590,10 @@ async def test_waveform_bottom_is_full_run_bins_per_run(env, monkeypatch):
     zoom_span, measure_start, xlim = calls[0][7:]
     assert x_label == "Time (s)" and zoom_message is None
     assert "full resolution" in zoom_title
-    dt, n = pool_mod.MOCK_WAVE_DT, pool_mod.MOCK_WAVE_POINTS
-    run_end = (n - 1) * dt
-    # 범위: run 전체(t=0부터 끝까지)
+    dt, n, t0 = pool_mod.MOCK_WAVE_DT, pool_mod.MOCK_WAVE_POINTS, pool_mod.MOCK_WAVE_T0
+    assert t0 == dt  # 첫 시각이 0이 아님(실제 PSIM과 같음)
+    run_end = t0 + (n - 1) * dt
+    # 범위: run 전체(첫 시각 = 저장 간격이므로 t=0부터 끝까지로 표시)
     assert xlim == (0.0, pytest.approx(run_end))
     wave = next(p for p in res["data"]["plots"] if p["kind"] == "waveforms")
     window = wave["zoom"]["window_s"]
@@ -599,7 +603,7 @@ async def test_waveform_bottom_is_full_run_bins_per_run(env, monkeypatch):
     assert first == f"full run 0 – {br.eng(run_end, 's')} ({ratio}× longer time span than top)"
     assert "per-bin max/min/mean" in second and "not a waveform" in second
     # 측정 구간 시작 = 앞 50% 다음 첫 시각
-    assert measure_start == pytest.approx(int(n * 0.5) * dt)
+    assert measure_start == pytest.approx(t0 + int(n * 0.5) * dt)
     # 확대 음영 = 위 칸 범위(1위 run 끝 기준 window_s)
     assert zoom_span[1] == pytest.approx(run_end)
     assert zoom_span[1] - zoom_span[0] == pytest.approx(window)
@@ -630,6 +634,40 @@ async def test_waveform_bottom_is_full_run_bins_per_run(env, monkeypatch):
         assert mean == pytest.approx(rows[run]["I(L1).mean"], rel=1e-6)
         # 위 칸 점선 = 그 run의 평균
         assert tr["mean"] == pytest.approx(rows[run]["I(L1).mean"])
+
+
+async def test_waveform_bottom_keeps_delayed_run_start(env, monkeypatch):
+    """저장 시작을 크게 늦춘 run(첫 시각 > 저장 간격 1.5배)은 실제 시작 시각을 그대로 표기."""
+    app, cfg, sch = env
+    calls: list[tuple] = []
+    original = br.render_waveform_plot
+
+    def spy(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(br, "render_waveform_plot", spy)
+    dt, n = pool_mod.MOCK_WAVE_DT, pool_mod.MOCK_WAVE_POINTS
+    t0 = 0.01  # 10 ms부터 저장(10,000 × 저장 간격)
+    monkeypatch.setattr(pool_mod, "MOCK_WAVE_T0", t0)
+    res, _ = await _call_raw(
+        app,
+        schematic_path=str(sch),
+        conditions=[{"Lx": v} for v in _LX[:4]],
+        workers=2,
+        rank_by="I(L1).ripple",
+        plot=True,
+    )
+    assert len(calls) == 1
+    bottom_title = calls[0][4]
+    xlim = calls[0][9]
+    run_end = t0 + (n - 1) * dt
+    assert xlim == (pytest.approx(t0), pytest.approx(run_end))
+    assert bottom_title.split("\n")[0].startswith(
+        f"full run {br.eng(t0, 's')} – {br.eng(run_end, 's')} ("
+    )
+    wave = next(p for p in res["data"]["plots"] if p["kind"] == "waveforms")
+    assert wave["bottom"]["time_span"] == [pytest.approx(t0), pytest.approx(run_end)]
 
 
 async def test_waveform_bottom_caps_at_three_runs_with_note(env, monkeypatch):
@@ -868,6 +906,19 @@ def test_bin_stats_matches_bridge_and_preserves_mean():
     assert no_t["t"] is None and no_t == bridge_script._bin_stats(y, None, 10)
     assert br.bin_stats([], None, 10)["mean"] == []
     assert br.bins_mean({"mean": [], "count": []}) is None
+
+
+def test_run_start_from_zero():
+    # 실제 PSIM: 첫 저장 시각 = 저장 간격(5 µs) → 0부터
+    assert br.run_start_from_zero(5e-6, 5e-6) == 0.0
+    assert br.run_start_from_zero(0.0, 5e-6) == 0.0
+    assert br.run_start_from_zero(7.5e-6, 5e-6) == 0.0  # 경계 1.5배 포함
+    # 그보다 크면(저장 시작을 늦춤) 실제 시각 그대로
+    assert br.run_start_from_zero(7.6e-6, 5e-6) == 7.6e-6
+    assert br.run_start_from_zero(0.1, 5e-6) == 0.1
+    # 저장 간격을 모르면 그대로
+    assert br.run_start_from_zero(5e-6, None) == 5e-6
+    assert br.run_start_from_zero(5e-6, 0.0) == 5e-6
 
 
 def test_bottom_title_text():

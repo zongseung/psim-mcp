@@ -881,6 +881,11 @@ class BatchService:
 
         zoom_span = measure_start = xlim = None
         if has_time and run_span:
+            # 첫 저장 시각(보통 저장 간격 1개)이면 run 시작을 t=0으로 표시(제목·x축·time_span).
+            interval = zoom.get("print_interval_s")
+            if not interval and total_points and total_points > 1:
+                interval = (run_span[1] - run_span[0]) / (total_points - 1)
+            run_span = (br.run_start_from_zero(run_span[0], interval), run_span[1])
             first = traces[0]
             measure_start = float(first["span"][0])
             window = zoom.get("window_s") if zoom.get("period_reliable") is not False else None
