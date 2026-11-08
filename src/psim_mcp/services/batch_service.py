@@ -795,11 +795,11 @@ class BatchService:
         zoom_title = self._zoom_title(zoom, zoom_reduced)
         zoom_message = None
         if undersampled:
-            zoom_message = (
-                f"undersampled: print interval {br.eng(zoom['print_interval_s'], 's')} "
-                f">= switching period {br.eng(zoom['period_s'], 's')}\n"
-                f"({zoom['samples_per_period']:g} samples/period - zoom not drawn; "
-                "reduce PRINTSTEP)"
+            zoom_message = br.undersampled_message(
+                zoom["samples_per_period"],
+                zoom["print_interval_s"],
+                zoom["period_s"],
+                multiline=True,
             )
         plot_traces = [
             {k: tr.get(k) for k in ("label", "short_label", "mean", "zoom_x", "zoom_y", "bins")}
@@ -1039,13 +1039,13 @@ class BatchService:
                 # 2026-11-08 보충 C 실측: heavy(0.8점/주기)와 hires(40점/주기)를 비교하니 I(L1)
                 # 리플·최대·최소는 우연히 같았고(표본 위상이 주기 안을 고르게 돎) VL.mean은
                 # 12.25 대 0.97로 크게 달랐다. 어느 지표가 틀릴지 미리 알 수 없으므로 전부 신뢰 불가.
+                # 첫 문장은 그림 위 칸 문구와 같은 판정 기준 문구(주기당 < 2점).
                 notes.append(
-                    f"저장 간격({br.eng(print_interval, 's')})이 스위칭 주기"
-                    f"({br.eng(period, 's')})의 절반보다 길어(주기당 {spp:g}점, 2점 미만) 이 "
-                    "run들의 모든 지표(평균·리플·최대·최소)를 신뢰할 수 없습니다. 저장 파형으로 "
-                    "스위칭 파형을 볼 수 없어 그림 2 위 칸(확대)은 그리지 않았습니다. 회로 "
-                    "Simulation Control의 PRINTSTEP을 줄이세요(1이면 모든 계산 점 저장, "
-                    ".smv 크기는 커짐)."
+                    f"{br.undersampled_message(spp, print_interval, period)}. "
+                    "주기당 2점 미만이라 이 run들의 모든 지표(평균·리플·최대·최소)를 신뢰할 수 "
+                    "없습니다. 저장 파형으로 스위칭 파형을 볼 수 없어 그림 2 위 칸(확대)은 그리지 "
+                    "않았습니다. 회로 Simulation Control의 PRINTSTEP을 줄이세요(1이면 모든 계산 "
+                    "점 저장, .smv 크기는 커짐)."
                 )
                 if plot_window_s is not None:
                     notes.append("undersampled라 plot_window_s는 쓰지 않았습니다.")

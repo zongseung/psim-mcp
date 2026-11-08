@@ -309,6 +309,24 @@ def sampling_class(samples_per_period: float | None) -> str | None:
     return "ok"
 
 
+def undersampled_message(
+    samples_per_period: float, print_interval: float, period: float, multiline: bool = False
+) -> str:
+    """undersampled 문구(그림 위 칸·note 공용). 판정 기준(주기당 < 2점)을 그대로 쓴다.
+
+    ``undersampled: 0.8 samples/period < 2 (print interval 250 µs, switching period 200 µs)
+    - zoom not drawn; reduce PRINTSTEP``. 예전 ``print interval X >= switching period Y``는
+    주기당 1~2점(간격 < 주기)에서 사실이 아니어서 바꿨다. multiline이면(그림용) ``)`` 뒤에서
+    줄을 바꾼다 — 한 줄은 위 칸 폭보다 길다.
+    """
+    sep = "\n" if multiline else " "
+    return (
+        f"undersampled: {samples_per_period:g} samples/period < {UNDERSAMPLED_SAMPLES:g} "
+        f"(print interval {eng(print_interval, 's')}, switching period {eng(period, 's')})"
+        f"{sep}- zoom not drawn; reduce PRINTSTEP"
+    )
+
+
 def metric_value(record: dict, signal: str, metric: str) -> float | None:
     value = ((record.get("summary") or {}).get(signal) or {}).get(metric)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -602,8 +620,14 @@ def build_waveform_figure(
 
     bottom = [(i, tr) for i, tr in enumerate(traces[:BOTTOM_MAX_RUNS]) if tr.get("bins")]
     nb = len(bottom)
-    fig = _new_figure(4.4 + 1.55 * nb)
-    gs = fig.add_gridspec(1 + nb, 1, height_ratios=[3.0] + [1.25] * nb)
+    # 위 칸을 그리지 않으면(문구만) 그 칸을 문구 높이로 줄이고 그림 전체 높이도 그만큼 줄인다.
+    if zoom_message:
+        fig = _new_figure(MESSAGE_FIG_BASE_IN + 1.55 * nb)
+        top_ratio = MESSAGE_ROW_RATIO
+    else:
+        fig = _new_figure(4.4 + 1.55 * nb)
+        top_ratio = 3.0
+    gs = fig.add_gridspec(1 + nb, 1, height_ratios=[top_ratio] + [1.25] * nb)
     ax_zoom = fig.add_subplot(gs[0])
     ylabel = with_unit(signal, signal)
 
@@ -621,8 +645,11 @@ def build_waveform_figure(
         for i, tr in enumerate(traces)
     ]
     ax_zoom.set_title(zoom_title, fontsize=9.5)
+    message_artist = None
     if zoom_message:
-        ax_zoom.text(
+        # wrap=True는 그림(figure) 폭 기준이라 위 칸 밖(범례 쪽)으로 넘쳤다 → 줄바꿈은 문구에서,
+        # 그래도 넘치면 레이아웃 뒤 _fit_text_in_axes가 글꼴을 줄인다.
+        message_artist = ax_zoom.text(
             0.5,
             0.5,
             zoom_message,
@@ -630,7 +657,6 @@ def build_waveform_figure(
             ha="center",
             va="center",
             fontsize=10,
-            wrap=True,
             gid="zoom_message",
         )
         ax_zoom.set_xticks([])
@@ -647,7 +673,8 @@ def build_waveform_figure(
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
         borderaxespad=0.0,
-        title="dotted: mean",
+        # 점선(평균)은 위 칸에만 있으므로 위 칸을 그리지 않으면 범례 제목도 없앤다.
+        title=None if zoom_message else "dotted: mean",
     )
     legend.get_title().set_fontsize(8.5)
 
@@ -746,10 +773,39 @@ def build_waveform_figure(
 
     layout()
     _fit_titles(fig, [suptitle, ax_zoom.title, bottom_title_artist], relayout=layout)
+    if message_artist is not None:
+        _fit_text_in_axes(fig, message_artist, ax_zoom)
     return fig
 
 
+def text_inside_axes(fig, text, ax) -> bool:
+    """렌더한 글자 bbox가 축(ax) 안에 있는지."""
+    renderer = fig.canvas.get_renderer()
+    box = text.get_window_extent(renderer=renderer)
+    ax_box = ax.get_window_extent(renderer=renderer)
+    eps = 0.5
+    return (
+        box.x0 >= ax_box.x0 - eps
+        and box.x1 <= ax_box.x1 + eps
+        and box.y0 >= ax_box.y0 - eps
+        and box.y1 <= ax_box.y1 + eps
+    )
+
+
+def _fit_text_in_axes(fig, text, ax, min_size: float | None = None) -> None:
+    """축 안 문구가 축 밖으로 나가면 글꼴을 0.5pt씩 줄인다(최소 min_size, 기본
+    :data:`TITLE_MIN_FONTSIZE`). 레이아웃은 그대로."""
+    min_size = TITLE_MIN_FONTSIZE if min_size is None else min_size
+    fig.canvas.draw()
+    while not text_inside_axes(fig, text, ax) and text.get_fontsize() - 0.5 >= min_size:
+        text.set_fontsize(text.get_fontsize() - 0.5)
+        fig.canvas.draw()
+
+
 BOTTOM_GAP = 0.012  # 아래 칸 run 그래프 사이 간격(그림 높이 비율)
+# 위 칸이 문구만일 때(undersampled 등): 그림 기본 높이(in)와 위 칸 높이 비율(확대 파형은 4.4·3.0)
+MESSAGE_FIG_BASE_IN = 2.2
+MESSAGE_ROW_RATIO = 0.75
 
 
 def _stack_axes(axes: list, gap: float = BOTTOM_GAP) -> None:

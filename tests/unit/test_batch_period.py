@@ -140,6 +140,59 @@ def test_waveform_figure_zoom_message_replaces_zoom_panel():
     # 아래 칸(run별 구간 통계)과 범례는 그대로
     assert any(ln.get_gid() == "bin_mean0" for ln in fig.axes[1].lines)
     assert ax_zoom.get_legend() is not None
+    # 점선(평균)을 그리지 않으므로 범례 제목 "dotted: mean"도 없음
+    assert ax_zoom.get_legend().get_title().get_text() == ""
+
+    # 위 칸을 그릴 때와 비교: 위 칸 높이·그림 전체 높이가 줄고, 아래 칸 run 그래프 높이는 비슷
+    normal = br.build_waveform_figure(traces, "I(L1)", "t", "zoom", "env")
+    assert normal.axes[0].get_legend().get_title().get_text() == "dotted: mean"
+    fig_h, normal_h = fig.get_size_inches()[1], normal.get_size_inches()[1]
+    assert fig_h < normal_h - 1.5
+    renderer = fig.canvas.get_renderer()
+    n_renderer = normal.canvas.get_renderer()
+    zoom_px = ax_zoom.get_window_extent(renderer).height
+    normal_zoom_px = normal.axes[0].get_window_extent(n_renderer).height
+    assert zoom_px < normal_zoom_px / 2
+    bottom_px = fig.axes[1].get_window_extent(renderer).height
+    normal_bottom_px = normal.axes[1].get_window_extent(n_renderer).height
+    assert bottom_px == pytest.approx(normal_bottom_px, rel=0.25)
+    # 문구는 축 안에
+    message = next(t for t in ax_zoom.texts if t.get_gid() == "zoom_message")
+    assert br.text_inside_axes(fig, message, ax_zoom)
+
+
+@pytest.mark.parametrize(
+    "spp,interval,period,expected",
+    [
+        # heavy 실측(저장 간격 > 주기)
+        (
+            0.8,
+            250e-6,
+            200e-6,
+            "undersampled: 0.8 samples/period < 2 "
+            "(print interval 250 µs, switching period 200 µs) - zoom not drawn; reduce PRINTSTEP",
+        ),
+        # 저장 간격 < 주기지만 주기당 2점 미만(예전 ">=" 문구가 사실이 아니던 경우)
+        (
+            1.5,
+            1e-6,
+            1.5e-6,
+            "undersampled: 1.5 samples/period < 2 "
+            "(print interval 1 µs, switching period 1.5 µs) - zoom not drawn; reduce PRINTSTEP",
+        ),
+    ],
+)
+def test_undersampled_message_states_criterion(spp, interval, period, expected):
+    assert interval < period or spp < 1
+    msg = br.undersampled_message(spp, interval, period)
+    assert msg == expected
+    assert ">=" not in msg
+    # 그림용은 ")" 뒤에서만 줄바꿈, 내용은 같음
+    two = br.undersampled_message(spp, interval, period, multiline=True)
+    assert two.replace("\n", " ") == expected
+    assert two.count("\n") == 1 and two.split("\n")[1] == "- zoom not drawn; reduce PRINTSTEP"
+    # 판정과 문구가 일치: 문구가 나오는 값은 모두 undersampled
+    assert br.sampling_class(spp) == "undersampled"
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +350,12 @@ async def test_undersampled_skips_zoom_and_draws_envelope_only(env, monkeypatch,
     assert zoom_span is None  # 위 칸을 그리지 않으므로 음영도 없음
     assert measure_start is not None
     assert "undersampled: 1.6 samples/period" in title
-    assert zoom_message.startswith("undersampled: print interval 1 µs >= switching period 1.6 µs")
+    # 저장 간격(1 µs) < 주기(1.6 µs)인 경우 — 판정 기준(주기당 < 2점) 그대로 표기
+    assert zoom_message == (
+        "undersampled: 1.6 samples/period < 2 (print interval 1 µs, switching period 1.6 µs)\n"
+        "- zoom not drawn; reduce PRINTSTEP"
+    )
+    assert ">=" not in zoom_message
     assert zoom_title == (
         "zoom not drawn\nT = 1.6 µs from circuit (G1.Frequency), print interval 1 µs"
     )
@@ -307,7 +365,12 @@ async def test_undersampled_skips_zoom_and_draws_envelope_only(env, monkeypatch,
     under = [n for n in notes if "PRINTSTEP" in n]
     assert len(under) == 1
     # 모든 지표를 신뢰 불가로 안내(리플·최대·최소만이 아니라 평균도)
-    assert "저장 간격(1 µs)이 스위칭 주기(1.6 µs)의 절반보다 길어" in under[0]
+    # note 첫 문장 = 그림 문구(한 줄)
+    assert under[0].startswith(
+        "undersampled: 1.6 samples/period < 2 (print interval 1 µs, switching period 1.6 µs) "
+        "- zoom not drawn; reduce PRINTSTEP. "
+    )
+    assert ">=" not in under[0] and "절반보다 길어" not in under[0]
     assert "모든 지표(평균·리플·최대·최소)를 신뢰할 수 없습니다" in under[0]
     assert "그리지 않았습니다" in under[0]
     assert "실제보다 작게" not in under[0]
@@ -459,8 +522,20 @@ _LONG_ELEMENT = "PSM_F2837x_PHASEPWM_with_a_very_long_block_name.pwm_freq"
                 samples_per_period=0.8,
             ),
             False,
-            "undersampled: print interval 250 µs >= switching period 200 µs\n"
-            "(0.8 samples/period - zoom not drawn; reduce PRINTSTEP)",
+            br.undersampled_message(0.8, 2.5e-4, 2e-4, multiline=True),
+        ),
+        # 저장 간격 < 주기(1.5점/주기)
+        (
+            _zoom(
+                period_reliable=False,
+                window_s=None,
+                window_source=None,
+                period_s=1.5e-6,
+                print_interval_s=1e-6,
+                samples_per_period=1.5,
+            ),
+            False,
+            br.undersampled_message(1.5, 1e-6, 1.5e-6, multiline=True),
         ),
     ],
 )
@@ -487,6 +562,12 @@ def test_waveform_titles_stay_inside_figure(zoom, reduced, message):
         assert br.text_inside_figure(fig, t), (t.get_text(), t.get_window_extent())
         assert t.get_fontsize() >= br.TITLE_MIN_FONTSIZE
     assert ax_zoom.title.get_text() == zoom_title  # 내용은 그대로(잘라내지 않음)
+    if message:
+        # undersampled 문구가 줄인 위 칸 밖(범례 쪽)으로 나가지 않음, 내용 그대로
+        text = next(t for t in ax_zoom.texts if t.get_gid() == "zoom_message")
+        assert text.get_text() == message
+        assert br.text_inside_axes(fig, text, ax_zoom), text.get_window_extent()
+        assert text.get_fontsize() >= br.TITLE_MIN_FONTSIZE
 
 
 def test_fit_titles_shrinks_only_when_needed():
