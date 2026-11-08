@@ -677,6 +677,7 @@ class BatchService:
             return notes
         traces = []
         x_label = "Time (s)"
+        any_reduced = False
         for rec in candidates:
             res = await self._pool.call_one(
                 "extract_signals",
@@ -685,6 +686,8 @@ class BatchService:
                     "signals": [signal, "Time"],
                     "skip_ratio": skip_ratio,  # 측정 구간(기본 마지막 50%)만
                     "max_points": br.WAVEFORM_MAX_POINTS,
+                    # 등간격 추출은 고주파 리플을 에일리어싱하므로 구간별 min/max envelope
+                    "reduce": "minmax",
                 },
             )
             sigs = ((res.get("data") or {}).get("signals") or {}) if res.get("success") else {}
@@ -696,8 +699,13 @@ class BatchService:
                     + (f"({err})." if err else ".")
                 )
                 continue
-            y = br.decimate(y)
-            t = br.decimate(sigs.get("Time") or [])
+            data = res.get("data") or {}
+            t = (data.get("times") or {}).get(signal)
+            bridge_reduced = bool((data.get("reduced") or {}).get(signal))
+            # 브리지가 이미 줄였어야 하지만, 2000점을 넘으면 여기서도 같은 방식으로 줄인다.
+            y, t, server_reduced = br.minmax_envelope(y, t)
+            any_reduced = any_reduced or bridge_reduced or server_reduced
+            t = t or []
             rank_text = f"#{rec['rank']} " if rec.get("rank") else ""
             label = f"{rank_text}run {rec['run']} ({br.describe_inputs(rec['inputs'])})"
             traces.append({"label": label, "x": t[: len(y)], "y": y})
@@ -710,10 +718,13 @@ class BatchService:
             for tr in traces:
                 tr["x"] = list(range(len(tr["y"])))
         window = f"last {round((1 - skip_ratio) * 100)}%"
-        title = f"{signal} waveform, {window} of run" + (
+        method = "min/max envelope" if any_reduced else "full resolution"
+        title = f"{signal} waveform, {window} of run, {method}" + (
             f" (top {len(traces)} by {policy.rank.text})" if policy.rank else ""
         )
-        png = await asyncio.to_thread(br.render_waveform_plot, traces, signal, x_label, title)
+        png = await asyncio.to_thread(
+            br.render_waveform_plot, traces, signal, x_label, title, method
+        )
         save("fig2_waveforms.png", "waveforms", png)
         return notes
 

@@ -269,29 +269,45 @@ class MockWorker:
         names = params.get("signals")
         skip = float(params.get("skip_ratio", 0.0))
         max_points = int(params.get("max_points", 2000))
-        total = 4000
-        start = int(total * skip)
-        idx = list(range(start, total))
-        if len(idx) > max_points:
-            idx = idx[:: max(1, len(idx) // max_points)]
-        out: dict[str, list[float]] = {}
-        if not names or "Time" in names:
-            out["Time"] = [round(i * 1e-6, 9) for i in idx]
+        minmax = params.get("reduce") == "minmax"
+        total = 20000
+        idx = list(range(int(total * skip), total))
+        full: dict[str, list[float]] = {"Time": [round(i * 1e-6, 9) for i in idx]}
         for name, m in summary.items():
-            if names and name not in names:
-                continue
             mean, ripple = float(m["mean"]), float(m["ripple"])
-            # 주기 100 샘플 삼각파: mean ± ripple/2
-            out[name] = [round(mean + ripple * (abs((i % 100) / 50.0 - 1.0) - 0.5), 9) for i in idx]
-        return {
-            "success": True,
-            "data": {
+            # 주기 8 샘플 삼각파(envelope 구간보다 훨씬 짧음, 짝수라 정확히 mean ± ripple/2)
+            full[name] = [round(mean + ripple * (abs((i % 8) / 4.0 - 1.0) - 0.5), 9) for i in idx]
+        wanted = [k for k in full if not names or k in names]
+        if minmax:
+            from psim_mcp.services.batch_report import minmax_envelope
+
+            out: dict[str, list[float]] = {}
+            times: dict[str, list[float] | None] = {}
+            reduced: dict[str, bool] = {}
+            for name in wanted:
+                if name == "Time":
+                    continue
+                out[name], times[name], reduced[name] = minmax_envelope(
+                    full[name], full["Time"], max_points
+                )
+            data: dict[str, Any] = {
                 "signals": out,
+                "times": times,
+                "reduced": reduced,
+                "reduce": "minmax",
+            }
+        else:
+            step = max(1, len(idx) // max_points) if len(idx) > max_points else 1
+            out = {k: full[k][::step] for k in wanted}
+            data = {"signals": out}
+        data.update(
+            {
                 "signal_names": list(out),
-                "point_count": len(idx),
+                "point_count": len(next(iter(out.values()), [])),
                 "graph_file": graph_file,
-            },
-        }
+            }
+        )
+        return {"success": True, "data": data}
 
     async def _run_job(self, params: dict) -> dict:
         variables = params.get("variables") or {}

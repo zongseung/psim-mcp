@@ -138,13 +138,49 @@ def choose_x_axis(records: list[dict]) -> tuple[str, dict[int, float]]:
     return "run", {r["run"]: float(r["run"]) for r in ok}
 
 
-def decimate(values: list[float], max_points: int = WAVEFORM_MAX_POINTS) -> list[float]:
-    """간격을 두고 뽑아 max_points 이하로 줄인다."""
+def minmax_envelope_indices(
+    values: list[float], max_points: int = WAVEFORM_MAX_POINTS
+) -> list[int]:
+    """min/max envelope로 줄일 인덱스(시간 순서).
+
+    점 수가 max_points 이하면 전부. 넘으면 약 max_points/2개 구간으로 나눠 구간마다
+    최솟값·최댓값 위치를 시간 순서대로 넣는다. 측정 구간에 스위칭 주기가 수만 개 있어도
+    전체 최대·최소(peak-to-peak)가 보존돼, 그린 띠 두께가 실제 리플과 같다(등간격 추출은
+    에일리어싱으로 리플 크기를 틀리게 보여 준다).
+    브리지 ``bridge_script._minmax_envelope_indices``와 같은 알고리즘.
+    """
     n = len(values)
     if n <= max_points:
-        return list(values)
-    step = math.ceil(n / max_points)
-    return list(values[::step])
+        return list(range(n))
+    buckets = max(1, max_points // 2)
+    out: list[int] = []
+    for k in range(buckets):
+        lo, hi = k * n // buckets, (k + 1) * n // buckets
+        if hi <= lo:
+            continue
+        imin = imax = lo
+        vmin = vmax = values[lo]
+        for i in range(lo + 1, hi):
+            v = values[i]
+            if v < vmin:
+                vmin, imin = v, i
+            elif v > vmax:
+                vmax, imax = v, i
+        if imin == imax:
+            out.append(imin)
+        else:
+            out.extend(sorted((imin, imax)))
+    return out
+
+
+def minmax_envelope(
+    values: list[float], times: list[float] | None = None, max_points: int = WAVEFORM_MAX_POINTS
+) -> tuple[list[float], list[float] | None, bool]:
+    """(줄인 값, 같은 위치의 시간 또는 None, 줄였는지)."""
+    idx = minmax_envelope_indices(values, max_points)
+    reduced = len(idx) < len(values)
+    t = [times[i] for i in idx] if times is not None and len(times) == len(values) else None
+    return [values[i] for i in idx], t, reduced
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +276,9 @@ def render_metric_plot(
     return _to_png(fig)
 
 
-def render_waveform_plot(traces: list[dict], signal: str, x_label: str, title: str) -> bytes:
+def render_waveform_plot(
+    traces: list[dict], signal: str, x_label: str, title: str, legend_title: str | None = None
+) -> bytes:
     """그림 2. traces = [{"label", "x", "y"}] — 측정 구간 파형 겹쳐 그리기."""
     fig = _new_figure(4.6)
     ax = fig.subplots()
@@ -261,7 +299,15 @@ def render_waveform_plot(traces: list[dict], signal: str, x_label: str, title: s
     ax.grid(True, alpha=0.3)
     ax.tick_params(labelsize=8)
     ordered = [lines[i] for i in range(len(traces))]
-    ax.legend(ordered, [ln.get_label() for ln in ordered], fontsize=8, loc="best")
+    legend = ax.legend(
+        ordered,
+        [ln.get_label() for ln in ordered],
+        fontsize=8,
+        loc="best",
+        title=legend_title,
+    )
+    if legend_title:
+        legend.get_title().set_fontsize(8)
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
     return _to_png(fig)

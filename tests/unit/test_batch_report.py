@@ -13,6 +13,7 @@ import pytest
 from mcp.types import ImageContent, TextContent
 from PIL import Image
 
+import psim_mcp.bridge.bridge_script as bridge_script
 from psim_mcp.config import AppConfig
 from psim_mcp.parallel import pool as pool_mod
 from psim_mcp.server import create_app
@@ -94,9 +95,121 @@ def test_build_top_orders_by_rank():
     }
 
 
-def test_decimate():
-    assert len(br.decimate(list(range(5000)))) <= br.WAVEFORM_MAX_POINTS
-    assert br.decimate([1, 2, 3]) == [1, 2, 3]
+def _hf_triangle(n: int, period: int = 10) -> list[float]:
+    """고주파 삼각파(주기 10 샘플 — envelope 구간 ~n/1000보다 훨씬 짧음) + 느린 변화."""
+    return [
+        5.0 + 0.3 * math.sin(i / n * 6.0) + (abs((i % period) / (period / 2) - 1.0) - 0.5)
+        for i in range(n)
+    ]
+
+
+def test_minmax_envelope_preserves_peak_to_peak():
+    n = 200_000
+    y = _hf_triangle(n)
+    t = [i * 1e-6 for i in range(n)]
+    ey, et, reduced = br.minmax_envelope(y, t)
+    assert reduced
+    # 약 1000구간 × (최소, 최대) = 약 2000점
+    assert 1900 <= len(ey) <= br.WAVEFORM_MAX_POINTS
+    assert max(ey) == max(y) and min(ey) == min(y)  # peak-to-peak 보존
+    # 시간 순서이고, 각 점은 원본의 같은 시점 값
+    assert all(a < b for a, b in zip(et, et[1:]))
+    assert all(y[round(tt / 1e-6)] == v for tt, v in zip(et, ey))
+    # 대조: 등간격 추출(간격 100 = 주기 10의 배수)은 에일리어싱으로 리플을 잃는다
+    stride = y[:: n // br.WAVEFORM_MAX_POINTS]
+    assert max(stride) - min(stride) < 0.7 * (max(y) - min(y))
+
+
+def test_minmax_envelope_bucket_ripple_matches_local_peak_to_peak():
+    """구간마다 최소·최대가 다 들어가므로 어느 구간에서나 띠 두께 = 그 구간의 실제 리플."""
+    n = 100_000
+    y = _hf_triangle(n)
+    idx = br.minmax_envelope_indices(y)
+    buckets = br.WAVEFORM_MAX_POINTS // 2
+    for k in (0, 123, buckets - 1):
+        lo, hi = k * n // buckets, (k + 1) * n // buckets
+        vals = [y[i] for i in idx if lo <= i < hi]
+        assert max(vals) == max(y[lo:hi]) and min(vals) == min(y[lo:hi])
+
+
+def test_minmax_envelope_short_input_unchanged():
+    y = _hf_triangle(1500)
+    t = [i * 1e-6 for i in range(1500)]
+    ey, et, reduced = br.minmax_envelope(y, t)
+    assert ey == y and et == t and not reduced
+    assert br.minmax_envelope_indices(_hf_triangle(2500), 2500) == list(range(2500))
+
+
+def test_minmax_envelope_without_times():
+    ey, et, reduced = br.minmax_envelope(_hf_triangle(10_000), None)
+    assert et is None and reduced and len(ey) <= br.WAVEFORM_MAX_POINTS
+
+
+@pytest.mark.parametrize("n,max_points", [(10, 2000), (2001, 2000), (50_000, 2000), (7777, 500)])
+def test_bridge_envelope_matches_server(n, max_points):
+    y = _hf_triangle(n, period=7)
+    assert bridge_script._minmax_envelope_indices(y, max_points) == br.minmax_envelope_indices(
+        y, max_points
+    )
+
+
+class _Curve:
+    def __init__(self, name, values):
+        self.Name, self.Values, self.Rows = name, values, len(values)
+
+
+def _fake_psim(monkeypatch, curves):
+    class _Psim:
+        def PsimReadGraphFile(self, path):  # noqa: N802 - psimapipy 이름
+            return type("R", (), {"Result": 1, "Graph": curves})()
+
+    monkeypatch.setattr(bridge_script, "_get_psim", lambda: _Psim())
+
+
+def test_bridge_extract_minmax_keeps_peaks_and_times(monkeypatch, tmp_path):
+    n = 120_000
+    y = _hf_triangle(n)
+    t = [i * 1e-6 for i in range(n)]
+    _fake_psim(monkeypatch, [_Curve("Time", t), _Curve("I(L1)", y), _Curve("Vo1", y)])
+    smv = tmp_path / "result.smv"
+    smv.write_bytes(b"x")
+    res = bridge_script.handle_extract_signals(
+        {
+            "graph_file": str(smv),
+            "signals": ["I(L1)", "Time"],
+            "skip_ratio": 0.5,
+            "max_points": 2000,
+            "reduce": "minmax",
+        }
+    )
+    assert res["success"], res
+    data = res["data"]
+    assert list(data["signals"]) == ["I(L1)"] and data["reduced"] == {"I(L1)": True}
+    window = y[n // 2 :]
+    ey, et = data["signals"]["I(L1)"], data["times"]["I(L1)"]
+    assert round(max(window), 9) == max(ey) and round(min(window), 9) == min(ey)
+    assert len(ey) == len(et) <= 2000
+    assert et[0] >= t[n // 2] and all(a < b for a, b in zip(et, et[1:]))
+
+
+def test_bridge_extract_default_stride_unchanged(monkeypatch, tmp_path):
+    n = 9000
+    y = _hf_triangle(n)
+    t = [i * 1e-6 for i in range(n)]
+    _fake_psim(monkeypatch, [_Curve("Time", t), _Curve("I(L1)", y)])
+    smv = tmp_path / "result.smv"
+    smv.write_bytes(b"x")
+    res = bridge_script.handle_extract_signals({"graph_file": str(smv), "max_points": 2000})
+    data = res["data"]
+    assert "times" not in data and "reduce" not in data
+    assert data["signals"]["I(L1)"] == [round(v, 9) for v in y[::4]]  # 9000 // 2000 = 4
+    assert data["signals"]["Time"] == [round(v, 9) for v in t[::4]]
+
+
+def test_bridge_extract_rejects_unknown_reduce(monkeypatch, tmp_path):
+    _fake_psim(monkeypatch, [])
+    res = bridge_script.handle_extract_signals({"graph_file": "x", "reduce": "avg"})
+    assert not res["success"] and res["error"]["code"] == "INVALID_INPUT"
 
 
 def test_report_module_uses_figure_api_not_pyplot():
@@ -384,4 +497,36 @@ async def test_waveform_uses_measurement_window_and_point_cap(env, monkeypatch):
     for p in seen:
         assert p["skip_ratio"] == 0.5 and p["max_points"] == br.WAVEFORM_MAX_POINTS
         assert p["signals"] == ["I(L1)", "Time"]
+        assert p["reduce"] == "minmax"
         assert Path(p["graph_file"]).name == "result.smv"
+
+
+async def test_waveform_caption_says_min_max_envelope(env, monkeypatch):
+    app, cfg, sch = env
+    calls: list[tuple] = []
+    original = br.render_waveform_plot
+
+    def spy(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(br, "render_waveform_plot", spy)
+    res, _ = await _call_raw(
+        app,
+        schematic_path=str(sch),
+        conditions=[{"Lx": v} for v in _LX[:4]],
+        workers=2,
+        rank_by="I(L1).ripple",
+        plot=True,
+    )
+    assert len(calls) == 1
+    traces, signal, x_label, title, legend_title = calls[0]
+    assert "min/max envelope" in title and legend_title == "min/max envelope"
+    assert x_label == "Time (s)"
+    for tr in traces:
+        assert len(tr["y"]) <= br.WAVEFORM_MAX_POINTS and len(tr["x"]) == len(tr["y"])
+    # mock 파형(리플 = summary ripple)의 띠 두께가 표의 리플 값과 같다
+    rows = {r["run"]: r for r in res["data"]["rows"]}
+    for tr in traces:
+        run = int(tr["label"].split("run ")[1].split()[0])
+        assert max(tr["y"]) - min(tr["y"]) == pytest.approx(rows[run]["I(L1).ripple"], rel=1e-4)

@@ -832,12 +832,74 @@ def _slice_metric_values(values, window):
     }
 
 
+def _minmax_envelope_indices(values, max_points):
+    """min/max envelope로 줄일 인덱스(시간 순서).
+
+    점 수가 max_points 이하면 전부. 넘으면 약 max_points/2개 구간으로 나눠 구간마다
+    최솟값·최댓값 위치를 시간 순서대로 넣는다 — 전체 최대·최소(peak-to-peak)가 보존되고
+    고주파 리플이 등간격 추출처럼 에일리어싱되지 않는다.
+    psim_mcp.services.batch_report.minmax_envelope_indices와 같은 알고리즘(브리지는
+    psim_mcp를 import할 수 없어 복사본을 둔다, Python 3.8 호환).
+    """
+    n = len(values)
+    if n <= max_points:
+        return list(range(n))
+    buckets = max(1, max_points // 2)
+    out = []
+    for k in range(buckets):
+        lo = k * n // buckets
+        hi = (k + 1) * n // buckets
+        if hi <= lo:
+            continue
+        imin = imax = lo
+        vmin = vmax = values[lo]
+        for i in range(lo + 1, hi):
+            v = values[i]
+            if v < vmin:
+                vmin, imin = v, i
+            elif v > vmax:
+                vmax, imax = v, i
+        if imin == imax:
+            out.append(imin)
+        elif imin < imax:
+            out.extend((imin, imax))
+        else:
+            out.extend((imax, imin))
+    return out
+
+
+def _extract_minmax(curves, signal_names, skip_ratio, max_points):
+    """reduce="minmax": 신호마다 envelope 값과 그 시점의 Time 값(있으면)."""
+    sliced = {}
+    for curve in curves:
+        if signal_names and curve.Name not in signal_names:
+            continue
+        values = list(curve.Values[: curve.Rows])
+        sliced[curve.Name] = values[int(len(values) * skip_ratio) :]
+    time_vals = sliced.pop("Time", None)
+    signals, times, reduced = {}, {}, {}
+    for name, values in sliced.items():
+        idx = _minmax_envelope_indices(values, max_points)
+        signals[name] = [round(values[i], 9) for i in idx]
+        reduced[name] = len(idx) < len(values)
+        if time_vals is not None and len(time_vals) == len(values):
+            times[name] = [round(time_vals[i], 12) for i in idx]
+    return signals, times, reduced
+
+
 def handle_extract_signals(params):
-    """Extract raw signal data from the last simulation or a graph file."""
+    """Extract raw signal data from the last simulation or a graph file.
+
+    reduce: "stride"(기본, 등간격 추출 — 기존 동작) | "minmax"(구간별 최솟값·최댓값 envelope,
+    응답에 신호별 times·reduced 추가, Time 곡선은 signals에서 빠짐).
+    """
     graph_file = params.get("graph_file", "")
     signal_names = params.get("signals")  # None = all
     skip_ratio = float(params.get("skip_ratio", 0.0))
     max_points = int(params.get("max_points", 2000))
+    reduce_mode = params.get("reduce") or "stride"
+    if reduce_mode not in ("stride", "minmax"):
+        return _error("INVALID_INPUT", "reduce는 stride 또는 minmax여야 합니다: %s" % reduce_mode)
 
     p = _get_psim()
 
@@ -853,6 +915,20 @@ def handle_extract_signals(params):
 
     if res.Result == 0:
         return _error("READ_FAILED", "그래프 파일 읽기 실패")
+
+    if reduce_mode == "minmax":
+        signals, times, reduced = _extract_minmax(res.Graph, signal_names, skip_ratio, max_points)
+        return _success(
+            {
+                "signals": signals,
+                "times": times,
+                "reduced": reduced,
+                "reduce": "minmax",
+                "signal_names": list(signals.keys()),
+                "point_count": len(next(iter(signals.values()), [])),
+                "graph_file": graph_file,
+            }
+        )
 
     output = {}
     for curve in res.Graph:
