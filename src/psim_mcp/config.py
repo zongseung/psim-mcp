@@ -42,6 +42,15 @@ class AppConfig(BaseSettings):
     simulation_timeout: int = 300
     max_sweep_steps: int = 100
 
+    # --- Parallel execution (워커 풀) ---
+    # 미설정 시: 벤치마크 저장값 → 물리 코어 수. 논리 스레드 수는 기본값으로 쓰지 않는다.
+    parallel_workers: int | None = None
+    parallel_idle_timeout: int = 600  # 초. 이 시간 동안 쓰지 않으면 워커를 모두 종료
+    parallel_low_priority: bool = True  # 워커를 낮은 우선순위로 실행(Windows)
+    parallel_settings_path: Path | None = None  # 기본: ~/.psim-mcp/parallel.json
+    runs_dir: Path | None = None  # 기본: PSIM_OUTPUT_DIR/runs, 없으면 ~/psim-mcp-runs
+    max_batch_conditions: int = 200
+
     # --- Security ---
     allowed_project_dirs: list[str] = []
 

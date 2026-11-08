@@ -83,6 +83,8 @@ class MockPsimAdapter(BasePsimAdapter):
     """In-memory mock that emulates PSIM responses for local development."""
 
     def __init__(self) -> None:
+        self.viewer_requests: list[str] = []
+        self.last_run_options: dict | None = None
         self._current_project: dict | None = None
         self._last_simulation: dict | None = None
         self._session_lock = asyncio.Lock()
@@ -201,6 +203,7 @@ class MockPsimAdapter(BasePsimAdapter):
     ) -> dict:
         """Return a pre-built successful simulation result."""
         self._check_session(lease_token)
+        self.last_run_options = dict(options or {})
         if self._current_project is None:
             raise RuntimeError("No project is currently open.")
 
@@ -414,6 +417,11 @@ class MockPsimAdapter(BasePsimAdapter):
             "component_count": len(components),
             "parameter_count": sum(len(c.get("parameters", {})) for c in components),
         }
+
+    async def open_in_viewer(self, graph_file: str) -> dict:
+        """mock: 뷰어를 띄우지 않고 요청만 기록한다."""
+        self.viewer_requests.append(graph_file)
+        return {"graph_file": graph_file, "opened": True, "mock": True}
 
     async def convert_to_python(self, path: str, output_path: str = "") -> dict:
         """Return a canned converted script (buck-like RLC) for testing.

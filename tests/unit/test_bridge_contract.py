@@ -54,6 +54,9 @@ EXPECTED_ACTIONS = {
     "convert_to_python",
     "extract_signals",
     "compute_metrics",
+    "inspect_schematic",
+    "run_job",
+    "open_in_viewer",
 }
 
 

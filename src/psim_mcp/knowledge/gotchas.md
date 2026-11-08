@@ -44,6 +44,40 @@ PSIM은 존재하지 않는 파라미터 이름을 받으면 **에러 없이 무
 - `set_parameter`는 **즉시 파일에 저장**한다 (`PsimFileSave`). 되돌리려면 백업본에서 복원.
 - 시뮬 결과 파형은 `.smv` 파일 — 직접 파싱하지 말고 `analyze_existing`/`export_results`를 쓴다.
 
+## simview 플래그 — 2026.1 실측 (2026-11-01)
+
+| 호출 | `Simview` 값 | `.smv` 쓰기 | 메모리 그래프 | Simview 창 |
+|---|---|---|---|---|
+| `PsimSimulate` | 생략 / 1 / 2 | O | O | **뜸**(호출 ~0.3 s) |
+| `PsimSimulate` | 0 | O | O | 안 뜸 |
+| `PsimSimulate` | -1 | **안 씀** | O | 안 뜸 |
+| `SimulateData` + `PsimASimulate` | 아무 값 | O | O | 안 뜸 |
+
+- `PsimSimulate`에서 `Simview`를 **생략하면 뷰어가 뜬다.** 자동 실행은 반드시 `Simview=0`.
+- `SimulateData_from_kwargs`는 `Simview`를 내부 `SimviewFlag`로 바꾼다(-1→5, 0→1, 그 외·생략→0).
+  `PsimASimulate` 경로는 플래그와 무관하게 항상 `.smv`를 쓰고 뷰어는 띄우지 않는다(5도 씀, 문서와 다름).
+- Simview가 이미 떠 있으면 새 프로세스를 띄우지 않고 기존 창을 쓴다. 프로세스 목록으로 뷰어 실행
+  여부를 판정하면 틀릴 수 있다.
+- 이 서버의 정책: `run_batch`·병렬 스윕·`vault_edit_and_run`·`optimize_circuit`은 뷰어를 띄우지 않는다.
+  파형 창이 필요하면 `open_in_viewer`로 결과 파일 하나만 연다. 기존 `run_simulation`은 기본값
+  `simview=true`(뷰어 뜸)이고, 순차 `sweep_parameter`도 이 기본값으로 실행된다.
+
+## 변수 덮어쓰기와 병렬 실행
+
+- `PsimSimulate(..., Lx="0.002")` 같은 kwargs 덮어쓰기는 **회로가 참조하는 변수에만** 효과가 있다.
+  `L1` Inductance가 숫자(`0.002`)로 적혀 있으면 덮어쓰기가 조용히 무시된다.
+  `run_batch`는 점 없는 키를 변수로 보고 회로가 참조하지 않으면 그 조건을 실행하지 않는다
+  (기본: 그 행만 status 오류, 나머지는 실행 / 모든 조건이 틀렸거나 `strict=true`면 전체 거부).
+  숫자 소자 값은 `L1.Inductance` 형식으로 넘기면 run 폴더에 회로 사본을 만들어 수정한다.
+- `run_batch`의 파형(.smv)은 기본적으로 전부 남지 않는다: `rank_by`가 있으면 상위 `top_k`(기본 3)개만,
+  없으면 하나도 남기지 않는다(요약 summary.json·results.csv·config.json은 항상 남음).
+  파형이 모두 필요하면 `keep_smv="all"`. 병렬 스윕은 항상 전부 보존한다.
+- `PSIM()` 생성은 약 17초 걸린다. 병렬 워커는 한 번 띄워 재사용하고, 일정 시간 안 쓰면 종료한다.
+- 동시 실행 수는 물리 코어 수가 기준이다. 논리 스레드 수만큼 올리면 실행 1건이 2배 이상 느려져
+  처리량이 오히려 낮다(실측: 6코어/12스레드에서 동시 6 = 82.9 runs/min, 12 = 72.6).
+- `PsimASimulate`는 한 프로세스 안에서 최대 1.8배에서 포화하고, 끝날 때까지 결과를 주지 않으며,
+  짧은 시뮬레이션은 내부 100 ms 폴링에 묶인다. 이 서버는 쓰지 않는다.
+
 ## 시뮬레이션 시간 설정
 
 - 정착(settling)을 보려면 TOTALTIME을 충분히: buck 계열은 1ms로는 부족, 50ms에서 정착 확인됨.

@@ -37,11 +37,41 @@ def create_adapter(config: AppConfig) -> BasePsimAdapter:
         return RealPsimAdapter(config=config)
 
 
+def create_worker_pool(config: AppConfig):
+    """병렬 워커 풀. 워커는 첫 병렬 요청 때 띄운다(서버 시작 때 띄우지 않음)."""
+    from psim_mcp.parallel import settings as parallel_settings
+    from psim_mcp.parallel.pool import BridgeWorker, MockWorker, WorkerPool
+
+    if config.psim_mode == "mock":
+
+        def factory(wid: int):
+            return MockWorker(wid)
+
+    else:
+        from psim_mcp.adapters.real_adapter import _BRIDGE_SCRIPT, build_bridge_env
+
+        python_exe = str(config.psim_python_exe) if config.psim_python_exe else "python"
+        env = build_bridge_env(config.psim_path)
+
+        def factory(wid: int):
+            return BridgeWorker(
+                wid, python_exe, _BRIDGE_SCRIPT, env, low_priority=config.parallel_low_priority
+            )
+
+    return WorkerPool(
+        factory,
+        idle_timeout=float(config.parallel_idle_timeout),
+        job_timeout=float(config.simulation_timeout),
+        max_workers=parallel_settings.max_workers(),
+    )
+
+
 def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
     """Create all domain services with proper dependency injection.
 
     Returns a dict of service instances keyed by role.
     """
+    from psim_mcp.services.batch_service import BatchService
     from psim_mcp.services.project_service import ProjectService
     from psim_mcp.services.simulation_service import SimulationService
     from psim_mcp.services.vault_service import VaultService
@@ -58,8 +88,13 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
         local_root=config.vault_local_root,
     )
 
+    pool = create_worker_pool(config)
+    batch_svc = BatchService(config=config, adapter=adapter, pool=pool)
+
     return {
         "project": project_svc,
+        "batch": batch_svc,
+        "pool": pool,
         "simulation": simulation_svc,
         "vault": vault_svc,
         "_adapter": adapter,
@@ -70,15 +105,16 @@ def create_services(config: AppConfig, adapter: BasePsimAdapter) -> dict:
 
 def register_all_tools(mcp: FastMCP, services: dict, config: AppConfig) -> None:
     """Register every tool module on *mcp* using domain services."""
-    from psim_mcp.tools import analysis, parameter, project, results, simulation, vault
+    from psim_mcp.tools import analysis, batch, parameter, project, results, simulation, vault
 
     # Use dedicated services for each tool module
     project.register_tools(mcp, services["project"])
-    parameter.register_tools(mcp, services["_legacy"], config)
+    parameter.register_tools(mcp, services["_legacy"], config, services.get("batch"))
     simulation.register_tools(mcp, services["simulation"])
     results.register_tools(mcp, services["_legacy"])
     analysis.register_tools(mcp, services["simulation"], services["_adapter"], config)
     vault.register_tools(mcp, services, services["vault"])
+    batch.register_tools(mcp, services["batch"])
 
 
 def register_knowledge_resources(mcp: FastMCP) -> None:
@@ -134,17 +170,21 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
     adapter = create_adapter(config)
     services = create_services(config, adapter)
 
-    # 서버 종료 시 adapter.shutdown() 호출을 위해 atexit 등록
+    pool = services["pool"]
+
+    # 서버 종료 시 adapter.shutdown()·워커 풀 정리를 위해 atexit 등록
+    # (풀은 자기가 띄운 워커만 종료한다. 워커는 서버가 죽어도 stdin이 닫히면 스스로 끝난다.)
     def _sync_shutdown_adapter():
-        try:
-            loop = asyncio.get_event_loop()
-            if not loop.is_closed():
-                if loop.is_running():
-                    loop.create_task(adapter.shutdown())
-                else:
-                    loop.run_until_complete(adapter.shutdown())
-        except Exception:
-            pass  # best-effort shutdown, silently ignore all errors
+        for close in (adapter.shutdown, pool.shutdown):
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop.is_closed():
+                    if loop.is_running():
+                        loop.create_task(close())
+                    else:
+                        loop.run_until_complete(close())
+            except Exception:
+                pass  # best-effort shutdown, silently ignore all errors
 
     atexit.register(_sync_shutdown_adapter)
 
@@ -158,7 +198,9 @@ def create_app(config: AppConfig | None = None) -> FastMCP:
             "get_status로 현재 모드(mock/real)와 열린 프로젝트를 확인. "
             "회로 최적화는 optimize_circuit 사용. "
             "드라이브 원본/로컬 사본 저장 루틴: 신규는 vault_register, "
-            "수정·실행·저장을 한 번에 하려면 vault_edit_and_run(원본 보호·버전 기록)."
+            "수정·실행·저장을 한 번에 하려면 vault_edit_and_run(원본 보호·버전 기록). "
+            "조건 여러 개는 run_batch(병렬, 요약 표만 반환), 동시 실행 수 측정은 benchmark_parallel. "
+            "자동·병렬 실행은 뷰어를 띄우지 않으며, 파형 창은 open_in_viewer로 파일 하나만 연다."
         ),
     )
 
