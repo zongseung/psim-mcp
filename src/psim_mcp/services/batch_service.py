@@ -789,14 +789,19 @@ class BatchService:
     async def _zoom_window(self, first: dict, signal: str, skip_ratio: float, plot_window_s):
         """확대 구간 길이와 주기 정보. 반환: (zoom 정보, notes).
 
-        zoom 정보: ``window_s``, ``period_source``(plot_window_s·fft·fallback), ``period_s``,
-        ``samples_per_period``, ``low_resolution``.
+        FFT 주기 추정·주기당 샘플 수·저해상도 경고는 plot_window_s 유무와 관계없이 항상 한다.
+        plot_window_s는 확대 길이 결정에만 쓴다.
+
+        zoom 정보: ``window_s``, ``window_source``(확대 길이: plot_window_s·fft·fallback),
+        ``period_source``(fft, 추정 실패면 None), ``period_s``, ``samples_per_period``,
+        ``low_resolution``.
         """
         notes: list[str] = []
         t0, t1 = float(first["span"][0]), float(first["span"][1])
         duration = t1 - t0
         info: dict = {
             "window_s": None,
+            "window_source": None,
             "period_source": None,
             "period_s": None,
             "samples_per_period": None,
@@ -805,6 +810,23 @@ class BatchService:
         if not duration > 0:
             notes.append("측정 구간 길이가 0이라 그림 2 위 칸(확대 파형)은 그리지 않았습니다.")
             return info, notes
+
+        estimate = await self._estimate_period(first, signal, skip_ratio, t1, duration)
+        if estimate:
+            spp = estimate["samples_per_period"]
+            info.update(
+                period_source="fft",
+                period_s=_sig(estimate["period_s"]),
+                samples_per_period=spp,
+                low_resolution=bool(spp < br.LOW_RESOLUTION_SAMPLES),
+            )
+            if info["low_resolution"]:
+                notes.append(
+                    f"스위칭 주기당 샘플이 {spp:g}개뿐이라(기준 {br.LOW_RESOLUTION_SAMPLES}개) "
+                    "확대 파형이 거칠게 보입니다. 회로 Simulation Control의 PRINTSTEP을 줄이면"
+                    "(1이면 모든 계산 점 저장) 해상도가 올라갑니다(.smv 크기는 커짐)."
+                )
+
         if plot_window_s is not None:
             window = float(plot_window_s)
             if window > duration:
@@ -813,10 +835,29 @@ class BatchService:
                     "측정 구간 전체를 확대 구간으로 썼습니다."
                 )
                 window = duration
-            info.update(window_s=_sig(window), period_source="plot_window_s")
-            return info, notes
+            info.update(window_s=_sig(window), window_source="plot_window_s")
+            if not estimate:
+                notes.append(
+                    "스위칭 주기를 FFT로 추정하지 못해 period_s·samples_per_period는 null입니다"
+                    "(확대 길이는 plot_window_s 그대로)."
+                )
+        elif estimate:
+            info.update(
+                window_s=_sig(min(br.ZOOM_PERIODS * estimate["period_s"], duration)),
+                window_source="fft",
+            )
+        else:
+            info.update(
+                window_s=_sig(duration * br.FALLBACK_WINDOW_FRACTION), window_source="fallback"
+            )
+            notes.append(
+                "스위칭 주기를 FFT로 추정하지 못해 그림 2 위 칸은 측정 구간 마지막 1%를 "
+                "확대했습니다. 원하는 길이는 plot_window_s(초)로 지정하세요."
+            )
+        return info, notes
 
-        # 측정 구간 끝 최대 FFT_MAX_POINTS점(원본 해상도)으로 주기를 추정한다.
+    async def _estimate_period(self, first: dict, signal: str, skip_ratio, t1, duration):
+        """1위 run 측정 구간 끝 최대 FFT_MAX_POINTS점(원본 해상도) FFT로 주기 추정. 실패면 None."""
         n_src = int(first.get("source_points") or 0)
         dt_est = duration / (n_src - 1) if n_src > 1 else None
         chunk = duration if dt_est is None else min(duration, dt_est * (br.FFT_MAX_POINTS - 1))
@@ -840,30 +881,7 @@ class BatchService:
             if y and t and not (data.get("reduced") or {}).get(signal):
                 y, t = y[-br.FFT_MAX_POINTS :], t[-br.FFT_MAX_POINTS :]
                 estimate = await asyncio.to_thread(br.estimate_period, y, t)
-        if estimate:
-            spp = estimate["samples_per_period"]
-            info.update(
-                window_s=_sig(min(br.ZOOM_PERIODS * estimate["period_s"], duration)),
-                period_source="fft",
-                period_s=_sig(estimate["period_s"]),
-                samples_per_period=spp,
-                low_resolution=bool(spp < br.LOW_RESOLUTION_SAMPLES),
-            )
-            if info["low_resolution"]:
-                notes.append(
-                    f"스위칭 주기당 샘플이 {spp:g}개뿐이라(기준 {br.LOW_RESOLUTION_SAMPLES}개) "
-                    "확대 파형이 거칠게 보입니다. 회로 Simulation Control의 PRINTSTEP을 줄이면"
-                    "(1이면 모든 계산 점 저장) 해상도가 올라갑니다(.smv 크기는 커짐)."
-                )
-        else:
-            info.update(
-                window_s=_sig(duration * br.FALLBACK_WINDOW_FRACTION), period_source="fallback"
-            )
-            notes.append(
-                "스위칭 주기를 FFT로 추정하지 못해 그림 2 위 칸은 측정 구간 마지막 1%를 "
-                "확대했습니다. 원하는 길이는 plot_window_s(초)로 지정하세요."
-            )
-        return info, notes
+        return estimate
 
     async def _read_zoom(self, traces, signal, skip_ratio, zoom: dict, notes: list[str]) -> bool:
         """traces마다 확대 구간 원본을 읽어 ``zoom_x``(run 끝 기준 상대 시간)·``zoom_y``를 채운다.
@@ -916,16 +934,21 @@ class BatchService:
         if not window:
             return "zoom: not available"
         res = "min/max envelope (too many points)" if reduced else "full resolution"
-        source = zoom.get("period_source")
-        if source == "fft":
-            return (
-                f"last {br.ZOOM_PERIODS} switching periods ({br.eng(window, 's')}), "
+        if zoom.get("period_source") == "fft":
+            period = (
                 f"T = {br.eng(zoom['period_s'], 's')} by FFT, "
-                f"{zoom['samples_per_period']:g} samples/period, {res}"
+                f"{zoom['samples_per_period']:g} samples/period"
             )
-        if source == "plot_window_s":
-            return f"last {br.eng(window, 's')} (plot_window_s), {res}"
-        return f"last 1% of measurement window ({br.eng(window, 's')}, period not found), {res}"
+        else:
+            period = "period not found"
+        source = zoom.get("window_source")
+        if source == "fft":
+            head = f"last {br.ZOOM_PERIODS} switching periods ({br.eng(window, 's')})"
+        elif source == "plot_window_s":
+            head = f"last {br.eng(window, 's')} (plot_window_s)"
+        else:
+            head = f"last 1% of measurement window ({br.eng(window, 's')})"
+        return f"{head}, {period}, {res}"
 
     @staticmethod
     def _count_records(records: list[dict]) -> dict:

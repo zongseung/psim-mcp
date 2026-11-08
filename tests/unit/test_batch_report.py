@@ -727,7 +727,7 @@ async def test_zoom_uses_fft_period_and_reports_samples(env, monkeypatch):
     calls = _spy_render(monkeypatch)
     data, wave, _ = await _plot_run(app, sch)
     zoom = wave["zoom"]
-    assert zoom["period_source"] == "fft"
+    assert zoom["period_source"] == "fft" and zoom["window_source"] == "fft"
     assert zoom["period_s"] == pytest.approx(40e-6, rel=5e-3)
     assert zoom["samples_per_period"] == pytest.approx(40, rel=5e-3)
     assert zoom["window_s"] == pytest.approx(200e-6, rel=5e-3)
@@ -745,7 +745,8 @@ async def test_zoom_uses_fft_period_and_reports_samples(env, monkeypatch):
     assert not any("PRINTSTEP" in n or "추정하지 못해" in n for n in data.get("notes", []))
 
 
-async def test_zoom_plot_window_s_overrides_fft(env, monkeypatch):
+async def test_zoom_plot_window_s_sets_length_but_fft_still_runs(env, monkeypatch):
+    """plot_window_s는 확대 길이에만 쓰고, FFT 주기·주기당 샘플 수는 그대로 계산한다."""
     app, cfg, sch = env
     calls = _spy_render(monkeypatch)
     seen: list[dict] = []
@@ -758,15 +759,48 @@ async def test_zoom_plot_window_s_overrides_fft(env, monkeypatch):
     monkeypatch.setattr(pool_mod.MockWorker, "_extract_signals", staticmethod(spy))
     data, wave, _ = await _plot_run(app, sch, plot_window_s=0.0005)
     zoom = wave["zoom"]
-    assert zoom["period_source"] == "plot_window_s" and zoom["window_s"] == 0.0005
-    assert zoom["period_s"] is None and zoom["samples_per_period"] is None
-    # FFT 호출 없이 envelope 3 + 확대 3
-    assert not any(p.get("max_points") == 2 * br.FFT_MAX_POINTS for p in seen)
-    assert len(seen) == 6
-    traces, _, _, zoom_title, _, _ = calls[0]
-    assert "plot_window_s" in zoom_title
+    assert zoom["window_source"] == "plot_window_s" and zoom["window_s"] == 0.0005
+    assert zoom["period_source"] == "fft"
+    assert zoom["period_s"] == pytest.approx(40e-6, rel=5e-3)
+    assert zoom["samples_per_period"] == pytest.approx(40, rel=5e-3)
+    assert zoom["low_resolution"] is False
+    # envelope 3 + FFT 1 + 확대 3
+    assert sum(p.get("max_points") == 2 * br.FFT_MAX_POINTS for p in seen) == 1
+    assert len(seen) == 7
+    traces, _, title, zoom_title, _, _ = calls[0]
+    assert "plot_window_s" in zoom_title and "40 samples/period" in zoom_title
+    assert "low resolution" not in title
     for tr in traces:
         assert tr["zoom_x"][-1] - tr["zoom_x"][0] == pytest.approx(0.0005, abs=2e-6)
+    assert not any("추정하지 못해" in n or "PRINTSTEP" in n for n in data.get("notes", []))
+
+
+async def test_zoom_plot_window_s_low_resolution_warning(env, monkeypatch):
+    app, cfg, sch = env
+    monkeypatch.setattr(pool_mod, "MOCK_WAVE_PERIOD", 10)  # 주기당 10 샘플 < 20
+    calls = _spy_render(monkeypatch)
+    data, wave, _ = await _plot_run(app, sch, plot_window_s=0.0003)
+    zoom = wave["zoom"]
+    assert zoom["window_source"] == "plot_window_s" and zoom["window_s"] == 0.0003
+    assert zoom["samples_per_period"] == pytest.approx(10, abs=0.1)
+    assert zoom["low_resolution"] is True
+    assert f"low resolution: {zoom['samples_per_period']:g} samples/period" in calls[0][2]
+    assert any("PRINTSTEP" in n for n in data["notes"])
+
+
+async def test_zoom_plot_window_s_fft_failure_gives_null_and_note(env, monkeypatch):
+    app, cfg, sch = env
+    monkeypatch.setattr(pool_mod, "MOCK_WAVE_PERIOD", 0)  # 일정한 신호 → FFT 실패
+    calls = _spy_render(monkeypatch)
+    data, wave, _ = await _plot_run(app, sch, plot_window_s=0.0005)
+    zoom = wave["zoom"]
+    # 확대 길이는 plot_window_s 그대로(1% fallback 아님), 주기 정보는 null
+    assert zoom["window_source"] == "plot_window_s" and zoom["window_s"] == 0.0005
+    assert zoom["period_source"] is None and zoom["period_s"] is None
+    assert zoom["samples_per_period"] is None and zoom["low_resolution"] is False
+    assert any("추정하지 못해" in n and "null" in n for n in data["notes"])
+    assert not any("1%" in n for n in data["notes"])
+    assert "period not found" in calls[0][3] and "plot_window_s" in calls[0][3]
 
 
 async def test_zoom_plot_window_longer_than_window_is_clamped(env):
@@ -784,7 +818,9 @@ async def test_zoom_fft_failure_falls_back_to_last_percent(env, monkeypatch):
     data, wave, _ = await _plot_run(app, sch)
     zoom = wave["zoom"]
     duration = (pool_mod.MOCK_WAVE_POINTS - 1 - pool_mod.MOCK_WAVE_POINTS // 2) * 1e-6
-    assert zoom["period_source"] == "fallback" and zoom["period_s"] is None
+    assert zoom["window_source"] == "fallback"
+    assert zoom["period_source"] is None and zoom["period_s"] is None
+    assert zoom["samples_per_period"] is None
     assert zoom["window_s"] == pytest.approx(0.01 * duration, rel=1e-6)
     assert any("FFT로 추정하지 못해" in n and "1%" in n for n in data["notes"])
     assert "period not found" in calls[0][3]
