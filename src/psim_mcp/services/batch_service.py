@@ -695,7 +695,8 @@ class BatchService:
     ):
         """상위 run의 .smv에서 파형을 읽어 그림 2(두 칸)를 그린다. 반환: notes.
 
-        - 아래 칸: 측정 구간 전체 min/max envelope(반투명 띠 + 테두리선).
+        - 아래 칸: 상위 최대 3개 run을 run마다 작은 그래프로, run 전체(t=0~끝) 구간별
+          최대·최소·평균(:meth:`_read_bottom_bins`). 띠는 칠하지 않는다.
         - 위 칸: 측정 구간 끝 마지막 약 5 스위칭 주기를 원본 해상도로, 평균은 점선.
           주기는 plot_window_s(확대 길이, 초)가 있으면 그 길이를 쓰고, 없으면 1위 run의 측정 구간
           끝 원본 데이터 FFT로 추정한다. 추정 실패 시 측정 구간 마지막 1%.
@@ -719,9 +720,9 @@ class BatchService:
             )
             return notes
         traces = []
-        x_label = "Time (s)"
-        any_reduced = False
         for rec in candidates:
+            # 측정 구간 정보(시간 폭 time_span·원본 점 수 source_points·Time 유무)를 읽는다.
+            # 확대 구간·주기 판정이 이 값을 쓴다(아래 칸 그림은 run 전체 구간 통계를 따로 읽음).
             res = await self._pool.call_one(
                 "extract_signals",
                 {
@@ -731,7 +732,6 @@ class BatchService:
                     "signals": [signal, "Time"],
                     "skip_ratio": skip_ratio,  # 측정 구간(기본 마지막 50%)만
                     "max_points": br.WAVEFORM_MAX_POINTS,
-                    # 등간격 추출은 고주파 리플을 에일리어싱하므로 구간별 min/max envelope
                     "reduce": "minmax",
                 },
             )
@@ -745,19 +745,19 @@ class BatchService:
                 )
                 continue
             data = res.get("data") or {}
-            t = (data.get("times") or {}).get(signal)
-            bridge_reduced = bool((data.get("reduced") or {}).get(signal))
-            # 브리지가 이미 줄였어야 하지만, 2000점을 넘으면 여기서도 같은 방식으로 줄인다.
-            y, t, server_reduced = br.minmax_envelope(y, t)
-            any_reduced = any_reduced or bridge_reduced or server_reduced
-            t = t or []
+            t = (data.get("times") or {}).get(signal) or []
             rank_text = f"#{rec['rank']} " if rec.get("rank") else ""
             label = f"{rank_text}run {rec['run']} ({br.describe_inputs(rec['inputs'])})"
+            short_label = (
+                f"{rank_text}run {rec['run']}, "
+                f"{br.describe_inputs(rec['inputs'], engineering=True)}"
+            )
             span = data.get("time_span")
             traces.append(
                 {
                     "rec": rec,
                     "label": label,
+                    "short_label": short_label,
                     "env_x": t[: len(y)],
                     "env_y": y,
                     "mean": br.metric_value(rec, signal, "mean"),
@@ -769,7 +769,7 @@ class BatchService:
             notes.append("읽을 수 있는 파형이 없어 그림 2(파형)는 건너뛰었습니다.")
             return notes
 
-        # 시간 축이 하나라도 없으면 모두 측정 구간 안 샘플 번호로 맞추고(축 섞임 방지) 확대는 생략.
+        # 시간 축이 하나라도 없으면 아래 칸을 샘플 번호로 맞추고(축 섞임 방지) 확대는 생략.
         has_time = all(len(tr["env_x"]) == len(tr["env_y"]) and tr["span"] for tr in traces)
         zoom: dict = {}
         if has_time:
@@ -779,14 +779,11 @@ class BatchService:
             notes.extend(zoom_notes)
             zoom_reduced = await self._read_zoom(traces, signal, skip_ratio, zoom, notes)
         else:
-            x_label = "sample (measurement window)"
-            for tr in traces:
-                tr["env_x"] = list(range(len(tr["env_y"])))
             notes.append("결과에 Time 곡선이 없어 그림 2 위 칸(확대 파형)은 그리지 않았습니다.")
             zoom_reduced = False
 
-        window = f"last {round((1 - skip_ratio) * 100)}%"
-        method = "min/max envelope" if any_reduced else "full resolution"
+        bottom = await self._read_bottom_bins(traces, signal, skip_ratio, has_time, zoom, notes)
+
         title = f"{signal} waveforms" + (
             f" (top {len(traces)} by {policy.rank.text})" if policy.rank else ""
         )
@@ -804,9 +801,8 @@ class BatchService:
                 f"({zoom['samples_per_period']:g} samples/period - zoom not drawn; "
                 "reduce PRINTSTEP)"
             )
-        envelope_title = f"{window} of run, {method} (band = min..max)"
         plot_traces = [
-            {k: tr.get(k) for k in ("label", "env_x", "env_y", "mean", "zoom_x", "zoom_y")}
+            {k: tr.get(k) for k in ("label", "short_label", "mean", "zoom_x", "zoom_y", "bins")}
             for tr in traces
         ]
         png = await asyncio.to_thread(
@@ -815,12 +811,108 @@ class BatchService:
             signal,
             title,
             zoom_title,
-            envelope_title,
-            x_label,
+            bottom["title"],
+            bottom["x_label"],
             zoom_message,
+            bottom["zoom_span"],
+            bottom["measure_start"],
+            bottom["xlim"],
         )
-        save("fig2_waveforms.png", "waveforms", png, {"zoom": zoom} if zoom else None)
+        extra: dict = {"zoom": zoom} if zoom else {}
+        extra["bottom"] = bottom["info"]
+        save("fig2_waveforms.png", "waveforms", png, extra)
         return notes
+
+    async def _read_bottom_bins(
+        self, traces, signal, skip_ratio, has_time: bool, zoom: dict, notes: list[str]
+    ) -> dict:
+        """그림 2 아래 칸: 상위 최대 BOTTOM_MAX_RUNS개 run의 run 전체(t=0~끝) 구간별 최대·최소·평균.
+
+        traces 앞쪽 항목에 ``bins``(``x``·``min``·``max``·``mean``)를 채우고, 그림 인자
+        (``title``·``x_label``·``zoom_span``·``measure_start``·``xlim``)와 응답용 ``info``를 반환한다.
+        확대 구간 음영은 위 칸과 같은 범위(1위 run 끝 - window_s ~ 끝), 측정 구간 시작은 1위 run
+        측정 구간 첫 시각. Time이 없으면 x는 run 전체 샘플 번호.
+        """
+        shown = traces[: br.BOTTOM_MAX_RUNS]
+        if len(traces) > br.BOTTOM_MAX_RUNS:
+            notes.append(
+                f"그림 2 아래 칸(run 전체 구간 통계)은 상위 {br.BOTTOM_MAX_RUNS}개 run만 "
+                f"그렸습니다(위 칸은 {len(traces)}개 모두)."
+            )
+        run_span = None
+        total_points = None
+        drawn: list[int] = []
+        for tr in shown:
+            res = await self._pool.call_one(
+                "extract_signals",
+                {
+                    "graph_file": tr["rec"]["smv_path"],
+                    "signals": [signal],
+                    "skip_ratio": 0.0,  # run 전체(기동 과도 포함)
+                    "reduce": "bins",
+                    "bins": br.BOTTOM_BINS,
+                },
+            )
+            data = (res.get("data") or {}) if res.get("success") else {}
+            stats = (data.get("bins") or {}).get(signal) or {}
+            mean = stats.get("mean") or []
+            if not mean or len(stats.get("min") or []) != len(mean):
+                err = None if res.get("success") else (res.get("error") or {}).get("message")
+                notes.append(
+                    f"run {tr['rec']['run']}의 run 전체 구간 통계를 읽지 못해 그림 2 아래 칸에서 "
+                    "뺐습니다" + (f"({err})." if err else ".")
+                )
+                continue
+            t = stats.get("t")
+            if has_time and t and len(t) == len(mean):
+                x = list(t)
+            else:  # 샘플 번호(구간 가운데)
+                x, start = [], 0
+                for c in stats.get("count") or [1] * len(mean):
+                    x.append(start + (c - 1) / 2.0)
+                    start += c
+            tr["bins"] = {"x": x, "min": stats["min"], "max": stats["max"], "mean": mean}
+            span = data.get("time_span")
+            if run_span is None and isinstance(span, list) and len(span) == 2:
+                run_span = (float(span[0]), float(span[1]))
+            if total_points is None:
+                total_points = (data.get("source_points") or {}).get(signal)
+            drawn.append(tr["rec"]["run"])
+
+        zoom_span = measure_start = xlim = None
+        if has_time and run_span:
+            first = traces[0]
+            measure_start = float(first["span"][0])
+            window = zoom.get("window_s") if zoom.get("period_reliable") is not False else None
+            if window and first.get("zoom_x"):
+                end = float(first["span"][1])
+                zoom_span = (end - float(window), end)
+            xlim = run_span
+            title = br.bottom_title_text(run_span[0], run_span[1], window if zoom_span else None)
+            x_label = "Time (s)"
+        else:
+            if total_points:
+                measure_start = float(int(total_points * skip_ratio))
+            title = (
+                f"full run ({total_points or '?'} samples, no Time curve)\n"
+                f"per-bin max/min/mean (~{br.BOTTOM_BINS} bins) - envelope, not a waveform"
+            )
+            x_label = "sample (full run)"
+        info = {
+            "runs": drawn,
+            "bins": br.BOTTOM_BINS,
+            "time_span": list(run_span) if run_span else None,
+            "measurement_start_s": measure_start if has_time and run_span else None,
+            "zoom_span_s": list(zoom_span) if zoom_span else None,
+        }
+        return {
+            "title": title,
+            "x_label": x_label,
+            "zoom_span": zoom_span,
+            "measure_start": measure_start,
+            "xlim": xlim,
+            "info": info,
+        }
 
     async def _zoom_window(
         self,

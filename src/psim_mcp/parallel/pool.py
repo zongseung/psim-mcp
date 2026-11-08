@@ -311,6 +311,23 @@ class MockWorker:
         wanted = [k for k in full if not names or k in names]
         # 브리지와 같게: Time을 요청하지 않았고 시간 범위도 없으면 times를 채우지 않는다.
         has_times = "Time" in wanted or t_start is not None or t_end is not None
+        if params.get("reduce") == "bins":
+            from psim_mcp.services.batch_report import bin_stats
+
+            bins = int(params.get("bins", 1000))
+            stats = {
+                name: bin_stats(full[name], full["Time"], bins) for name in wanted if name != "Time"
+            }
+            data_bins: dict[str, Any] = {
+                "bins": stats,
+                "source_points": {name: len(full[name]) for name in stats},
+                "time_span": [full["Time"][0], full["Time"][-1]] if full["Time"] else None,
+                "reduce": "bins",
+                "signal_names": list(stats),
+                "point_count": len(next(iter(stats.values()), {}).get("mean", [])),
+                "graph_file": graph_file,
+            }
+            return {"success": True, "data": data_bins}
         if minmax:
             from psim_mcp.services.batch_report import minmax_envelope
 

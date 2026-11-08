@@ -212,6 +212,47 @@ def test_bridge_extract_rejects_unknown_reduce(monkeypatch, tmp_path):
     assert not res["success"] and res["error"]["code"] == "INVALID_INPUT"
 
 
+def test_bridge_extract_bins_full_run_mean_and_response_size(monkeypatch, tmp_path):
+    """reduce="bins": hires 회로와 같은 100,000점 run 전체 → 구간 1000개, 응답 한 줄 크기 확인."""
+    import json
+
+    from psim_mcp.bridge import STREAM_LIMIT
+
+    n = 100_000
+    # 기동 과도(지수 수렴) + 고주파 삼각파
+    y = [5.0 * (1 - math.exp(-i / 8000)) + v - 5.0 for i, v in enumerate(_hf_triangle(n))]
+    t = [i * 5e-6 for i in range(n)]
+    _fake_psim(monkeypatch, [_Curve("Time", t), _Curve("I(L1)", y), _Curve("Vo1", y)])
+    smv = tmp_path / "result.smv"
+    smv.write_bytes(b"x")
+    res = bridge_script.handle_extract_signals(
+        {
+            "graph_file": str(smv),
+            "signals": ["I(L1)"],
+            "skip_ratio": 0.0,
+            "reduce": "bins",
+            "bins": br.BOTTOM_BINS,
+        }
+    )
+    assert res["success"], res
+    data = res["data"]
+    assert data["reduce"] == "bins" and list(data["bins"]) == ["I(L1)"]  # Time·Vo1 없음
+    b = data["bins"]["I(L1)"]
+    assert len(b["mean"]) == len(b["t"]) == br.BOTTOM_BINS == data["point_count"]
+    assert data["source_points"] == {"I(L1)": n} and data["time_span"] == [0.0, t[-1]]
+    assert b["t"][0] == pytest.approx((t[0] + t[99]) / 2)  # 첫 구간 = 0~99번 점
+    assert br.bins_mean(b) == pytest.approx(math.fsum(y) / n, abs=1e-9)
+    assert max(b["max"]) == round(max(y), 9) and min(b["min"]) == round(min(y), 9)
+    line = json.dumps(res, ensure_ascii=False)
+    assert len(line.encode("utf-8")) < 150_000 < STREAM_LIMIT  # 실측 약 100 KB
+    # 기본 동작은 그대로(reduce 없음 = stride), bins 값이 틀리면 거부
+    assert "bins" not in bridge_script.handle_extract_signals({"graph_file": str(smv)})["data"]
+    bad = bridge_script.handle_extract_signals(
+        {"graph_file": str(smv), "reduce": "bins", "bins": 0}
+    )
+    assert not bad["success"] and bad["error"]["code"] == "INVALID_INPUT"
+
+
 def test_report_module_uses_figure_api_not_pyplot():
     src = Path(br.__file__).read_text(encoding="utf-8")
     assert "pyplot" not in src.replace("pyplot 전역", "")
@@ -496,7 +537,14 @@ async def test_waveform_uses_measurement_window_and_point_cap(env, monkeypatch):
         rank_by="I(L1).ripple",
         plot=True,
     )
-    # 상위 3개 .smv만: envelope 3번 + FFT 1번(1위 run) + 확대 구간 3번
+    # 아래 칸: 상위 3개 run 전체(skip_ratio 0) 구간 통계, rank_by 신호만
+    bins = [p for p in seen if p.get("reduce") == "bins"]
+    assert len(bins) == 3
+    for p in bins:
+        assert p["skip_ratio"] == 0.0 and p["signals"] == ["I(L1)"]
+        assert p["bins"] == br.BOTTOM_BINS and "t_start" not in p
+    seen = [p for p in seen if p.get("reduce") != "bins"]
+    # 상위 3개 .smv만: 측정 구간 3번 + FFT 1번(1위 run) + 확대 구간 3번
     assert len(seen) == 7
     for p in seen:
         assert p["skip_ratio"] == 0.5
@@ -512,9 +560,11 @@ async def test_waveform_uses_measurement_window_and_point_cap(env, monkeypatch):
     zoom = [p for p in seen if p.get("max_points") == br.ZOOM_MAX_POINTS]
     assert len(zoom) == 3 and all("t_start" in p for p in zoom)
     assert [p["graph_file"] for p in zoom] == [p["graph_file"] for p in envelope]
+    assert [p["graph_file"] for p in bins] == [p["graph_file"] for p in envelope]
 
 
-async def test_waveform_caption_says_min_max_envelope(env, monkeypatch):
+async def test_waveform_bottom_is_full_run_bins_per_run(env, monkeypatch):
+    """아래 칸: run 전체(t=0부터) 구간 통계, 확대 음영 = 위 칸 범위, 측정 구간 시작 표시."""
     app, cfg, sch = env
     calls: list[tuple] = []
     original = br.render_waveform_plot
@@ -533,22 +583,82 @@ async def test_waveform_caption_says_min_max_envelope(env, monkeypatch):
         plot=True,
     )
     assert len(calls) == 1
-    traces, signal, title, zoom_title, envelope_title, x_label, _ = calls[0]
-    assert "min/max envelope" in envelope_title and x_label == "Time (s)"
+    traces, _, _, zoom_title, bottom_title, x_label, zoom_message = calls[0][:7]
+    zoom_span, measure_start, xlim = calls[0][7:]
+    assert x_label == "Time (s)" and zoom_message is None
     assert "full resolution" in zoom_title
-    for tr in traces:
-        assert len(tr["env_y"]) <= br.WAVEFORM_MAX_POINTS
-        assert len(tr["env_x"]) == len(tr["env_y"])
-    # mock 파형(리플 = summary ripple)의 띠 두께가 표의 리플 값과 같다(띠로 묶어도 그대로)
+    dt, n = pool_mod.MOCK_WAVE_DT, pool_mod.MOCK_WAVE_POINTS
+    run_end = (n - 1) * dt
+    # 범위: run 전체(t=0부터 끝까지)
+    assert xlim == (0.0, pytest.approx(run_end))
+    wave = next(p for p in res["data"]["plots"] if p["kind"] == "waveforms")
+    window = wave["zoom"]["window_s"]
+    # 제목: 두 줄, 공학 표기, 위 칸 대비 배율, envelope임을 명시
+    first, second = bottom_title.split("\n")
+    ratio = f"{run_end / window:.3g}"
+    assert first == f"full run 0 – {br.eng(run_end, 's')} ({ratio}× longer time span than top)"
+    assert "per-bin max/min/mean" in second and "not a waveform" in second
+    # 측정 구간 시작 = 앞 50% 다음 첫 시각
+    assert measure_start == pytest.approx(int(n * 0.5) * dt)
+    # 확대 음영 = 위 칸 범위(1위 run 끝 기준 window_s)
+    assert zoom_span[1] == pytest.approx(run_end)
+    assert zoom_span[1] - zoom_span[0] == pytest.approx(window)
+    assert traces[0]["zoom_x"][0] + zoom_span[1] == pytest.approx(zoom_span[0], abs=dt)
     rows = {r["run"]: r for r in res["data"]["rows"]}
-    for tr in traces:
-        run = int(tr["label"].split("run ")[1].split()[0])
+    runs = [int(t["label"].split("run ")[1].split()[0]) for t in traces]
+    assert wave["bottom"] == {
+        "runs": runs,
+        "bins": br.BOTTOM_BINS,
+        "time_span": [0.0, pytest.approx(run_end)],
+        "measurement_start_s": pytest.approx(measure_start),
+        "zoom_span_s": [pytest.approx(zoom_span[0]), pytest.approx(zoom_span[1])],
+    }
+    for tr, run in zip(traces, runs):
+        b = tr["bins"]
+        rank = rows[run]["rank"]
+        assert tr["short_label"].startswith(f"#{rank} run {run}, Lx=")
+        assert len(b["x"]) == len(b["min"]) == len(b["max"]) == len(b["mean"])
+        assert len(b["x"]) == br.BOTTOM_BINS
+        assert b["x"][0] < 2 * n * dt / br.BOTTOM_BINS  # 첫 구간이 t=0에서 시작
+        assert all(lo <= m <= hi for lo, m, hi in zip(b["min"], b["mean"], b["max"]))
+        # 측정 구간 안 구간들: 최대-최소 = 표의 리플, 구간 평균(점 수 같음) = 표의 평균
+        inside = [k for k, x in enumerate(b["x"]) if x >= measure_start]
         ripple = rows[run]["I(L1).ripple"]
-        assert max(tr["env_y"]) - min(tr["env_y"]) == pytest.approx(ripple, rel=1e-4)
-        _, lo, hi = br.envelope_band(tr["env_x"], tr["env_y"])
-        assert max(hi) - min(lo) == pytest.approx(ripple, rel=1e-4)
+        peak = max(b["max"][k] for k in inside) - min(b["min"][k] for k in inside)
+        assert peak == pytest.approx(ripple, rel=1e-4)
+        mean = sum(b["mean"][k] for k in inside) / len(inside)
+        assert mean == pytest.approx(rows[run]["I(L1).mean"], rel=1e-6)
         # 위 칸 점선 = 그 run의 평균
         assert tr["mean"] == pytest.approx(rows[run]["I(L1).mean"])
+
+
+async def test_waveform_bottom_caps_at_three_runs_with_note(env, monkeypatch):
+    app, cfg, sch = env
+    calls: list[tuple] = []
+    original = br.render_waveform_plot
+
+    def spy(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(br, "render_waveform_plot", spy)
+    res, _ = await _call_raw(
+        app,
+        schematic_path=str(sch),
+        conditions=[{"Lx": v} for v in _LX[:6]],
+        workers=2,
+        rank_by="I(L1).ripple",
+        top_k=5,
+        plot=True,
+    )
+    traces = calls[0][0]
+    assert len(traces) == 5  # 위 칸은 5개 모두
+    assert [bool(tr.get("bins")) for tr in traces] == [True, True, True, False, False]
+    fig = br.build_waveform_figure(*calls[0])
+    assert len(fig.axes) == 1 + br.BOTTOM_MAX_RUNS
+    assert any("상위 3개 run만" in n and "5개 모두" in n for n in res["data"]["notes"])
+    wave = next(p for p in res["data"]["plots"] if p["kind"] == "waveforms")
+    assert len(wave["bottom"]["runs"]) == 3 and wave["bytes"] <= br.IMAGE_MAX_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +740,13 @@ def _fig_traces(k: int = 3) -> list[dict]:
             "zoom_x": [(j - 200) * 1e-6 for j in range(201)],
             "zoom_y": _triangle(201, 40, mean=5.0, ripple=1.0 + i),
             "mean": 5.0 + 0.01 * i,
+            "short_label": f"#{i + 1} run {i}, Lx={i + 1}m",
+            "bins": {
+                "x": [j * 1e-4 for j in range(1000)],
+                "min": [4.0 - i - 2.0 * math.exp(-j / 50) for j in range(1000)],
+                "max": [6.0 + i + 3.0 * math.exp(-j / 50) for j in range(1000)],
+                "mean": [5.0 + math.exp(-j / 50) for j in range(1000)],
+            },
         }
         for i in range(k)
     ]
@@ -640,37 +757,132 @@ def test_waveform_figure_legend_patch_colors_match_data():
     from matplotlib.patches import Patch
 
     fig = br.build_waveform_figure(_fig_traces(3), "I(L1)", "t", "zoom", "env")
-    ax_zoom, ax_env = fig.axes[:2]
+    ax_zoom, *bottom = fig.axes
     legend = ax_zoom.get_legend()
     handles = legend.legend_handles
     assert len(handles) == 3 and all(isinstance(h, Patch) for h in handles)
     assert [t.get_text() for t in legend.get_texts()] == ["#1 run 0", "#2 run 1", "#3 run 2"]
 
-    def by_gid(ax, gid):
-        found = [a for a in ax.get_children() if a.get_gid() == gid]
-        assert len(found) == 1, gid
-        return found[0]
-
     for i, h in enumerate(handles):
         color = to_rgb(br.trace_color(i))
         assert to_rgb(h.get_facecolor()) == color and to_rgb(h.get_edgecolor()) == color
-        assert to_rgb(by_gid(ax_zoom, f"zoom{i}").get_color()) == color
-        mean_line = by_gid(ax_zoom, f"mean{i}")
+        assert to_rgb(_by_gid(ax_zoom, f"zoom{i}").get_color()) == color
+        mean_line = _by_gid(ax_zoom, f"mean{i}")
         assert to_rgb(mean_line.get_color()) == color and mean_line.get_linestyle() == ":"
-        band = by_gid(ax_env, f"band{i}")
-        assert to_rgb(tuple(band.get_facecolor()[0][:3])) == color
-        assert band.get_facecolor()[0][3] == pytest.approx(br.ENVELOPE_ALPHA)
-        for edge in ("edge_hi", "edge_lo"):
-            assert to_rgb(by_gid(ax_env, f"{edge}{i}").get_color()) == color
-    assert ax_zoom.get_ylabel() == "I(L1) [A]" and ax_env.get_ylabel() == "I(L1) [A]"
+    assert ax_zoom.get_ylabel() == "I(L1) [A]"
+    assert len(bottom) == 3 and all(ax.get_ylabel() == "I(L1) [A]" for ax in bottom)
 
 
-def test_envelope_band_keeps_peak_to_peak():
-    y = _hf_triangle(2000)
-    x = list(range(2000))
-    bx, lo, hi = br.envelope_band(x, y)
-    assert len(bx) == 500 and max(hi) == max(y) and min(lo) == min(y)
-    assert br.envelope_band([], []) == ([], [], [])
+def _by_gid(ax, gid):
+    found = [a for a in ax.get_children() if a.get_gid() == gid]
+    assert len(found) == 1, gid
+    return found[0]
+
+
+def test_waveform_bottom_one_subplot_per_run_shared_axes_and_colors():
+    from matplotlib.colors import to_rgb
+
+    traces = _fig_traces(3)
+    fig = br.build_waveform_figure(
+        traces,
+        "I(L1)",
+        "t",
+        "zoom",
+        "full run\nbins",
+        "Time (s)",
+        None,
+        (0.0989, 0.0999),
+        0.05,
+        (0.0, 0.0999),
+    )
+    ax_zoom, *bottom = fig.axes
+    assert len(bottom) == 3
+    for j, ax in enumerate(bottom):
+        # 겹쳐 그리지 않음: 그래프마다 그 run의 선 3종만
+        gids = sorted(ln.get_gid() for ln in ax.lines if (ln.get_gid() or "").startswith("bin_"))
+        assert gids == [f"bin_max{j}", f"bin_mean{j}", f"bin_min{j}"]
+        color = to_rgb(br.trace_color(j))
+        for kind in ("max", "min", "mean"):
+            line = _by_gid(ax, f"bin_{kind}{j}")
+            assert to_rgb(line.get_color()) == color and line.get_linestyle() == "-"
+        # 평균은 굵게, 최대·최소는 얇게. 띠(칠하기) 없음
+        mean_w = _by_gid(ax, f"bin_mean{j}").get_linewidth()
+        assert mean_w > _by_gid(ax, f"bin_max{j}").get_linewidth()
+        assert not [c for c in ax.collections if "band" in (c.get_gid() or "")]
+        label = _by_gid(ax, f"run_label{j}")
+        assert label.get_text() == traces[j]["short_label"]
+        assert to_rgb(label.get_color()) == color
+        # 확대 구간 음영(위 칸 범위)·측정 구간 시작 점선
+        shade = _by_gid(ax, f"zoom_shade{j}")
+        # axvspan: matplotlib 3.9+는 Rectangle(x는 데이터 좌표)
+        x0, x1 = shade.get_x(), shade.get_x() + shade.get_width()
+        assert x0 == pytest.approx(0.0989) and x1 == pytest.approx(0.0999)
+        measure = _by_gid(ax, f"measure{j}")
+        assert list(measure.get_xdata()) == [0.05, 0.05] and measure.get_linestyle() == "--"
+    # 라벨은 첫 그래프에만
+    assert _by_gid(bottom[0], "zoom_label").get_text() == "zoomed above (1 ms)"
+    assert "measurement window" in _by_gid(bottom[0], "measure_label").get_text()
+    for ax in bottom[1:]:
+        assert not [a for a in ax.get_children() if a.get_gid() in ("zoom_label", "measure_label")]
+    # y·x축 공유, x 범위 = run 전체, 위 칸과는 따로
+    for ax in bottom[1:]:
+        assert ax.get_shared_y_axes().joined(bottom[0], ax)
+        assert ax.get_shared_x_axes().joined(bottom[0], ax)
+        assert ax.get_ylim() == bottom[0].get_ylim()
+    assert bottom[0].get_xlim() == pytest.approx((0.0, 0.0999))
+    assert not ax_zoom.get_shared_x_axes().joined(ax_zoom, bottom[0])
+    # 아래 그래프 사이는 좁게(BOTTOM_GAP), 위 칸~아래 묶음 사이는 넓게, 높이는 같게
+    pos = [ax.get_position() for ax in bottom]
+    for a, b in zip(pos, pos[1:]):
+        assert a.y0 - b.y1 == pytest.approx(br.BOTTOM_GAP, abs=1e-6)
+        assert a.height == pytest.approx(b.height)
+    assert ax_zoom.get_position().y0 - pos[0].y1 > 3 * br.BOTTOM_GAP
+    # 마지막 그래프에만 x축 글자
+    assert bottom[-1].get_xlabel() == "Time (s)" and bottom[0].get_xlabel() == ""
+    assert bottom[0].title.get_text() == "full run\nbins"
+
+
+def test_waveform_bottom_skips_traces_without_bins_and_caps_three():
+    traces = _fig_traces(5)
+    traces[1].pop("bins")
+    fig = br.build_waveform_figure(traces, "I(L1)", "t", "zoom", "env")
+    # 앞 3개 중 bins가 있는 0·2만, 색 번호는 순위 그대로
+    assert len(fig.axes) == 3
+    assert _by_gid(fig.axes[2], "bin_mean2")
+    png = br.render_waveform_plot(_fig_traces(3), "I(L1)", "t", "zoom", "a\nb")
+    assert len(png) <= br.IMAGE_MAX_BYTES
+
+
+def test_bin_stats_matches_bridge_and_preserves_mean():
+    rnd = random.Random(7)
+    y = [math.sin(i / 13.0) + rnd.uniform(-0.5, 0.5) for i in range(12_345)]
+    t = [i * 1e-6 for i in range(12_345)]
+    for bins in (1, 7, 1000, 20_000):
+        server = br.bin_stats(y, t, bins)
+        assert server == bridge_script._bin_stats(y, t, bins)
+        assert len(server["mean"]) == min(bins, len(y)) and sum(server["count"]) == len(y)
+        # 구간 평균의 점 수 가중 평균 = 원본 평균
+        assert br.bins_mean(server) == pytest.approx(sum(y) / len(y), abs=1e-9)
+        assert min(server["min"]) == round(min(y), 9) and max(server["max"]) == round(max(y), 9)
+    no_t = br.bin_stats(y, None, 10)
+    assert no_t["t"] is None and no_t == bridge_script._bin_stats(y, None, 10)
+    assert br.bin_stats([], None, 10)["mean"] == []
+    assert br.bins_mean({"mean": [], "count": []}) is None
+
+
+def test_bottom_title_text():
+    assert br.bottom_title_text(0.0, 0.5, 0.001) == (
+        "full run 0 – 500 ms (500× longer time span than top)\n"
+        "per-bin max/min/mean (~1000 bins) - envelope, not a waveform"
+    )
+    assert br.bottom_title_text(0.0, 0.5, 0.249995).startswith("full run 0 – 500 ms (2× longer")
+    assert br.bottom_title_text(0.0, 5.0, None).split("\n")[0] == "full run 0 – 5 s"
+
+
+def test_describe_inputs_engineering():
+    assert br.describe_inputs({"Lx": 0.005000000000000001}, engineering=True) == "Lx=5m"
+    assert br.describe_inputs({"Lx": 0.004590909090909092}, engineering=True) == "Lx=4.59m"
+    assert br.describe_inputs({"Lx": 0.005}) == "Lx=0.005"  # 범례는 기존 그대로
 
 
 @pytest.mark.parametrize("value", [0, -1, "1m", True, float("nan"), float("inf")])
@@ -735,7 +947,7 @@ async def test_zoom_uses_fft_period_and_reports_samples(env, monkeypatch):
     assert zoom["window_s"] == pytest.approx(200e-6, rel=5e-3)
     assert zoom["low_resolution"] is False
     assert zoom["window_samples"] == pytest.approx(201, abs=2)
-    traces, signal, title, zoom_title, envelope_title, _, _ = calls[0]
+    traces, signal, title, zoom_title = calls[0][:4]
     assert "low resolution" not in title
     assert "5 switching periods" in zoom_title and "40 samples/period" in zoom_title
     assert "full resolution" in zoom_title
@@ -766,10 +978,11 @@ async def test_zoom_plot_window_s_sets_length_but_fft_still_runs(env, monkeypatc
     assert zoom["period_s"] == pytest.approx(40e-6, rel=5e-3)
     assert zoom["samples_per_period"] == pytest.approx(40, rel=5e-3)
     assert zoom["low_resolution"] is False
-    # envelope 3 + FFT 1 + 확대 3
+    # 측정 구간 3 + FFT 1 + 확대 3 (+ 아래 칸 구간 통계 3)
     assert sum(p.get("max_points") == 2 * br.FFT_MAX_POINTS for p in seen) == 1
-    assert len(seen) == 7
-    traces, _, title, zoom_title, _, _, _ = calls[0]
+    assert len([p for p in seen if p.get("reduce") != "bins"]) == 7
+    assert len([p for p in seen if p.get("reduce") == "bins"]) == 3
+    traces, _, title, zoom_title = calls[0][:4]
     assert "plot_window_s" in zoom_title and "40 samples/period" in zoom_title
     assert "low resolution" not in title
     for tr in traces:

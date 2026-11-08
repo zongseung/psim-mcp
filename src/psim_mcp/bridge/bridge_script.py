@@ -939,11 +939,63 @@ def _extract_minmax(curves, signal_names, skip_ratio, max_points, index_range=No
     return signals, times, reduced, source_points, time_span
 
 
+def _bin_stats(values, times, bins):
+    """구간(bin)별 통계. 점을 약 ``bins``개 구간으로 나눠 구간마다 최대·최소·평균·점 수·중앙 시각.
+
+    반환: {"t": [구간 첫·끝 샘플 시각의 중간] 또는 None, "min", "max", "mean", "count"}.
+    평균은 구간 안 샘플의 산술 평균이라 count 가중 평균 = 전체 산술 평균이다.
+    psim_mcp.services.batch_report.bin_stats와 같은 알고리즘(브리지는 psim_mcp를 import할 수
+    없어 복사본을 둔다, Python 3.8 호환).
+    """
+    n = len(values)
+    use_t = times is not None and len(times) == n
+    bins = max(1, min(int(bins), n)) if n else 0
+    out = {"t": [] if use_t else None, "min": [], "max": [], "mean": [], "count": []}
+    for k in range(bins):
+        lo = k * n // bins
+        hi = (k + 1) * n // bins
+        if hi <= lo:
+            continue
+        seg = values[lo:hi]
+        out["min"].append(round(min(seg), 9))
+        out["max"].append(round(max(seg), 9))
+        out["mean"].append(round(math.fsum(seg) / len(seg), 9))
+        out["count"].append(hi - lo)
+        if use_t:
+            out["t"].append(round((times[lo] + times[hi - 1]) / 2.0, 12))
+    return out
+
+
+def _extract_bins(curves, signal_names, skip_ratio, bins, index_range=None):
+    """reduce="bins": 신호마다 구간별 최대·최소·평균(:func:`_bin_stats`), 원본 점 수, 시간 폭."""
+    sliced = {}
+    time_vals = None
+    for curve in curves:
+        if curve.Name == "Time":
+            # 시간 축은 요청과 무관하게 읽는다(구간 중앙 시각에 필요).
+            time_vals = _window_values(list(curve.Values[: curve.Rows]), skip_ratio, index_range)
+            continue
+        if signal_names and curve.Name not in signal_names:
+            continue
+        values = list(curve.Values[: curve.Rows])
+        sliced[curve.Name] = _window_values(values, skip_ratio, index_range)
+    out, source_points = {}, {}
+    for name, values in sliced.items():
+        out[name] = _bin_stats(values, time_vals, bins)
+        source_points[name] = len(values)
+    time_span = None
+    if time_vals:
+        time_span = [round(time_vals[0], 12), round(time_vals[-1], 12)]
+    return out, source_points, time_span
+
+
 def handle_extract_signals(params):
     """Extract raw signal data from the last simulation or a graph file.
 
     reduce: "stride"(기본, 등간격 추출 — 기존 동작) | "minmax"(구간별 최솟값·최댓값 envelope,
-    응답에 신호별 times·reduced·source_points와 구간 time_span 추가, Time 곡선은 signals에서 빠짐).
+    응답에 신호별 times·reduced·source_points와 구간 time_span 추가, Time 곡선은 signals에서 빠짐)
+    | "bins"(구간 약 ``bins``개(기본 1000)별 최대·최소·평균·점 수·중앙 시각을 응답 ``bins``에,
+    source_points·time_span 추가. Time 곡선은 따로 돌려주지 않음).
     t_start / t_end(선택, 초): 앞 skip_ratio를 뺀 구간 안에서 Time이 이 범위인 점만 쓴다
     (확대 그림용 원본 구간). 둘 다 없으면 기존 동작과 같다.
     """
@@ -952,13 +1004,21 @@ def handle_extract_signals(params):
     skip_ratio = float(params.get("skip_ratio", 0.0))
     max_points = int(params.get("max_points", 2000))
     reduce_mode = params.get("reduce") or "stride"
-    if reduce_mode not in ("stride", "minmax"):
-        return _error("INVALID_INPUT", "reduce는 stride 또는 minmax여야 합니다: %s" % reduce_mode)
+    if reduce_mode not in ("stride", "minmax", "bins"):
+        return _error(
+            "INVALID_INPUT", "reduce는 stride·minmax·bins 중 하나여야 합니다: %s" % reduce_mode
+        )
     try:
         t_start = _opt_float(params.get("t_start"))
         t_end = _opt_float(params.get("t_end"))
     except (TypeError, ValueError):
         return _error("INVALID_INPUT", "t_start·t_end는 숫자(초)여야 합니다.")
+    try:
+        bins = int(params.get("bins", 1000))
+    except (TypeError, ValueError):
+        bins = 0
+    if reduce_mode == "bins" and bins < 1:
+        return _error("INVALID_INPUT", "bins는 1 이상 정수여야 합니다.")
 
     p = _get_psim()
 
@@ -982,6 +1042,22 @@ def handle_extract_signals(params):
         index_range = _time_index_range(curves, skip_ratio, t_start, t_end)
         if index_range is None:
             return _error("NO_TIME_CURVE", "시간 범위를 쓰려면 결과에 Time 곡선이 있어야 합니다.")
+
+    if reduce_mode == "bins":
+        stats, source_points, time_span = _extract_bins(
+            curves, signal_names, skip_ratio, bins, index_range
+        )
+        return _success(
+            {
+                "bins": stats,
+                "source_points": source_points,
+                "time_span": time_span,
+                "reduce": "bins",
+                "signal_names": list(stats.keys()),
+                "point_count": len(next(iter(stats.values()), {}).get("mean", [])),
+                "graph_file": graph_file,
+            }
+        )
 
     if reduce_mode == "minmax":
         signals, times, reduced, source_points, time_span = _extract_minmax(

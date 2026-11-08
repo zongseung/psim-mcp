@@ -117,8 +117,12 @@ def test_waveform_figure_zoom_message_replaces_zoom_panel():
     traces = [
         {
             "label": "#1 run 0",
-            "env_x": [0.0, 1.0, 2.0],
-            "env_y": [1.0, 2.0, 1.5],
+            "bins": {
+                "x": [0.0, 1.0, 2.0],
+                "min": [1.0, 1.2, 1.4],
+                "max": [2.0, 2.1, 1.9],
+                "mean": [1.5, 1.6, 1.7],
+            },
             "mean": 1.5,
             "zoom_x": [-1e-6, 0.0],
             "zoom_y": [1.0, 2.0],
@@ -133,8 +137,8 @@ def test_waveform_figure_zoom_message_replaces_zoom_panel():
     ]
     assert not [ln for ln in ax_zoom.lines if (ln.get_gid() or "").startswith(("zoom", "mean"))]
     assert not any(gl.get_visible() for gl in ax_zoom.get_xgridlines())
-    # 아래 칸 띠와 범례는 그대로
-    assert any(c.get_gid() == "band0" for c in fig.axes[1].collections)
+    # 아래 칸(run별 구간 통계)과 범례는 그대로
+    assert any(ln.get_gid() == "bin_mean0" for ln in fig.axes[1].lines)
     assert ax_zoom.get_legend() is not None
 
 
@@ -219,7 +223,9 @@ async def test_circuit_frequency_is_used_before_fft(env, monkeypatch):
     assert zoom["window_source"] == "circuit" and zoom["window_s"] == pytest.approx(200e-6)
     # FFT 호출 없음: envelope 3 + 확대 3
     assert not any(p.get("max_points") == 2 * br.FFT_MAX_POINTS for p in seen)
-    assert len(seen) == 6
+    # 측정 구간 3 + 확대 3, 아래 칸 run 전체 구간 통계 3
+    assert len([p for p in seen if p.get("reduce") != "bins"]) == 6
+    assert len([p for p in seen if p.get("reduce") == "bins"]) == 3
     zoom_title = calls[0][3]
     assert "from circuit (G1.Frequency)" in zoom_title and "40 samples/period" in zoom_title
     assert "FFT" not in zoom_title
@@ -283,16 +289,20 @@ async def test_undersampled_skips_zoom_and_draws_envelope_only(env, monkeypatch,
     assert zoom["period_reliable"] is False
     assert zoom["window_s"] is None and zoom["window_source"] is None
     assert "window_samples" not in zoom
-    # 확대 구간 읽기·FFT 없음: envelope 3번만
-    assert len(seen) == 3 and all("t_start" not in p for p in seen)
-    traces, _, title, zoom_title, _, _, zoom_message = calls[0]
+    # 확대 구간 읽기·FFT 없음: 측정 구간 3번 + 아래 칸 run 전체 구간 통계 3번
+    assert all("t_start" not in p for p in seen)
+    assert len([p for p in seen if p.get("reduce") != "bins"]) == 3
+    assert len([p for p in seen if p.get("reduce") == "bins"]) == 3
+    traces, _, title, zoom_title, _, _, zoom_message, zoom_span, measure_start, _ = calls[0]
+    assert zoom_span is None  # 위 칸을 그리지 않으므로 음영도 없음
+    assert measure_start is not None
     assert "undersampled: 1.6 samples/period" in title
     assert zoom_message.startswith("undersampled: print interval 1 µs >= switching period 1.6 µs")
     assert zoom_title == (
         "zoom not drawn\nT = 1.6 µs from circuit (G1.Frequency), print interval 1 µs"
     )
     assert all(not tr.get("zoom_y") for tr in traces)
-    assert all(tr["env_y"] for tr in traces)  # 아래 칸 envelope는 그린다
+    assert all(tr["bins"]["mean"] for tr in traces)  # 아래 칸(run 전체 구간 통계)은 그린다
     notes = data["notes"]
     under = [n for n in notes if "PRINTSTEP" in n]
     assert len(under) == 1
@@ -402,8 +412,13 @@ def _traces(n=3):
     return [
         {
             "label": f"#{i + 1} run {10 + i} (Lx=0.00418182)",
-            "env_x": xs,
-            "env_y": [5 + 0.5 * ((k % 2) * 2 - 1) for k in range(200)],
+            "short_label": f"#{i + 1} run {10 + i}, Lx=4.18m",
+            "bins": {
+                "x": xs,
+                "min": [4.5] * 200,
+                "max": [5.5] * 200,
+                "mean": [5.0] * 200,
+            },
             "mean": 5.0,
             "zoom_x": [-1e-3 + k * 5e-6 for k in range(201)],
             "zoom_y": [5 + 0.5 * ((k // 20) % 2) for k in range(201)],
@@ -458,9 +473,12 @@ def test_waveform_titles_stay_inside_figure(zoom, reduced, message):
         "I(L1)",
         "I(L1) waveforms (top 3 by I(L1).ripple), low resolution: 19.9 samples/period",
         zoom_title,
-        "last 50% of run, min/max envelope (band = min..max)",
+        br.bottom_title_text(0.0, 0.5, None if message else 0.249995),
         "Time (s)",
         message,
+        None if message else (0.250005, 0.5),
+        0.25,
+        (0.0, 0.5),
     )
     ax_zoom, ax_env = fig.axes[:2]
     fig.canvas.draw()
@@ -477,7 +495,7 @@ def test_fit_titles_shrinks_only_when_needed():
     fig = br.build_waveform_figure(
         _traces(), "I(L1)", "t", BatchService._zoom_title(_zoom(), False), "env", "Time (s)"
     )
-    assert fig.axes[0].title.get_fontsize() == 9  # 짧은 제목은 원래 크기
+    assert fig.axes[0].title.get_fontsize() == 9.5  # 짧은 제목은 원래 크기
     fig = br.build_waveform_figure(
         _traces(),
         "I(L1)",
@@ -486,4 +504,4 @@ def test_fit_titles_shrinks_only_when_needed():
         "env",
         "Time (s)",
     )
-    assert fig.axes[0].title.get_fontsize() < 9
+    assert fig.axes[0].title.get_fontsize() < 9.5

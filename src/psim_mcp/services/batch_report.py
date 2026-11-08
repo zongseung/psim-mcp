@@ -2,8 +2,8 @@
 
 - :func:`build_top`: rank_by 순위 상위 k행 요약(run, 입력값, rank_by 값).
 - :func:`render_metric_plot`: 그림 1 — 조건-지표 그래프.
-- :func:`render_waveform_plot`: 그림 2 — 상위 run 파형 두 칸(위: 마지막 몇 주기 원본 해상도 확대,
-  아래: 측정 구간 전체 min/max envelope).
+- :func:`render_waveform_plot`: 그림 2 — 상위 run 파형(위: 마지막 몇 주기 원본 해상도 확대를
+  겹쳐 그림, 아래: run마다 작은 그래프로 run 전체 구간별 최대·최소·평균).
 - :func:`estimate_period`: 측정 구간 신호의 FFT 최대 성분으로 스위칭 주기 추정.
 
 그림은 MCP 서버(Python 3.12) 쪽에서 matplotlib **Figure 객체 API + Agg 캔버스**로 그린다
@@ -58,8 +58,11 @@ SWITCHING_FREQUENCY_PARAMS: dict[str, tuple[str, ...]] = {
 _DSP_PWM_PREFIX = "PSM_"
 _DSP_PWM_PARAM = "pwm_freq"
 SIMULATION_CONTROL_TYPE = "Simulation Control"
-ENVELOPE_ALPHA = 0.3
-_BAND_GROUPS = 500  # 아래 칸 띠: envelope 점을 이만큼 묶어 위·아래 경계를 만든다
+# 그림 2 아래 칸: run 전체(t=0~끝)를 약 BOTTOM_BINS개 구간으로 나눈 구간별 최대·최소·평균,
+# run마다 작은 그래프 하나(최대 BOTTOM_MAX_RUNS개, y·x축 공유).
+BOTTOM_BINS = 1000
+BOTTOM_MAX_RUNS = 3
+ZOOM_SHADE_ALPHA = 0.25  # 아래 칸에 위 칸 확대 구간을 표시하는 음영
 FIG_WIDTH_IN = 9.0  # dpi 100 → 가로 900 px
 FIG_DPI = 100
 _COLORS = ("#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b")
@@ -402,6 +405,44 @@ def minmax_envelope(
     return [values[i] for i in idx], t, reduced
 
 
+def bin_stats(values: list[float], times: list[float] | None, bins: int = BOTTOM_BINS) -> dict:
+    """구간(bin)별 최대·최소·평균·점 수·중앙 시각.
+
+    브리지 ``bridge_script._bin_stats``와 같은 알고리즘(테스트로 대조). 평균은 구간 안 샘플의
+    산술 평균이라 count 가중 평균 = 전체 산술 평균이다.
+    """
+    n = len(values)
+    use_t = times is not None and len(times) == n
+    bins = max(1, min(int(bins), n)) if n else 0
+    out: dict[str, Any] = {
+        "t": [] if use_t else None,
+        "min": [],
+        "max": [],
+        "mean": [],
+        "count": [],
+    }
+    for k in range(bins):
+        lo, hi = k * n // bins, (k + 1) * n // bins
+        if hi <= lo:
+            continue
+        seg = values[lo:hi]
+        out["min"].append(round(min(seg), 9))
+        out["max"].append(round(max(seg), 9))
+        out["mean"].append(round(math.fsum(seg) / len(seg), 9))
+        out["count"].append(hi - lo)
+        if use_t:
+            out["t"].append(round((times[lo] + times[hi - 1]) / 2.0, 12))
+    return out
+
+
+def bins_mean(stats: dict) -> float | None:
+    """구간 평균의 count 가중 평균(= 원본 산술 평균)."""
+    total = sum(stats.get("count") or [])
+    if not total:
+        return None
+    return math.fsum(m * c for m, c in zip(stats["mean"], stats["count"])) / total
+
+
 # ---------------------------------------------------------------------------
 # 그리기
 # ---------------------------------------------------------------------------
@@ -513,7 +554,7 @@ def build_metric_figure(
 
 
 def trace_color(i: int) -> str:
-    """그림 2에서 i번째(순위 순서) run의 색. 띠·선·범례가 모두 이 값을 쓴다."""
+    """그림 2에서 i번째(순위 순서) run의 색. 위 칸 선·아래 칸 선·범례가 모두 이 값을 쓴다."""
     return _COLORS[i % len(_COLORS)]
 
 
@@ -529,51 +570,44 @@ def eng(value: float, unit: str = "", digits: int = 3) -> str:
     return EngFormatter(unit=unit).format_eng(rounded)  # 단위까지 붙여 준다
 
 
-def envelope_band(x: list[float], y: list[float], groups: int = _BAND_GROUPS):
-    """envelope 점을 ``groups``개 묶음으로 나눠 (중앙 시각, 최솟값, 최댓값) 목록을 만든다.
-
-    묶음마다 최소·최대를 쓰므로 전체 최대·최소(띠 두께 = peak-to-peak)는 그대로다.
-    """
-    n = min(len(x), len(y))
-    if n == 0:
-        return [], [], []
-    groups = max(1, min(groups, n))
-    xs, lo, hi = [], [], []
-    for k in range(groups):
-        a, b = k * n // groups, (k + 1) * n // groups
-        if b <= a:
-            continue
-        seg = y[a:b]
-        xs.append((x[a] + x[b - 1]) / 2.0)
-        lo.append(min(seg))
-        hi.append(max(seg))
-    return xs, lo, hi
-
-
 def build_waveform_figure(
     traces: list[dict],
     signal: str,
     title: str,
     zoom_title: str,
-    envelope_title: str,
-    envelope_x_label: str = "Time (s)",
+    bottom_title: str,
+    bottom_x_label: str = "Time (s)",
     zoom_message: str | None = None,
+    zoom_span: tuple[float, float] | None = None,
+    measure_start: float | None = None,
+    bottom_xlim: tuple[float, float] | None = None,
 ):
-    """그림 2 Figure(두 칸). 테스트에서 범례·선·띠 색을 확인할 수 있게 PNG 변환과 분리했다.
+    """그림 2 Figure. 테스트에서 선·음영·색을 확인할 수 있게 PNG 변환과 분리했다.
 
-    traces(순위 순서) 항목: ``label``, ``env_x``·``env_y``(측정 구간 envelope), 선택 ``zoom_x``·
-    ``zoom_y``(확대 구간 원본, x는 run 끝 기준 상대 시간 초), ``mean``(점선, 없으면 생략).
-    zoom_message가 있으면 위 칸에는 파형 대신 그 문구만 쓴다(예: undersampled — 저장 간격이
-    스위칭 주기 이상이라 확대 파형이 의미 없음). 범례는 그대로 위 칸 오른쪽.
+    위 칸(한 개): traces(순위 순서)의 ``zoom_x``·``zoom_y``(확대 구간 원본, x는 run 끝 기준 상대
+    시간 초)를 겹쳐 그리고 ``mean``을 점선으로. zoom_message가 있으면 파형 대신 그 문구만 쓴다
+    (예: undersampled). 범례는 위 칸 오른쪽.
+
+    아래 칸: ``bins``(``x``·``min``·``max``·``mean``)가 있는 trace마다 작은 그래프 하나를 세로로
+    (앞에서부터 최대 :data:`BOTTOM_MAX_RUNS`개, 겹쳐 그리지 않음). y·x축 공유. 구간별 최대·최소는
+    얇은 실선, 구간별 평균은 굵은 선, 모두 그 run의 색(위 칸과 같은 색). 띠는 칠하지 않는다 —
+    띠는 존재하지 않는 파형처럼 보였다. 왼쪽 위에 ``short_label``(없으면 ``label``).
+    zoom_span(절대 시각 (시작, 끝))이 있으면 각 그래프에 반투명 음영(첫 그래프에만
+    "zoomed above (길이)" 라벨), measure_start가 있으면 세로 점선(첫 그래프에만
+    "measurement window" 라벨).
     """
     from matplotlib.patches import Patch
     from matplotlib.ticker import EngFormatter
+    from matplotlib.transforms import blended_transform_factory
 
-    fig = _new_figure(6.6)
-    ax_zoom, ax_env = fig.subplots(2, 1, gridspec_kw={"height_ratios": [3, 2]})
+    bottom = [(i, tr) for i, tr in enumerate(traces[:BOTTOM_MAX_RUNS]) if tr.get("bins")]
+    nb = len(bottom)
+    fig = _new_figure(4.4 + 1.55 * nb)
+    gs = fig.add_gridspec(1 + nb, 1, height_ratios=[3.0] + [1.25] * nb)
+    ax_zoom = fig.add_subplot(gs[0])
     ylabel = with_unit(signal, signal)
-    handles = []
-    # 1위가 맨 위에 보이도록 뒤에서부터 그린다. 범례는 순위 순서.
+
+    # 위 칸: 1위가 맨 위에 보이도록 뒤에서부터 그린다. 범례는 순위 순서.
     for i in reversed(range(len(traces))):
         tr = traces[i]
         color = trace_color(i)
@@ -582,17 +616,11 @@ def build_waveform_figure(
             ax_zoom.plot(zx, zy, color=color, linewidth=1.6 if i == 0 else 1.1, gid=f"zoom{i}")
         if tr.get("mean") is not None and not zoom_message:
             ax_zoom.axhline(tr["mean"], color=color, linestyle=":", linewidth=1.0, gid=f"mean{i}")
-        bx, blo, bhi = envelope_band(tr.get("env_x") or [], tr.get("env_y") or [])
-        if bx:
-            ax_env.fill_between(
-                bx, blo, bhi, color=color, alpha=ENVELOPE_ALPHA, linewidth=0, gid=f"band{i}"
-            )
-            ax_env.plot(bx, bhi, color=color, linewidth=1.2, gid=f"edge_hi{i}")
-            ax_env.plot(bx, blo, color=color, linewidth=1.2, gid=f"edge_lo{i}")
-    for i, tr in enumerate(traces):
-        handles.append(Patch(facecolor=trace_color(i), edgecolor=trace_color(i), label=tr["label"]))
-
-    ax_zoom.set_title(zoom_title, fontsize=9)
+    handles = [
+        Patch(facecolor=trace_color(i), edgecolor=trace_color(i), label=tr["label"])
+        for i, tr in enumerate(traces)
+    ]
+    ax_zoom.set_title(zoom_title, fontsize=9.5)
     if zoom_message:
         ax_zoom.text(
             0.5,
@@ -608,29 +636,140 @@ def build_waveform_figure(
         ax_zoom.set_xticks([])
         ax_zoom.set_yticks([])
     else:
-        ax_zoom.set_xlabel("time before end of run", fontsize=9)
+        ax_zoom.set_xlabel("time before end of run", fontsize=9.5)
         ax_zoom.xaxis.set_major_formatter(EngFormatter(unit="s"))
-        ax_zoom.set_ylabel(ylabel, fontsize=9)
-    ax_env.set_title(envelope_title, fontsize=9)
-    ax_env.set_xlabel(envelope_x_label, fontsize=9)
-    ax_env.set_ylabel(ylabel, fontsize=9)
-    for ax in (ax_zoom, ax_env):
-        if not (ax is ax_zoom and zoom_message):  # 문구만 쓴 위 칸에는 격자를 그리지 않는다
-            ax.grid(True, alpha=0.3)
-        ax.tick_params(labelsize=8)
+        ax_zoom.set_ylabel(ylabel, fontsize=9.5)
+        ax_zoom.grid(True, alpha=0.3)  # 문구만 쓴 위 칸에는 격자를 그리지 않는다
+    ax_zoom.tick_params(labelsize=8.5)
     legend = ax_zoom.legend(
         handles=handles,
-        fontsize=8,
+        fontsize=8.5,
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
         borderaxespad=0.0,
         title="dotted: mean",
     )
-    legend.get_title().set_fontsize(8)
+    legend.get_title().set_fontsize(8.5)
+
+    # 아래 칸: run마다 작은 그래프.
+    bottom_axes = []
+    first = None
+    label_box = {
+        "boxstyle": "round,pad=0.2",
+        "facecolor": "white",
+        "edgecolor": "none",
+        "alpha": 0.8,
+    }
+    for j, (i, tr) in enumerate(bottom):
+        ax = fig.add_subplot(gs[1 + j], sharex=first, sharey=first)
+        first = first or ax
+        bottom_axes.append(ax)
+        color = trace_color(i)
+        b = tr["bins"]
+        ax.plot(b["x"], b["max"], color=color, linewidth=0.7, gid=f"bin_max{i}")
+        ax.plot(b["x"], b["min"], color=color, linewidth=0.7, gid=f"bin_min{i}")
+        ax.plot(b["x"], b["mean"], color=color, linewidth=1.9, gid=f"bin_mean{i}")
+        if zoom_span is not None:
+            ax.axvspan(
+                zoom_span[0],
+                zoom_span[1],
+                facecolor="0.55",
+                edgecolor="0.35",
+                alpha=ZOOM_SHADE_ALPHA,
+                linewidth=0.8,
+                gid=f"zoom_shade{i}",
+            )
+        if measure_start is not None:
+            ax.axvline(measure_start, color="0.3", linestyle="--", linewidth=1.0, gid=f"measure{i}")
+        ax.text(
+            0.01,
+            0.94,
+            tr.get("short_label") or tr["label"],
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            fontweight="bold",
+            color=color,
+            bbox=label_box,
+            gid=f"run_label{i}",
+        )
+        ax.set_ylabel(ylabel, fontsize=8.5)
+        ax.tick_params(labelsize=8.5)
+        ax.grid(True, alpha=0.3)
+        if j == 0:
+            mixed = blended_transform_factory(ax.transData, ax.transAxes)
+            if zoom_span is not None:
+                length = eng(zoom_span[1] - zoom_span[0], "s")
+                ax.annotate(
+                    f"zoomed above ({length})",
+                    xy=((zoom_span[0] + zoom_span[1]) / 2.0, 0.55),
+                    xycoords=mixed,
+                    xytext=(0.985, 0.94),
+                    textcoords="axes fraction",
+                    ha="right",
+                    va="top",
+                    fontsize=8.5,
+                    bbox=label_box,
+                    arrowprops={"arrowstyle": "->", "color": "0.3", "linewidth": 0.8},
+                    gid="zoom_label",
+                )
+            if measure_start is not None:
+                ax.text(
+                    measure_start,
+                    0.06,
+                    " measurement window ->",
+                    transform=mixed,
+                    ha="left",
+                    va="bottom",
+                    fontsize=8.5,
+                    bbox=label_box,
+                    gid="measure_label",
+                )
+    bottom_title_artist = None
+    if bottom_axes:
+        bottom_title_artist = bottom_axes[0].set_title(bottom_title, fontsize=9.5)
+        if bottom_xlim is not None and bottom_xlim[1] > bottom_xlim[0]:
+            bottom_axes[0].set_xlim(*bottom_xlim)
+        for ax in bottom_axes[:-1]:
+            ax.tick_params(labelbottom=False)
+        last = bottom_axes[-1]
+        last.set_xlabel(bottom_x_label, fontsize=9.5)
+        if bottom_x_label.startswith("Time"):
+            last.xaxis.set_major_formatter(EngFormatter(unit="s"))
+
     suptitle = fig.suptitle(title, fontsize=11)
-    fig.tight_layout()
-    _fit_titles(fig, [suptitle, ax_zoom.title, ax_env.title])
+
+    def layout() -> None:
+        fig.tight_layout()
+        _stack_axes(bottom_axes)
+
+    layout()
+    _fit_titles(fig, [suptitle, ax_zoom.title, bottom_title_artist], relayout=layout)
     return fig
+
+
+BOTTOM_GAP = 0.012  # 아래 칸 run 그래프 사이 간격(그림 높이 비율)
+
+
+def _stack_axes(axes: list, gap: float = BOTTOM_GAP) -> None:
+    """tight_layout 뒤 아래 칸 그래프들을 좁은 간격으로 다시 쌓는다.
+
+    tight_layout은 위 칸~아래 묶음 사이에 필요한 간격(위 칸 x축 글자 + 아래 묶음 제목)을
+    gridspec의 모든 행 사이에 똑같이 넣어, run 그래프 사이가 크게 벌어졌다. 아래 묶음의 위·아래
+    끝은 그대로 두고 그 사이를 같은 높이로 나눈다(x축 글자는 마지막 그래프에만 있음).
+    """
+    if len(axes) < 2:
+        return
+    top = axes[0].get_position().y1
+    bottom = axes[-1].get_position().y0
+    height = (top - bottom - gap * (len(axes) - 1)) / len(axes)
+    if height <= 0:
+        return
+    for j, ax in enumerate(axes):
+        pos = ax.get_position()
+        y0 = top - (j + 1) * height - j * gap
+        ax.set_position([pos.x0, y0, pos.width, height])
 
 
 TITLE_MIN_FONTSIZE = 6.0
@@ -652,7 +791,7 @@ def text_inside_figure(fig, text) -> bool:
     )
 
 
-def _fit_titles(fig, texts, min_size: float = TITLE_MIN_FONTSIZE) -> None:
+def _fit_titles(fig, texts, min_size: float = TITLE_MIN_FONTSIZE, relayout=None) -> None:
     """그림 밖으로 나가는 제목은 글꼴을 0.5pt씩 줄여(최소 min_size) 그림 안에 맞춘다.
 
     제목은 축 가운데 정렬이라 축이 좁고(범례가 오른쪽 차지) 제목이 길면 왼쪽이 잘린다
@@ -671,32 +810,46 @@ def _fit_titles(fig, texts, min_size: float = TITLE_MIN_FONTSIZE) -> None:
                 shrunk = True
         if not shrunk:
             return
-        fig.tight_layout()
+        (relayout or fig.tight_layout)()
         fig.canvas.draw()
 
 
-def render_waveform_plot(
-    traces: list[dict],
-    signal: str,
-    title: str,
-    zoom_title: str,
-    envelope_title: str,
-    envelope_x_label: str = "Time (s)",
-    zoom_message: str | None = None,
-) -> bytes:
+def render_waveform_plot(*args, **kwargs) -> bytes:
     """그림 2 PNG. 인자는 :func:`build_waveform_figure`와 같다."""
-    fig = build_waveform_figure(
-        traces, signal, title, zoom_title, envelope_title, envelope_x_label, zoom_message
+    return _to_png(build_waveform_figure(*args, **kwargs))
+
+
+def bottom_title_text(
+    run_start: float, run_end: float, zoom_window: float | None, bins: int = BOTTOM_BINS
+) -> str:
+    """그림 2 아래 칸 묶음 제목(두 줄). 시간은 공학 표기·유효숫자 3자리.
+
+    ``full run 0 – 500 ms (500× longer time span than top)`` /
+    ``per-bin max/min/mean (~1000 bins) - envelope, not a waveform``.
+    """
+    span = run_end - run_start
+    first = (
+        f"full run 0 – {eng(run_end, 's')}"
+        if run_start <= 0
+        else (f"full run {eng(run_start, 's')} – {eng(run_end, 's')}")
     )
-    return _to_png(fig)
+    if zoom_window and zoom_window > 0 and span > 0:
+        first += f" ({span / zoom_window:.3g}× longer time span than top)"
+    return f"{first}\nper-bin max/min/mean (~{bins} bins) - envelope, not a waveform"
 
 
-def describe_inputs(inputs: dict, limit: int = 2) -> str:
-    """범례용 짧은 입력 표기(영문·숫자만): ``Lx=0.005``."""
+def describe_inputs(inputs: dict, limit: int = 2, engineering: bool = False) -> str:
+    """짧은 입력 표기(영문·숫자만): 범례 ``Lx=0.005``, engineering이면 ``Lx=5m``."""
     parts = []
     for k, v in list(inputs.items())[:limit]:
         num = parse_number(v)
-        parts.append(f"{k}={_fmt(num) if num is not None else v}")
+        if num is None:
+            text = str(v)
+        elif engineering:
+            text = eng(num).replace(" ", "")
+        else:
+            text = _fmt(num)
+        parts.append(f"{k}={text}")
     if len(inputs) > limit:
         parts.append("...")
     return ", ".join(parts)
