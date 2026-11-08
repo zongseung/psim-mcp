@@ -939,12 +939,16 @@ class BatchService:
                 low_resolution=cls == "low",
             )
             if cls == "undersampled":
+                # 2026-11-08 보충 C 실측: heavy(0.8점/주기)와 hires(40점/주기)를 비교하니 I(L1)
+                # 리플·최대·최소는 우연히 같았고(표본 위상이 주기 안을 고르게 돎) VL.mean은
+                # 12.25 대 0.97로 크게 달랐다. 어느 지표가 틀릴지 미리 알 수 없으므로 전부 신뢰 불가.
                 notes.append(
                     f"저장 간격({br.eng(print_interval, 's')})이 스위칭 주기"
-                    f"({br.eng(period, 's')}) 이상이라(주기당 {spp:g}점) 저장 파형으로 스위칭 "
-                    "파형을 볼 수 없어 그림 2 위 칸(확대)은 그리지 않았습니다. 이 경우 표의 "
-                    "리플·최대·최소도 실제보다 작게 나올 수 있습니다. 회로 Simulation Control의 "
-                    "PRINTSTEP을 줄이세요(1이면 모든 계산 점 저장, .smv 크기는 커짐)."
+                    f"({br.eng(period, 's')})의 절반보다 길어(주기당 {spp:g}점, 2점 미만) 이 "
+                    "run들의 모든 지표(평균·리플·최대·최소)를 신뢰할 수 없습니다. 저장 파형으로 "
+                    "스위칭 파형을 볼 수 없어 그림 2 위 칸(확대)은 그리지 않았습니다. 회로 "
+                    "Simulation Control의 PRINTSTEP을 줄이세요(1이면 모든 계산 점 저장, "
+                    ".smv 크기는 커짐)."
                 )
                 if plot_window_s is not None:
                     notes.append("undersampled라 plot_window_s는 쓰지 않았습니다.")
@@ -1062,13 +1066,19 @@ class BatchService:
 
     @staticmethod
     def _zoom_title(zoom: dict, reduced: bool) -> str:
+        """그림 2 위 칸 제목, 두 줄: 1줄 확대 길이·출처, 2줄 주기·출처·샘플/주기·해상도.
+
+        한 줄이면 축 폭(범례가 오른쪽 차지)을 넘어 왼쪽이 잘렸다(2026-11-08 보충 C 실측 C5).
+        """
         if zoom.get("period_reliable") is False:
-            return (
-                f"zoom not drawn: T = {br.eng(zoom['period_s'], 's')} from circuit "
-                f"({zoom.get('period_element')}), print interval "
-                f"{br.eng(zoom['print_interval_s'], 's')}"
+            source = (
+                f" from circuit ({zoom.get('period_element')})"
                 if zoom.get("period_source") == "circuit"
-                else f"zoom not drawn: T = {br.eng(zoom['period_s'], 's')}, print interval "
+                else ""
+            )
+            return (
+                "zoom not drawn\n"
+                f"T = {br.eng(zoom['period_s'], 's')}{source}, print interval "
                 f"{br.eng(zoom['print_interval_s'], 's')}"
             )
         window = zoom.get("window_s")
@@ -1095,7 +1105,7 @@ class BatchService:
             head = f"last {br.eng(window, 's')} (plot_window_s)"
         else:
             head = f"last 1% of measurement window ({br.eng(window, 's')})"
-        return f"{head}, {period}, {res}"
+        return f"{head}\n{period}, {res}"
 
     @staticmethod
     def _count_records(records: list[dict]) -> dict:

@@ -517,11 +517,16 @@ def trace_color(i: int) -> str:
     return _COLORS[i % len(_COLORS)]
 
 
-def eng(value: float, unit: str = "", places: int | None = None) -> str:
-    """제목용 공학 표기: ``eng(0.0002, "s")`` → ``"200 µs"``."""
+def eng(value: float, unit: str = "", digits: int = 3) -> str:
+    """제목·note용 공학 표기, 유효숫자 ``digits``자리.
+
+    ``eng(0.0002, "s")`` → ``"200 µs"``, ``eng(0.249995, "s")`` → ``"250 ms"``.
+    먼저 유효숫자로 반올림해야 999.6 µs 같은 값이 ``1 ms``로 올라간다.
+    """
     from matplotlib.ticker import EngFormatter
 
-    return EngFormatter(unit=unit, places=places).format_eng(value)  # 단위까지 붙여 준다
+    rounded = float(f"{value:.{digits}g}")
+    return EngFormatter(unit=unit).format_eng(rounded)  # 단위까지 붙여 준다
 
 
 def envelope_band(x: list[float], y: list[float], groups: int = _BAND_GROUPS):
@@ -622,9 +627,52 @@ def build_waveform_figure(
         title="dotted: mean",
     )
     legend.get_title().set_fontsize(8)
-    fig.suptitle(title, fontsize=11)
+    suptitle = fig.suptitle(title, fontsize=11)
     fig.tight_layout()
+    _fit_titles(fig, [suptitle, ax_zoom.title, ax_env.title])
     return fig
+
+
+TITLE_MIN_FONTSIZE = 6.0
+
+
+def text_inside_figure(fig, text) -> bool:
+    """렌더한 글자 bbox가 그림(figure) 안에 있는지. 글자가 비었으면 True."""
+    if not text.get_text():
+        return True
+    renderer = fig.canvas.get_renderer()
+    box = text.get_window_extent(renderer=renderer)
+    fig_box = fig.bbox
+    eps = 0.5  # px 반올림 여유
+    return (
+        box.x0 >= fig_box.x0 - eps
+        and box.x1 <= fig_box.x1 + eps
+        and box.y0 >= fig_box.y0 - eps
+        and box.y1 <= fig_box.y1 + eps
+    )
+
+
+def _fit_titles(fig, texts, min_size: float = TITLE_MIN_FONTSIZE) -> None:
+    """그림 밖으로 나가는 제목은 글꼴을 0.5pt씩 줄여(최소 min_size) 그림 안에 맞춘다.
+
+    제목은 축 가운데 정렬이라 축이 좁고(범례가 오른쪽 차지) 제목이 길면 왼쪽이 잘린다
+    (2026-11-08 보충 C 실측 C5). 제목을 두 줄로 나눠 대부분 맞지만, 소자 이름이 길 때를 대비한다.
+    """
+    fig.canvas.draw()
+    for _ in range(20):
+        outside = [t for t in texts if t is not None and not text_inside_figure(fig, t)]
+        if not outside:
+            return
+        shrunk = False
+        for t in outside:
+            size = t.get_fontsize()
+            if size - 0.5 >= min_size:
+                t.set_fontsize(size - 0.5)
+                shrunk = True
+        if not shrunk:
+            return
+        fig.tight_layout()
+        fig.canvas.draw()
 
 
 def render_waveform_plot(

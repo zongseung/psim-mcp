@@ -288,11 +288,19 @@ async def test_undersampled_skips_zoom_and_draws_envelope_only(env, monkeypatch,
     traces, _, title, zoom_title, _, _, zoom_message = calls[0]
     assert "undersampled: 1.6 samples/period" in title
     assert zoom_message.startswith("undersampled: print interval 1 µs >= switching period 1.6 µs")
-    assert "zoom not drawn" in zoom_title
+    assert zoom_title == (
+        "zoom not drawn\nT = 1.6 µs from circuit (G1.Frequency), print interval 1 µs"
+    )
     assert all(not tr.get("zoom_y") for tr in traces)
     assert all(tr["env_y"] for tr in traces)  # 아래 칸 envelope는 그린다
     notes = data["notes"]
-    assert any("PRINTSTEP" in n and "그리지 않았습니다" in n for n in notes)
+    under = [n for n in notes if "PRINTSTEP" in n]
+    assert len(under) == 1
+    # 모든 지표를 신뢰 불가로 안내(리플·최대·최소만이 아니라 평균도)
+    assert "저장 간격(1 µs)이 스위칭 주기(1.6 µs)의 절반보다 길어" in under[0]
+    assert "모든 지표(평균·리플·최대·최소)를 신뢰할 수 없습니다" in under[0]
+    assert "그리지 않았습니다" in under[0]
+    assert "실제보다 작게" not in under[0]
     assert ("plot_window_s는 쓰지 않았습니다" in " ".join(notes)) == (plot_window_s is not None)
 
 
@@ -331,3 +339,151 @@ async def test_print_interval_matching_setting_has_no_note(env, monkeypatch):
     _with_elements(monkeypatch, **_gating("25k"), **{"": sc})
     data, _ = await _plot_run(app, schematic_path=str(sch))
     assert not any("TIMESTEP×PRINTSTEP" in n for n in data.get("notes", []))
+
+
+# ---------------------------------------------------------------------------
+# 위 칸 제목 두 줄·유효숫자 3자리·그림 안에 들어가는지 (2026-11-08 보충 C 실측 C5: 한 줄 제목
+# "last 249.995 ms (plot_window_s), T = …, min/max envelope (too many points)"가 왼쪽으로 잘림)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (0.0002, "200 µs"),
+        (0.249995, "250 ms"),  # C5 실측 값
+        (0.0004, "400 µs"),
+        (0.001, "1 ms"),
+        (0.0009996, "1 ms"),  # 반올림이 단위 경계를 넘는 경우
+        (1.23456e-6, "1.23 µs"),
+        (5e-06, "5 µs"),
+    ],
+)
+def test_eng_three_significant_digits(value, expected):
+    assert br.eng(value, "s") == expected
+
+
+def _zoom(**kw):
+    base = {
+        "window_s": 0.001,
+        "window_source": "circuit",
+        "period_source": "circuit",
+        "period_element": "G0.Frequency",
+        "period_reliable": True,
+        "period_s": 2e-4,
+        "print_interval_s": 5e-6,
+        "samples_per_period": 40.0,
+        "low_resolution": False,
+    }
+    base.update(kw)
+    return base
+
+
+def test_zoom_title_two_lines():
+    from psim_mcp.services.batch_service import BatchService
+
+    title = BatchService._zoom_title(_zoom(), reduced=False)
+    assert title == (
+        "last 5 switching periods (1 ms)\n"
+        "T = 200 µs from circuit (G0.Frequency), 40 samples/period, full resolution"
+    )
+    title = BatchService._zoom_title(
+        _zoom(window_s=0.249995, window_source="plot_window_s"), reduced=True
+    )
+    assert title == (
+        "last 250 ms (plot_window_s)\n"
+        "T = 200 µs from circuit (G0.Frequency), 40 samples/period, "
+        "min/max envelope (too many points)"
+    )
+
+
+def _traces(n=3):
+    xs = [i * 1e-3 for i in range(200)]
+    return [
+        {
+            "label": f"#{i + 1} run {10 + i} (Lx=0.00418182)",
+            "env_x": xs,
+            "env_y": [5 + 0.5 * ((k % 2) * 2 - 1) for k in range(200)],
+            "mean": 5.0,
+            "zoom_x": [-1e-3 + k * 5e-6 for k in range(201)],
+            "zoom_y": [5 + 0.5 * ((k // 20) % 2) for k in range(201)],
+        }
+        for i in range(n)
+    ]
+
+
+_LONG_ELEMENT = "PSM_F2837x_PHASEPWM_with_a_very_long_block_name.pwm_freq"
+
+
+@pytest.mark.parametrize(
+    "zoom,reduced,message",
+    [
+        # C5 실측 그대로(한 줄일 때 잘리던 제목)
+        (_zoom(window_s=0.249995, window_source="plot_window_s"), True, None),
+        # 가장 긴 주기 문구(FFT) + envelope
+        (
+            _zoom(
+                window_s=0.249995,
+                window_source="plot_window_s",
+                period_source="fft",
+                period_element=None,
+            ),
+            True,
+            None,
+        ),
+        # 소자 이름이 아주 길어 두 줄로도 넘치는 경우 → 글꼴을 줄여 맞춘다
+        (_zoom(period_element=_LONG_ELEMENT), True, None),
+        # undersampled(위 칸 문구만)
+        (
+            _zoom(
+                period_reliable=False,
+                window_s=None,
+                window_source=None,
+                period_s=2e-4,
+                print_interval_s=2.5e-4,
+                samples_per_period=0.8,
+            ),
+            False,
+            "undersampled: print interval 250 µs >= switching period 200 µs\n"
+            "(0.8 samples/period - zoom not drawn; reduce PRINTSTEP)",
+        ),
+    ],
+)
+def test_waveform_titles_stay_inside_figure(zoom, reduced, message):
+    from psim_mcp.services.batch_service import BatchService
+
+    zoom_title = BatchService._zoom_title(zoom, reduced)
+    fig = br.build_waveform_figure(
+        _traces(),
+        "I(L1)",
+        "I(L1) waveforms (top 3 by I(L1).ripple), low resolution: 19.9 samples/period",
+        zoom_title,
+        "last 50% of run, min/max envelope (band = min..max)",
+        "Time (s)",
+        message,
+    )
+    ax_zoom, ax_env = fig.axes[:2]
+    fig.canvas.draw()
+    titles = [ax_zoom.title, ax_env.title, fig._suptitle]  # suptitle Text는 공개 getter 없음
+    for t in titles:
+        assert br.text_inside_figure(fig, t), (t.get_text(), t.get_window_extent())
+        assert t.get_fontsize() >= br.TITLE_MIN_FONTSIZE
+    assert ax_zoom.title.get_text() == zoom_title  # 내용은 그대로(잘라내지 않음)
+
+
+def test_fit_titles_shrinks_only_when_needed():
+    from psim_mcp.services.batch_service import BatchService
+
+    fig = br.build_waveform_figure(
+        _traces(), "I(L1)", "t", BatchService._zoom_title(_zoom(), False), "env", "Time (s)"
+    )
+    assert fig.axes[0].title.get_fontsize() == 9  # 짧은 제목은 원래 크기
+    fig = br.build_waveform_figure(
+        _traces(),
+        "I(L1)",
+        "t",
+        BatchService._zoom_title(_zoom(period_element=_LONG_ELEMENT), True),
+        "env",
+        "Time (s)",
+    )
+    assert fig.axes[0].title.get_fontsize() < 9
