@@ -403,7 +403,7 @@ class BatchService:
         n_workers = min(n_workers, sum(1 for c in parsed if "error" not in c))
         # 필요한 워커를 먼저 한꺼번에 띄운다(PSIM() 생성 ~17 s를 병렬로 한 번만).
         warm = await self._pool.warm(n_workers)
-        await self.precheck(schematic, parsed, strict=strict)
+        circuit_info = await self.precheck(schematic, parsed, strict=strict) or {}
         self._reject_if_all_invalid(parsed)
         n_workers = min(n_workers, sum(1 for c in parsed if "error" not in c))
 
@@ -559,8 +559,24 @@ class BatchService:
             )
         images: list[dict] = []
         if plot:
+            circuit = {
+                "elements": circuit_info.get("elements") or {},
+                "time_step": time_step,
+                "conditions": {
+                    i: {"variables": c.get("variables") or {}, "elements": c.get("elements") or []}
+                    for i, c in enumerate(parsed)
+                    if "error" not in c
+                },
+            }
             images, plots, plot_notes = await self._make_plots(
-                records, table, policy, study_dir, float(skip_ratio), max_images, plot_window_s
+                records,
+                table,
+                policy,
+                study_dir,
+                float(skip_ratio),
+                max_images,
+                plot_window_s,
+                circuit,
             )
             data["plots"] = plots
             notes.extend(plot_notes)
@@ -593,8 +609,12 @@ class BatchService:
         skip_ratio: float,
         max_images: int,
         plot_window_s: float | None = None,
+        circuit: dict | None = None,
     ) -> tuple[list[dict], list[dict], list[str]]:
         """그림 1(조건-지표), 그림 2(상위 파형)를 그려 plots/에 저장하고 첨부 목록을 만든다.
+
+        circuit: 주기 판정용 회로 정보 ``{"elements", "time_step", "conditions": {run: cond}}``
+        (precheck의 inspect_schematic 결과와 run별 변수·소자 변경).
 
         어떤 그림이 실패해도 예외를 밖으로 내지 않는다 — 배치 결과는 그대로 성공이고 note로 알린다.
         """
@@ -655,7 +675,7 @@ class BatchService:
         try:
             notes.extend(
                 await self._waveform_plot(
-                    records, policy, signal, highlight, skip_ratio, save, plot_window_s
+                    records, policy, signal, highlight, skip_ratio, save, plot_window_s, circuit
                 )
             )
         except Exception as e:  # noqa: BLE001
@@ -671,7 +691,7 @@ class BatchService:
         return None
 
     async def _waveform_plot(
-        self, records, policy, signal, highlight, skip_ratio, save, plot_window_s=None
+        self, records, policy, signal, highlight, skip_ratio, save, plot_window_s=None, circuit=None
     ):
         """상위 run의 .smv에서 파형을 읽어 그림 2(두 칸)를 그린다. 반환: notes.
 
@@ -753,7 +773,9 @@ class BatchService:
         has_time = all(len(tr["env_x"]) == len(tr["env_y"]) and tr["span"] for tr in traces)
         zoom: dict = {}
         if has_time:
-            zoom, zoom_notes = await self._zoom_window(traces[0], signal, skip_ratio, plot_window_s)
+            zoom, zoom_notes = await self._zoom_window(
+                traces[0], signal, skip_ratio, plot_window_s, circuit
+            )
             notes.extend(zoom_notes)
             zoom_reduced = await self._read_zoom(traces, signal, skip_ratio, zoom, notes)
         else:
@@ -768,9 +790,20 @@ class BatchService:
         title = f"{signal} waveforms" + (
             f" (top {len(traces)} by {policy.rank.text})" if policy.rank else ""
         )
-        if zoom.get("low_resolution"):
+        undersampled = zoom.get("period_reliable") is False
+        if undersampled:
+            title += f", undersampled: {zoom['samples_per_period']:g} samples/period"
+        elif zoom.get("low_resolution"):
             title += f", low resolution: {zoom['samples_per_period']:g} samples/period"
         zoom_title = self._zoom_title(zoom, zoom_reduced)
+        zoom_message = None
+        if undersampled:
+            zoom_message = (
+                f"undersampled: print interval {br.eng(zoom['print_interval_s'], 's')} "
+                f">= switching period {br.eng(zoom['period_s'], 's')}\n"
+                f"({zoom['samples_per_period']:g} samples/period - zoom not drawn; "
+                "reduce PRINTSTEP)"
+            )
         envelope_title = f"{window} of run, {method} (band = min..max)"
         plot_traces = [
             {k: tr.get(k) for k in ("label", "env_x", "env_y", "mean", "zoom_x", "zoom_y")}
@@ -784,19 +817,33 @@ class BatchService:
             zoom_title,
             envelope_title,
             x_label,
+            zoom_message,
         )
         save("fig2_waveforms.png", "waveforms", png, {"zoom": zoom} if zoom else None)
         return notes
 
-    async def _zoom_window(self, first: dict, signal: str, skip_ratio: float, plot_window_s):
+    async def _zoom_window(
+        self,
+        first: dict,
+        signal: str,
+        skip_ratio: float,
+        plot_window_s,
+        circuit: dict | None = None,
+    ):
         """확대 구간 길이와 주기 정보. 반환: (zoom 정보, notes).
 
-        FFT 주기 추정·주기당 샘플 수·저해상도 경고는 plot_window_s 유무와 관계없이 항상 한다.
-        plot_window_s는 확대 길이 결정에만 쓴다.
+        주기 출처 우선순위: (1) 회로 설정 — 1위 run 조건을 반영한 스위칭 소자 주파수
+        (:data:`batch_report.SWITCHING_FREQUENCY_PARAMS`, 여러 개면 가장 높은 주파수),
+        (2) 1)이 없을 때만 FFT 추정(에일리어싱 가능 — 제목에 "estimated, may be aliased").
+        주기당 샘플 수 = 주기 ÷ 실제 저장 간격(.smv 측정 구간 시간 폭 ÷ (점 수 − 1)),
+        TIMESTEP×PRINTSTEP과 5% 넘게 다르면 note. 판정: < 2 undersampled(period_reliable=false,
+        위 칸 확대를 그리지 않음), < 20 저해상도 경고, 그 이상 정상.
+        plot_window_s는 확대 길이 결정에만 쓴다(주기 판정은 항상 함).
 
-        zoom 정보: ``window_s``, ``window_source``(확대 길이: plot_window_s·fft·fallback),
-        ``period_source``(fft, 추정 실패면 None), ``period_s``, ``samples_per_period``,
-        ``low_resolution``.
+        zoom 정보: ``window_s``, ``window_source``(plot_window_s·circuit·fft·fallback, 확대를
+        그리지 않으면 None), ``period_source``(circuit·fft, 모르면 None), ``period_element``
+        (circuit일 때 '소자.파라미터'), ``period_reliable``(주기를 모르면 None),
+        ``period_s``, ``print_interval_s``, ``samples_per_period``, ``low_resolution``.
         """
         notes: list[str] = []
         t0, t1 = float(first["span"][0]), float(first["span"][1])
@@ -805,7 +852,10 @@ class BatchService:
             "window_s": None,
             "window_source": None,
             "period_source": None,
+            "period_element": None,
+            "period_reliable": None,
             "period_s": None,
+            "print_interval_s": None,
             "samples_per_period": None,
             "low_resolution": False,
         }
@@ -813,21 +863,99 @@ class BatchService:
             notes.append("측정 구간 길이가 0이라 그림 2 위 칸(확대 파형)은 그리지 않았습니다.")
             return info, notes
 
-        estimate = await self._estimate_period(first, signal, skip_ratio, t1, duration)
-        if estimate:
-            spp = estimate["samples_per_period"]
-            info.update(
-                period_source="fft",
-                period_s=_sig(estimate["period_s"]),
-                samples_per_period=spp,
-                low_resolution=bool(spp < br.LOW_RESOLUTION_SAMPLES),
+        circuit = circuit or {}
+        cond = (circuit.get("conditions") or {}).get(first["rec"]["run"]) or {}
+        elements = circuit.get("elements") or {}
+
+        # 저장 간격: .smv 측정 구간 실측(시간 폭 / (점 수 − 1)), 회로 설정값과 대조.
+        n_src = int(first.get("source_points") or 0)
+        measured = duration / (n_src - 1) if n_src > 1 else None
+        configured = br.configured_print_interval(
+            elements, cond.get("variables"), circuit.get("time_step")
+        )
+        print_interval = measured or configured
+        if (
+            measured
+            and configured
+            and abs(measured - configured) > br.PRINT_INTERVAL_MISMATCH * configured
+        ):
+            notes.append(
+                f"결과 파일의 저장 간격({br.eng(measured, 's')})이 회로 설정 "
+                f"TIMESTEP×PRINTSTEP({br.eng(configured, 's')})과 다릅니다. "
+                "주기당 샘플 수는 결과 파일 값으로 계산했습니다."
             )
-            if info["low_resolution"]:
+        info["print_interval_s"] = _sig(print_interval) if print_interval else None
+
+        # 주기: 회로 설정 우선, 없으면 FFT.
+        period = None
+        candidates, unresolved = br.switching_frequency_candidates(
+            elements, cond.get("variables"), cond.get("elements")
+        )
+        if candidates:
+            best = max(candidates, key=lambda c: c["frequency_hz"])
+            period = 1.0 / best["frequency_hz"]
+            info.update(
+                period_source="circuit",
+                period_element=f"{best['element']}.{best['parameter']}",
+            )
+            freqs = sorted({c["frequency_hz"] for c in candidates})
+            if len(freqs) > 1:
+                listed = ", ".join(
+                    f"{c['element']}.{c['parameter']}={c['frequency_hz']:g} Hz" for c in candidates
+                )
+                notes.append(
+                    f"스위칭 주파수 후보가 여러 개라({listed}) 가장 높은 "
+                    f"{best['frequency_hz']:g} Hz({info['period_element']})를 주기로 썼습니다."
+                )
+        else:
+            if unresolved:
+                notes.append(
+                    "회로 스위칭 소자의 주파수 값을 숫자로 읽지 못해("
+                    + ", ".join(unresolved[:5])
+                    + ") FFT 추정으로 넘어갔습니다."
+                )
+            estimate = await self._estimate_period(first, signal, skip_ratio, t1, duration)
+            if estimate:
+                period = estimate["period_s"]
+                print_interval = print_interval or estimate["dt_s"]
+                info.update(
+                    period_source="fft",
+                    print_interval_s=info["print_interval_s"] or _sig(estimate["dt_s"]),
+                )
+                notes.append(
+                    "회로에서 스위칭 주파수를 찾지 못해 주기를 FFT로 추정했습니다"
+                    "(estimated, may be aliased — 저장 간격이 성기면 실제보다 긴 주기를 잡을 수 "
+                    "있습니다)."
+                )
+
+        if period is not None:
+            spp = round(period / print_interval, 1) if print_interval else None
+            cls = br.sampling_class(spp)
+            info.update(
+                period_s=_sig(period),
+                samples_per_period=spp,
+                # 저장 간격을 모르면 판정 불가(None)
+                period_reliable=None if cls is None else cls != "undersampled",
+                low_resolution=cls == "low",
+            )
+            if cls == "undersampled":
+                notes.append(
+                    f"저장 간격({br.eng(print_interval, 's')})이 스위칭 주기"
+                    f"({br.eng(period, 's')}) 이상이라(주기당 {spp:g}점) 저장 파형으로 스위칭 "
+                    "파형을 볼 수 없어 그림 2 위 칸(확대)은 그리지 않았습니다. 이 경우 표의 "
+                    "리플·최대·최소도 실제보다 작게 나올 수 있습니다. 회로 Simulation Control의 "
+                    "PRINTSTEP을 줄이세요(1이면 모든 계산 점 저장, .smv 크기는 커짐)."
+                )
+                if plot_window_s is not None:
+                    notes.append("undersampled라 plot_window_s는 쓰지 않았습니다.")
+                return info, notes
+            if cls == "low":
                 notes.append(
                     f"스위칭 주기당 샘플이 {spp:g}개뿐이라(기준 {br.LOW_RESOLUTION_SAMPLES}개) "
                     "확대 파형이 거칠게 보입니다. 회로 Simulation Control의 PRINTSTEP을 줄이면"
                     "(1이면 모든 계산 점 저장) 해상도가 올라갑니다(.smv 크기는 커짐)."
                 )
+        estimate = {"period_s": period} if period is not None else None
 
         if plot_window_s is not None:
             window = float(plot_window_s)
@@ -840,21 +968,21 @@ class BatchService:
             info.update(window_s=_sig(window), window_source="plot_window_s")
             if not estimate:
                 notes.append(
-                    "스위칭 주기를 FFT로 추정하지 못해 period_s·samples_per_period는 null입니다"
-                    "(확대 길이는 plot_window_s 그대로)."
+                    "스위칭 주기를 회로 설정에서 찾지 못했고 FFT로도 추정하지 못해 "
+                    "period_s·samples_per_period는 null입니다(확대 길이는 plot_window_s 그대로)."
                 )
         elif estimate:
             info.update(
                 window_s=_sig(min(br.ZOOM_PERIODS * estimate["period_s"], duration)),
-                window_source="fft",
+                window_source=info["period_source"],
             )
         else:
             info.update(
                 window_s=_sig(duration * br.FALLBACK_WINDOW_FRACTION), window_source="fallback"
             )
             notes.append(
-                "스위칭 주기를 FFT로 추정하지 못해 그림 2 위 칸은 측정 구간 마지막 1%를 "
-                "확대했습니다. 원하는 길이는 plot_window_s(초)로 지정하세요."
+                "스위칭 주기를 회로 설정에서 찾지 못했고 FFT로도 추정하지 못해 그림 2 위 칸은 "
+                "측정 구간 마지막 1%를 확대했습니다. 원하는 길이는 plot_window_s(초)로 지정하세요."
             )
         return info, notes
 
@@ -934,19 +1062,34 @@ class BatchService:
 
     @staticmethod
     def _zoom_title(zoom: dict, reduced: bool) -> str:
+        if zoom.get("period_reliable") is False:
+            return (
+                f"zoom not drawn: T = {br.eng(zoom['period_s'], 's')} from circuit "
+                f"({zoom.get('period_element')}), print interval "
+                f"{br.eng(zoom['print_interval_s'], 's')}"
+                if zoom.get("period_source") == "circuit"
+                else f"zoom not drawn: T = {br.eng(zoom['period_s'], 's')}, print interval "
+                f"{br.eng(zoom['print_interval_s'], 's')}"
+            )
         window = zoom.get("window_s")
         if not window:
             return "zoom: not available"
         res = "min/max envelope (too many points)" if reduced else "full resolution"
-        if zoom.get("period_source") == "fft":
+        spp = zoom.get("samples_per_period")
+        spp_text = f", {spp:g} samples/period" if spp is not None else ""
+        if zoom.get("period_source") == "circuit":
             period = (
-                f"T = {br.eng(zoom['period_s'], 's')} by FFT, "
-                f"{zoom['samples_per_period']:g} samples/period"
+                f"T = {br.eng(zoom['period_s'], 's')} from circuit "
+                f"({zoom.get('period_element')}){spp_text}"
+            )
+        elif zoom.get("period_source") == "fft":
+            period = (
+                f"T = {br.eng(zoom['period_s'], 's')} by FFT (estimated, may be aliased){spp_text}"
             )
         else:
             period = "period not found"
         source = zoom.get("window_source")
-        if source == "fft":
+        if source in ("circuit", "fft"):
             head = f"last {br.ZOOM_PERIODS} switching periods ({br.eng(window, 's')})"
         elif source == "plot_window_s":
             head = f"last {br.eng(window, 's')} (plot_window_s)"

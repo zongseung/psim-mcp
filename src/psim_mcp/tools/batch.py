@@ -34,9 +34,11 @@ def register_tools(mcp, batch_service):
             "plot=true면 그림을 PNG로 만들어 응답에 이미지로 첨부하고 study 폴더 plots/에도 저장합니다: "
             "그림 1 조건-지표 그래프(입력 하나만 바뀌면 x축=그 입력, 아니면 run 번호; "
             "y=rank_by 지표, 없으면 첫 신호의 평균·리플), "
-            "그림 2 상위 run 파형 두 칸(.smv가 남은 run만): 위 칸은 측정 구간 끝 마지막 약 5 스위칭 주기를 원본 해상도로 겹쳐 그리고 평균을 점선으로 표시(주기는 FFT로 추정, 실패하면 측정 구간 마지막 1%), "
-            "아래 칸은 측정 구간 전체 min/max envelope 띠. plot_window_s(초, 선택)를 주면 위 칸 확대 길이를 그 값으로 씁니다(FFT 주기 추정·주기당 샘플 수·저해상도 경고는 항상 함). "
-            "plots의 zoom에 확대 길이(window_s·window_source)·주기(period_s, 추정 실패면 null)·주기당 샘플 수가 들어가며, 주기당 샘플이 20 미만이면 저해상도 경고가 붙습니다. "
+            "그림 2 상위 run 파형 두 칸(.smv가 남은 run만): 위 칸은 측정 구간 끝 마지막 약 5 스위칭 주기를 원본 해상도로 겹쳐 그리고 평균을 점선으로 표시, "
+            "아래 칸은 측정 구간 전체 min/max envelope 띠. 스위칭 주기는 회로 설정(게이팅 블록·삼각파/톱니파/구형파 소스·SVPWM·DSP PWM 블록의 주파수, 1위 run 조건 반영, 여러 개면 가장 높은 주파수)을 먼저 쓰고, 없을 때만 FFT로 추정합니다(에일리어싱 가능 표시). 둘 다 실패하면 측정 구간 마지막 1%. "
+            "plot_window_s(초, 선택)를 주면 위 칸 확대 길이를 그 값으로 씁니다(주기 판정·주기당 샘플 수 경고는 항상 함). "
+            "plots의 zoom에 확대 길이(window_s·window_source)·주기(period_s·period_source·period_reliable)·저장 간격(print_interval_s)·주기당 샘플 수(samples_per_period)가 들어갑니다. "
+            "주기당 샘플이 2 미만이면 저장 파형으로 스위칭 파형을 볼 수 없어 period_reliable=false, 위 칸 확대는 그리지 않고(아래 칸만) PRINTSTEP을 줄이라는 안내를 붙이며, 20 미만이면 저해상도 경고가 붙습니다. "
             "max_images(1~4, 기본 2)는 응답에 첨부할 그림 수입니다. 그림 생성이 실패해도 결과 표는 그대로 반환합니다."
         ),
     )

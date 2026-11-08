@@ -533,7 +533,7 @@ async def test_waveform_caption_says_min_max_envelope(env, monkeypatch):
         plot=True,
     )
     assert len(calls) == 1
-    traces, signal, title, zoom_title, envelope_title, x_label = calls[0]
+    traces, signal, title, zoom_title, envelope_title, x_label, _ = calls[0]
     assert "min/max envelope" in envelope_title and x_label == "Time (s)"
     assert "full resolution" in zoom_title
     for tr in traces:
@@ -735,7 +735,7 @@ async def test_zoom_uses_fft_period_and_reports_samples(env, monkeypatch):
     assert zoom["window_s"] == pytest.approx(200e-6, rel=5e-3)
     assert zoom["low_resolution"] is False
     assert zoom["window_samples"] == pytest.approx(201, abs=2)
-    traces, signal, title, zoom_title, envelope_title, _ = calls[0]
+    traces, signal, title, zoom_title, envelope_title, _, _ = calls[0]
     assert "low resolution" not in title
     assert "5 switching periods" in zoom_title and "40 samples/period" in zoom_title
     assert "full resolution" in zoom_title
@@ -769,7 +769,7 @@ async def test_zoom_plot_window_s_sets_length_but_fft_still_runs(env, monkeypatc
     # envelope 3 + FFT 1 + 확대 3
     assert sum(p.get("max_points") == 2 * br.FFT_MAX_POINTS for p in seen) == 1
     assert len(seen) == 7
-    traces, _, title, zoom_title, _, _ = calls[0]
+    traces, _, title, zoom_title, _, _, _ = calls[0]
     assert "plot_window_s" in zoom_title and "40 samples/period" in zoom_title
     assert "low resolution" not in title
     for tr in traces:
@@ -824,7 +824,7 @@ async def test_zoom_fft_failure_falls_back_to_last_percent(env, monkeypatch):
     assert zoom["period_source"] is None and zoom["period_s"] is None
     assert zoom["samples_per_period"] is None
     assert zoom["window_s"] == pytest.approx(0.01 * duration, rel=1e-6)
-    assert any("FFT로 추정하지 못해" in n and "1%" in n for n in data["notes"])
+    assert any("추정하지 못해" in n and "1%" in n for n in data["notes"])
     assert "period not found" in calls[0][3]
 
 

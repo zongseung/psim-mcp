@@ -33,6 +33,31 @@ FFT_MAX_POINTS = 32768
 ZOOM_MAX_POINTS = 40000
 FALLBACK_WINDOW_FRACTION = 0.01  # 주기 추정 실패 시 측정 구간 마지막 1%
 LOW_RESOLUTION_SAMPLES = 20  # 주기당 샘플 수가 이보다 적으면 저해상도 경고
+# 주기당 샘플 수가 이보다 적으면(나이퀴스트 미만) 저장 파형으로 스위칭 파형을 볼 수 없다:
+# period_reliable=false, 위 칸(확대)은 그리지 않는다.
+UNDERSAMPLED_SAMPLES = 2
+# 저장 간격 실측값(.smv)과 TIMESTEP×PRINTSTEP이 이 비율 넘게 다르면 note
+PRINT_INTERVAL_MISMATCH = 0.05
+# 스위칭 주파수를 정의하는 소자 Type → 주파수 파라미터 이름(PsimGetElementList 기준).
+# 조사(2026-11-08): buck_bench·heavy 회로는 GATING(G0, Frequency 5000)과 PWM 반송파
+# VTRI(VTRI1, Frequency 5000, COMP·ONCTRL로 MOSFET 구동). PSIM 2026.1 예제 1,330개
+# (외부 연동 예제 제외)에서 게이팅·반송파·PWM 블록만 골랐다. 제외: VSIN(기준 사인파),
+# ZOH·UDELAY·필터의 Sampling/Cut-off Frequency(제어 샘플링), DEVICE_*(열·손실 모델 값),
+# ISQU(게이트 전하 시험) — 파형 주기가 아니거나 스위칭과 다를 수 있다.
+SWITCHING_FREQUENCY_PARAMS: dict[str, tuple[str, ...]] = {
+    "GATING": ("Frequency",),  # 게이팅 블록
+    "VTRI": ("Frequency",),  # 삼각파 반송파
+    "VSAW": ("Frequency",),  # 톱니파 반송파
+    "VSQU": ("Frequency",),  # 구형파(게이트 신호로 많이 씀)
+    "VTRI_GND": ("Freq2",),  # 접지 기준 삼각파
+    "VSAW_GND": ("Freq3",),  # 접지 기준 톱니파
+    "SVPWM_2L": ("freq",),
+    "SVPWM_3L": ("freq",),
+}
+# TI DSP PWM 블록(PSM_F28004x_PWM·…_PWM3PH·…_FUNCPWM·…_PHASEPWM·…_CAPPWM 등)은 pwm_freq.
+_DSP_PWM_PREFIX = "PSM_"
+_DSP_PWM_PARAM = "pwm_freq"
+SIMULATION_CONTROL_TYPE = "Simulation Control"
 ENVELOPE_ALPHA = 0.3
 _BAND_GROUPS = 500  # 아래 칸 띠: envelope 점을 이만큼 묶어 위·아래 경계를 만든다
 FIG_WIDTH_IN = 9.0  # dpi 100 → 가로 900 px
@@ -179,6 +204,106 @@ def parse_number(value: Any) -> float | None:
         if key in _SI:
             return number * _SI[key]
     return None
+
+
+def _resolve_value(raw: Any, variables: dict | None) -> float | None:
+    """소자 파라미터 값 → 숫자. 숫자·SI 접미사, 또는 run 변수 이름(대소문자 무시)이면 그 값."""
+    num = parse_number(raw)
+    if num is not None:
+        return num
+    if isinstance(raw, str) and variables:
+        lowered = {str(k).lower(): v for k, v in variables.items()}
+        if raw.strip().lower() in lowered:
+            return parse_number(lowered[raw.strip().lower()])
+    return None
+
+
+def _effective_params(name: str, info: dict, element_changes: list[dict] | None) -> dict:
+    """run의 '소자.파라미터' 조건을 반영한 파라미터 값."""
+    params = dict(info.get("params") or {})
+    for ch in element_changes or []:
+        if str(ch.get("component_id", "")).lower() == name.lower():
+            params[ch["parameter_name"]] = ch["value"]
+    return params
+
+
+def switching_frequency_params(element_type: str) -> tuple[str, ...]:
+    """스위칭 주파수를 담는 파라미터 이름(없으면 빈 tuple)."""
+    if element_type in SWITCHING_FREQUENCY_PARAMS:
+        return SWITCHING_FREQUENCY_PARAMS[element_type]
+    if element_type.startswith(_DSP_PWM_PREFIX) and "PWM" in element_type[len(_DSP_PWM_PREFIX) :]:
+        return (_DSP_PWM_PARAM,)
+    return ()
+
+
+def switching_frequency_candidates(
+    elements: dict | None,
+    variables: dict | None = None,
+    element_changes: list[dict] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """회로 소자에서 스위칭 주파수 후보를 찾는다(:data:`SWITCHING_FREQUENCY_PARAMS`).
+
+    elements: ``inspect_schematic``의 ``{이름: {"type", "params"}}``. variables·element_changes는
+    그 run의 조건(변수 덮어쓰기·'소자.파라미터' 변경)으로, 값이 변수면 그 값을 쓴다.
+    반환: (후보 ``[{element, type, parameter, value, frequency_hz}]``, 값을 숫자로 못 바꾼 항목
+    설명 목록). 0 이하 주파수는 후보에서 뺀다.
+    """
+    found: list[dict] = []
+    unresolved: list[str] = []
+    for name, info in (elements or {}).items():
+        names = switching_frequency_params(str(info.get("type")))
+        if not names:
+            continue
+        params = _effective_params(name, info, element_changes)
+        for pname in names:
+            if pname not in params:
+                continue
+            raw = params[pname]
+            freq = _resolve_value(raw, variables)
+            if freq is None:
+                unresolved.append(f"{name}.{pname}={raw}")
+            elif freq > 0:
+                found.append(
+                    {
+                        "element": name,
+                        "type": info.get("type"),
+                        "parameter": pname,
+                        "value": raw,
+                        "frequency_hz": freq,
+                    }
+                )
+    return found, unresolved
+
+
+def configured_print_interval(
+    elements: dict | None, variables: dict | None = None, time_step: float | None = None
+) -> float | None:
+    """Simulation Control의 TIMESTEP × PRINTSTEP(초). time_step은 run_batch 덮어쓰기 값."""
+    for info in (elements or {}).values():
+        if info.get("type") != SIMULATION_CONTROL_TYPE:
+            continue
+        params = info.get("params") or {}
+        step = (
+            time_step
+            if time_step is not None
+            else _resolve_value(params.get("TIMESTEP"), variables)
+        )
+        every = _resolve_value(params.get("PRINTSTEP", 1), variables)
+        if step is None or every is None or step <= 0:
+            return None
+        return step * max(every, 1.0)
+    return None
+
+
+def sampling_class(samples_per_period: float | None) -> str | None:
+    """주기당 샘플 수 판정: ``undersampled``(<2) · ``low``(<20) · ``ok``. 모르면 None."""
+    if samples_per_period is None:
+        return None
+    if samples_per_period < UNDERSAMPLED_SAMPLES:
+        return "undersampled"
+    if samples_per_period < LOW_RESOLUTION_SAMPLES:
+        return "low"
+    return "ok"
 
 
 def metric_value(record: dict, signal: str, metric: str) -> float | None:
@@ -427,11 +552,14 @@ def build_waveform_figure(
     zoom_title: str,
     envelope_title: str,
     envelope_x_label: str = "Time (s)",
+    zoom_message: str | None = None,
 ):
     """그림 2 Figure(두 칸). 테스트에서 범례·선·띠 색을 확인할 수 있게 PNG 변환과 분리했다.
 
     traces(순위 순서) 항목: ``label``, ``env_x``·``env_y``(측정 구간 envelope), 선택 ``zoom_x``·
     ``zoom_y``(확대 구간 원본, x는 run 끝 기준 상대 시간 초), ``mean``(점선, 없으면 생략).
+    zoom_message가 있으면 위 칸에는 파형 대신 그 문구만 쓴다(예: undersampled — 저장 간격이
+    스위칭 주기 이상이라 확대 파형이 의미 없음). 범례는 그대로 위 칸 오른쪽.
     """
     from matplotlib.patches import Patch
     from matplotlib.ticker import EngFormatter
@@ -445,9 +573,9 @@ def build_waveform_figure(
         tr = traces[i]
         color = trace_color(i)
         zx, zy = tr.get("zoom_x") or [], tr.get("zoom_y") or []
-        if zx and zy:
+        if zx and zy and not zoom_message:
             ax_zoom.plot(zx, zy, color=color, linewidth=1.6 if i == 0 else 1.1, gid=f"zoom{i}")
-        if tr.get("mean") is not None:
+        if tr.get("mean") is not None and not zoom_message:
             ax_zoom.axhline(tr["mean"], color=color, linestyle=":", linewidth=1.0, gid=f"mean{i}")
         bx, blo, bhi = envelope_band(tr.get("env_x") or [], tr.get("env_y") or [])
         if bx:
@@ -460,14 +588,30 @@ def build_waveform_figure(
         handles.append(Patch(facecolor=trace_color(i), edgecolor=trace_color(i), label=tr["label"]))
 
     ax_zoom.set_title(zoom_title, fontsize=9)
-    ax_zoom.set_xlabel("time before end of run", fontsize=9)
-    ax_zoom.xaxis.set_major_formatter(EngFormatter(unit="s"))
-    ax_zoom.set_ylabel(ylabel, fontsize=9)
+    if zoom_message:
+        ax_zoom.text(
+            0.5,
+            0.5,
+            zoom_message,
+            transform=ax_zoom.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10,
+            wrap=True,
+            gid="zoom_message",
+        )
+        ax_zoom.set_xticks([])
+        ax_zoom.set_yticks([])
+    else:
+        ax_zoom.set_xlabel("time before end of run", fontsize=9)
+        ax_zoom.xaxis.set_major_formatter(EngFormatter(unit="s"))
+        ax_zoom.set_ylabel(ylabel, fontsize=9)
     ax_env.set_title(envelope_title, fontsize=9)
     ax_env.set_xlabel(envelope_x_label, fontsize=9)
     ax_env.set_ylabel(ylabel, fontsize=9)
     for ax in (ax_zoom, ax_env):
-        ax.grid(True, alpha=0.3)
+        if not (ax is ax_zoom and zoom_message):  # 문구만 쓴 위 칸에는 격자를 그리지 않는다
+            ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=8)
     legend = ax_zoom.legend(
         handles=handles,
@@ -490,9 +634,12 @@ def render_waveform_plot(
     zoom_title: str,
     envelope_title: str,
     envelope_x_label: str = "Time (s)",
+    zoom_message: str | None = None,
 ) -> bytes:
     """그림 2 PNG. 인자는 :func:`build_waveform_figure`와 같다."""
-    fig = build_waveform_figure(traces, signal, title, zoom_title, envelope_title, envelope_x_label)
+    fig = build_waveform_figure(
+        traces, signal, title, zoom_title, envelope_title, envelope_x_label, zoom_message
+    )
     return _to_png(fig)
 
 
