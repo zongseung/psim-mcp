@@ -706,6 +706,8 @@ class BatchService:
                 "extract_signals",
                 {
                     "graph_file": rec["smv_path"],
+                    # rank_by 신호 + Time(시간 범위가 없으면 Time을 요청해야 times가 온다.
+                    # minmax 응답에서 Time은 signals에 넣지 않으므로 값 배열은 신호 하나뿐).
                     "signals": [signal, "Time"],
                     "skip_ratio": skip_ratio,  # 측정 구간(기본 마지막 50%)만
                     "max_points": br.WAVEFORM_MAX_POINTS,
@@ -866,7 +868,8 @@ class BatchService:
             "extract_signals",
             {
                 "graph_file": first["rec"]["smv_path"],
-                "signals": [signal, "Time"],
+                # rank_by 신호만. 시간 범위를 쓰면 브리지가 Time을 따로 읽어 times를 채운다.
+                "signals": [signal],
                 "skip_ratio": skip_ratio,
                 "t_start": t1 - chunk,
                 # dt 추정 오차 여유. 그래도 넘으면 envelope로 줄여 오므로 추정하지 않는다.
@@ -898,7 +901,8 @@ class BatchService:
                 "extract_signals",
                 {
                     "graph_file": tr["rec"]["smv_path"],
-                    "signals": [signal, "Time"],
+                    # rank_by 신호만(시간 범위를 쓰면 times는 브리지가 채운다).
+                    "signals": [signal],
                     "skip_ratio": skip_ratio,
                     "t_start": end - window,
                     "max_points": br.ZOOM_MAX_POINTS,

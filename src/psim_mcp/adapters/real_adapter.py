@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from psim_mcp.adapters.base import BasePsimAdapter, ParameterError, SessionToken
+from psim_mcp.bridge import STREAM_LIMIT
 from psim_mcp.config import AppConfig
 
 # Bridge script lives inside this package
@@ -285,6 +286,7 @@ class RealPsimAdapter(BasePsimAdapter):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._get_sanitized_env(),
+                limit=STREAM_LIMIT,
             )
         except FileNotFoundError as exc:
             logger.error("Bridge executable not found: %s", cmd)
@@ -297,6 +299,22 @@ class RealPsimAdapter(BasePsimAdapter):
         self._stderr_task = asyncio.create_task(self._drain_stderr(self._process))
 
         return self._process
+
+    async def _discard_bridge(self, proc: asyncio.subprocess.Process) -> None:
+        """응답을 믿을 수 없게 된 브리지를 종료하고 상태를 비운다(다음 호출에서 새로 띄움)."""
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        # 종료를 기다려 프로세스·파이프가 정리되지 않고 남지 않게 한다.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Killed bridge did not exit within 5s")
+        if self._stderr_task and not self._stderr_task.done():
+            self._stderr_task.cancel()
+        self._process = None
+        self._clear_project_state()
 
     async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
         """Continuously read stderr from the bridge process and log it."""
@@ -406,22 +424,21 @@ class RealPsimAdapter(BasePsimAdapter):
                 )
             except asyncio.TimeoutError:
                 logger.error("Bridge call timed out: action=%s", action)
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                # 종료를 기다려 프로세스·파이프가 정리되지 않고 남지 않게 한다.
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    logger.warning("Killed bridge did not exit within 5s")
-                if self._stderr_task and not self._stderr_task.done():
-                    self._stderr_task.cancel()
-                self._process = None
-                self._clear_project_state()
+                await self._discard_bridge(proc)
                 error_msg = f"PSIM bridge timed out after {timeout}s for action '{action}'"
                 self._record_failure(error_msg)
                 raise TimeoutError(error_msg) from None
+            except ValueError as exc:
+                # 응답 한 줄이 STREAM_LIMIT을 넘음(LimitOverrunError). 줄의 나머지가 파이프에 남아
+                # 다음 응답이 어긋나므로 브리지를 버리고 다음 호출에서 새로 띄운다.
+                logger.error("Bridge response exceeded stream limit: action=%s", action)
+                await self._discard_bridge(proc)
+                error_msg = (
+                    f"PSIM bridge response for action '{action}' exceeded the "
+                    f"{STREAM_LIMIT}-byte line limit: {exc}"
+                )
+                self._record_failure(error_msg)
+                raise RuntimeError(error_msg) from exc
 
             if not raw:
                 logger.error("Bridge returned empty response (process may have crashed)")

@@ -499,7 +499,9 @@ async def test_waveform_uses_measurement_window_and_point_cap(env, monkeypatch):
     # 상위 3개 .smv만: envelope 3번 + FFT 1번(1위 run) + 확대 구간 3번
     assert len(seen) == 7
     for p in seen:
-        assert p["skip_ratio"] == 0.5 and p["signals"] == ["I(L1)", "Time"]
+        assert p["skip_ratio"] == 0.5
+        # 그림용 요청은 rank_by 신호만. 시간 범위가 없는 envelope만 times용 Time을 같이 요청.
+        assert p["signals"] == (["I(L1)"] if "t_start" in p else ["I(L1)", "Time"])
         assert p["reduce"] == "minmax"
         assert Path(p["graph_file"]).name == "result.smv"
     envelope = [p for p in seen if "t_start" not in p]

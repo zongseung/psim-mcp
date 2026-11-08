@@ -18,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from psim_mcp.bridge import STREAM_LIMIT
+
 logger = logging.getLogger(__name__)
 
 _BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
@@ -100,6 +102,7 @@ class BridgeWorker:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._env,
+            limit=STREAM_LIMIT,
             **kwargs,
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr(self._proc))
@@ -135,6 +138,14 @@ class BridgeWorker:
             raise WorkerError(
                 "WORKER_TIMEOUT", f"워커 {self.wid}가 {timeout:.0f}초 안에 응답하지 않았습니다."
             ) from None
+        except ValueError as exc:
+            # 응답 한 줄이 STREAM_LIMIT을 넘음(LimitOverrunError). asyncio는 버퍼만 비우고 줄의
+            # 나머지는 파이프에 남기므로, 이 워커의 다음 응답은 어긋난다 → 재사용하지 않고 닫는다.
+            await self.close(force=True)
+            raise WorkerError(
+                "WORKER_PROTOCOL",
+                f"워커 {self.wid} 응답이 한 줄 한도({STREAM_LIMIT} B)를 넘었습니다: {exc}",
+            ) from exc
         if not raw:
             raise WorkerError(
                 "WORKER_CRASHED",
@@ -298,6 +309,8 @@ class MockWorker:
                 round(mean + ripple * (abs((i % period) / half - 1.0) - 0.5), 9) for i in idx
             ]
         wanted = [k for k in full if not names or k in names]
+        # 브리지와 같게: Time을 요청하지 않았고 시간 범위도 없으면 times를 채우지 않는다.
+        has_times = "Time" in wanted or t_start is not None or t_end is not None
         if minmax:
             from psim_mcp.services.batch_report import minmax_envelope
 
@@ -308,16 +321,20 @@ class MockWorker:
             for name in wanted:
                 if name == "Time":
                     continue
-                out[name], times[name], reduced[name] = minmax_envelope(
+                out[name], t_env, reduced[name] = minmax_envelope(
                     full[name], full["Time"], max_points
                 )
+                if has_times:
+                    times[name] = t_env
                 source_points[name] = len(full[name])
             data: dict[str, Any] = {
                 "signals": out,
                 "times": times,
                 "reduced": reduced,
                 "source_points": source_points,
-                "time_span": [full["Time"][0], full["Time"][-1]] if full["Time"] else None,
+                "time_span": (
+                    [full["Time"][0], full["Time"][-1]] if full["Time"] and has_times else None
+                ),
                 "reduce": "minmax",
             }
         else:
