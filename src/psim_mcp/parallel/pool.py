@@ -18,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from psim_mcp.bridge import STREAM_LIMIT
+
 logger = logging.getLogger(__name__)
 
 _BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
@@ -100,6 +102,7 @@ class BridgeWorker:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._env,
+            limit=STREAM_LIMIT,
             **kwargs,
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr(self._proc))
@@ -135,6 +138,14 @@ class BridgeWorker:
             raise WorkerError(
                 "WORKER_TIMEOUT", f"워커 {self.wid}가 {timeout:.0f}초 안에 응답하지 않았습니다."
             ) from None
+        except ValueError as exc:
+            # 응답 한 줄이 STREAM_LIMIT을 넘음(LimitOverrunError). asyncio는 버퍼만 비우고 줄의
+            # 나머지는 파이프에 남기므로, 이 워커의 다음 응답은 어긋난다 → 재사용하지 않고 닫는다.
+            await self.close(force=True)
+            raise WorkerError(
+                "WORKER_PROTOCOL",
+                f"워커 {self.wid} 응답이 한 줄 한도({STREAM_LIMIT} B)를 넘었습니다: {exc}",
+            ) from exc
         if not raw:
             raise WorkerError(
                 "WORKER_CRASHED",
@@ -194,6 +205,16 @@ def _to_float(value: Any, default: float) -> float:
         return default
 
 
+# MockWorker extract_signals 파형: MOCK_WAVE_POINTS점, 간격 MOCK_WAVE_DT초, 주기 MOCK_WAVE_PERIOD 샘플
+# 삼각파(짝수). 테스트에서 바꿔 저해상도(주기 < 20 샘플)·주기 추정 실패(0 = 일정한 신호)를 만든다.
+MOCK_WAVE_POINTS = 20000
+MOCK_WAVE_DT = 1e-6
+MOCK_WAVE_PERIOD = 40
+# 첫 저장 시각. 실제 PSIM .smv처럼 t=0이 아니라 첫 출력 시각(저장 간격 1개)에서 시작한다.
+# 테스트에서 크게 바꿔 저장 시작을 늦춘 회로(PRINTTIME > 0)를 흉내 낸다.
+MOCK_WAVE_T0 = MOCK_WAVE_DT
+
+
 class MockWorker:
     """PSIM 없이 결정적 요약값을 돌려주는 워커.
 
@@ -245,7 +266,110 @@ class MockWorker:
             return {"success": True, "data": {"graph_file": params.get("graph_file")}}
         if action == "run_job":
             return await self._run_job(params)
+        if action == "extract_signals":
+            return self._extract_signals(params)
         return {"success": False, "error": {"code": "UNKNOWN_ACTION", "message": action}}
+
+    @staticmethod
+    def _extract_signals(params: dict) -> dict:
+        """mock .smv(JSON 요약)에서 평균·리플에 맞춘 삼각파를 만든다. 브리지와 같은 응답 형식."""
+        graph_file = params.get("graph_file") or ""
+        path = Path(graph_file)
+        if not graph_file or not path.is_file():
+            return {
+                "success": False,
+                "error": {
+                    "code": "NO_GRAPH_FILE",
+                    "message": "결과 파일을 찾을 수 없습니다: %s" % graph_file,
+                },
+            }
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8")).get("summary") or {}
+        except (ValueError, AttributeError):
+            return {"success": False, "error": {"code": "READ_FAILED", "message": "mock read"}}
+        names = params.get("signals")
+        skip = float(params.get("skip_ratio", 0.0))
+        max_points = int(params.get("max_points", 2000))
+        minmax = params.get("reduce") == "minmax"
+        t_start, t_end = params.get("t_start"), params.get("t_end")
+        total = MOCK_WAVE_POINTS
+        period = MOCK_WAVE_PERIOD
+        t0 = MOCK_WAVE_T0
+        idx = [
+            i
+            for i in range(int(total * skip), total)
+            if (t_start is None or t0 + i * MOCK_WAVE_DT >= t_start - 1e-15)
+            and (t_end is None or t0 + i * MOCK_WAVE_DT <= t_end + 1e-15)
+        ]
+        full: dict[str, list[float]] = {"Time": [round(t0 + i * MOCK_WAVE_DT, 12) for i in idx]}
+        half = period / 2.0
+        for name, m in summary.items():
+            mean, ripple = float(m["mean"]), float(m["ripple"])
+            if period <= 0:  # 일정한 신호(주기 추정 실패 테스트용)
+                full[name] = [round(mean, 9) for _ in idx]
+                continue
+            # 짝수 주기 삼각파: 정확히 mean ± ripple/2
+            full[name] = [
+                round(mean + ripple * (abs((i % period) / half - 1.0) - 0.5), 9) for i in idx
+            ]
+        wanted = [k for k in full if not names or k in names]
+        # 브리지와 같게: Time을 요청하지 않았고 시간 범위도 없으면 times를 채우지 않는다.
+        has_times = "Time" in wanted or t_start is not None or t_end is not None
+        if params.get("reduce") == "bins":
+            from psim_mcp.services.batch_report import bin_stats
+
+            bins = int(params.get("bins", 1000))
+            stats = {
+                name: bin_stats(full[name], full["Time"], bins) for name in wanted if name != "Time"
+            }
+            data_bins: dict[str, Any] = {
+                "bins": stats,
+                "source_points": {name: len(full[name]) for name in stats},
+                "time_span": [full["Time"][0], full["Time"][-1]] if full["Time"] else None,
+                "reduce": "bins",
+                "signal_names": list(stats),
+                "point_count": len(next(iter(stats.values()), {}).get("mean", [])),
+                "graph_file": graph_file,
+            }
+            return {"success": True, "data": data_bins}
+        if minmax:
+            from psim_mcp.services.batch_report import minmax_envelope
+
+            out: dict[str, list[float]] = {}
+            times: dict[str, list[float] | None] = {}
+            reduced: dict[str, bool] = {}
+            source_points: dict[str, int] = {}
+            for name in wanted:
+                if name == "Time":
+                    continue
+                out[name], t_env, reduced[name] = minmax_envelope(
+                    full[name], full["Time"], max_points
+                )
+                if has_times:
+                    times[name] = t_env
+                source_points[name] = len(full[name])
+            data: dict[str, Any] = {
+                "signals": out,
+                "times": times,
+                "reduced": reduced,
+                "source_points": source_points,
+                "time_span": (
+                    [full["Time"][0], full["Time"][-1]] if full["Time"] and has_times else None
+                ),
+                "reduce": "minmax",
+            }
+        else:
+            step = max(1, len(idx) // max_points) if len(idx) > max_points else 1
+            out = {k: full[k][::step] for k in wanted}
+            data = {"signals": out}
+        data.update(
+            {
+                "signal_names": list(out),
+                "point_count": len(next(iter(out.values()), [])),
+                "graph_file": graph_file,
+            }
+        )
+        return {"success": True, "data": data}
 
     async def _run_job(self, params: dict) -> dict:
         variables = params.get("variables") or {}
@@ -274,8 +398,6 @@ class MockWorker:
             copy_path.write_text("mock circuit copy", encoding="utf-8")
         smv = run_dir / "result.smv"
         keep = bool(params.get("keep_smv", True))
-        if keep:
-            smv.write_text("mock simulation result", encoding="utf-8")
         summary = {
             "Vo1": {"mean": vo, "ripple": ripple, "max": vo + ripple / 2, "min": vo - ripple / 2},
             "I(L1)": {"mean": vo / load, "ripple": ripple * 2, "max": 0.0, "min": 0.0},
@@ -285,6 +407,9 @@ class MockWorker:
         signals = params.get("signals")
         if signals:
             summary = {k: v for k, v in summary.items() if k in signals}
+        if keep:
+            # extract_signals(mock)가 읽을 수 있게 요약을 JSON으로 남긴다.
+            smv.write_text(json.dumps({"mock": True, "summary": summary}), encoding="utf-8")
         return {
             "success": True,
             "data": {

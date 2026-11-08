@@ -29,7 +29,17 @@ def register_tools(mcp, batch_service):
             "keep_smv는 'all'(파형 전부 보존)·'top_k'(순위 상위 top_k개만, 기본 3)·'none'(파형 안 남김) 중 하나이며, "
             "생략하면 rank_by가 있을 때 'top_k', 없을 때 'none'입니다 — 즉 기본적으로 파형(.smv)은 "
             "전부 남지 않습니다. 파형이 모두 필요하면 keep_smv='all'을 주세요. "
-            "동점은 run 번호가 작은 쪽이 앞이고, 실패·형식 오류 행과 값이 없거나 NaN인 행은 순위에서 빠집니다."
+            "동점은 run 번호가 작은 쪽이 앞이고, 실패·형식 오류 행과 값이 없거나 NaN인 행은 순위에서 빠집니다. "
+            "rank_by가 있으면 응답 top에 상위 top_k행 요약(run·입력값·rank_by 값)이 붙습니다. "
+            "plot=true면 그림을 PNG로 만들어 응답에 이미지로 첨부하고 study 폴더 plots/에도 저장합니다: "
+            "그림 1 조건-지표 그래프(입력 하나만 바뀌면 x축=그 입력, 아니면 run 번호; "
+            "y=rank_by 지표, 없으면 첫 신호의 평균·리플), "
+            "그림 2 상위 run 파형 두 칸(.smv가 남은 run만): 위 칸은 측정 구간 끝 마지막 약 5 스위칭 주기를 원본 해상도로 겹쳐 그리고 평균을 점선으로 표시, "
+            "아래 칸은 상위 최대 3개 run을 run마다 작은 그래프로(y·x축 공유) run 전체(t=0~끝, 기동 과도 포함)를 약 1000구간으로 나눈 구간별 최대·최소(얇은 선)·평균(굵은 선)으로 그립니다(파형이 아니라 구간 통계, 위 칸 확대 구간은 음영, 측정 구간 시작은 점선). 스위칭 주기는 회로 설정(게이팅 블록·삼각파/톱니파/구형파 소스·SVPWM·DSP PWM 블록의 주파수, 1위 run 조건 반영, 여러 개면 가장 높은 주파수)을 먼저 쓰고, 없을 때만 FFT로 추정합니다(에일리어싱 가능 표시). 둘 다 실패하면 측정 구간 마지막 1%. "
+            "plot_window_s(초, 선택)를 주면 위 칸 확대 길이를 그 값으로 씁니다(주기 판정·주기당 샘플 수 경고는 항상 함). "
+            "plots의 zoom에 확대 길이(window_s·window_source)·주기(period_s·period_source·period_reliable)·저장 간격(print_interval_s)·주기당 샘플 수(samples_per_period)가 들어갑니다. "
+            "주기당 샘플이 2 미만이면 저장 파형으로 스위칭 파형을 볼 수 없어 period_reliable=false, 위 칸 확대는 그리지 않고(아래 칸만) PRINTSTEP을 줄이라는 안내를 붙이며, 20 미만이면 저해상도 경고가 붙습니다. "
+            "max_images(1~4, 기본 2)는 응답에 첨부할 그림 수입니다. 그림 생성이 실패해도 결과 표는 그대로 반환합니다."
         ),
     )
     @tool_handler("run_batch")
@@ -46,6 +56,9 @@ def register_tools(mcp, batch_service):
         rank_by: str | None = None,
         top_k: int = 3,
         keep_smv: str | None = None,
+        plot: bool = False,
+        max_images: int = 2,
+        plot_window_s: float | None = None,
     ) -> dict:
         return await batch_service.run_batch(
             conditions,
@@ -60,6 +73,9 @@ def register_tools(mcp, batch_service):
             rank_by=rank_by,
             top_k=top_k,
             keep_smv=keep_smv,
+            plot=plot,
+            max_images=max_images,
+            plot_window_s=plot_window_s,
         )
 
     @mcp.tool(
