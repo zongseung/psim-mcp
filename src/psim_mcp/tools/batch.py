@@ -34,7 +34,9 @@ def register_tools(mcp, batch_service):
             "plot=true면 그림을 PNG로 만들어 응답에 이미지로 첨부하고 study 폴더 plots/에도 저장합니다: "
             "그림 1 조건-지표 그래프(입력 하나만 바뀌면 x축=그 입력, 아니면 run 번호; "
             "y=rank_by 지표, 없으면 첫 신호의 평균·리플), "
-            "그림 2 상위 run 파형 겹쳐 그리기(.smv가 남은 run만, 측정 구간). "
+            "그림 2 상위 run 파형 두 칸(.smv가 남은 run만): 위 칸은 측정 구간 끝 마지막 약 5 스위칭 주기를 원본 해상도로 겹쳐 그리고 평균을 점선으로 표시(주기는 FFT로 추정, 실패하면 측정 구간 마지막 1%), "
+            "아래 칸은 측정 구간 전체 min/max envelope 띠. plot_window_s(초, 선택)를 주면 위 칸 확대 길이를 그 값으로 씁니다. "
+            "plots의 zoom에 확대 길이·주기·주기당 샘플 수가 들어가며, 주기당 샘플이 20 미만이면 저해상도 경고가 붙습니다. "
             "max_images(1~4, 기본 2)는 응답에 첨부할 그림 수입니다. 그림 생성이 실패해도 결과 표는 그대로 반환합니다."
         ),
     )
@@ -54,6 +56,7 @@ def register_tools(mcp, batch_service):
         keep_smv: str | None = None,
         plot: bool = False,
         max_images: int = 2,
+        plot_window_s: float | None = None,
     ) -> dict:
         return await batch_service.run_batch(
             conditions,
@@ -70,6 +73,7 @@ def register_tools(mcp, batch_service):
             keep_smv=keep_smv,
             plot=plot,
             max_images=max_images,
+            plot_window_s=plot_window_s,
         )
 
     @mcp.tool(

@@ -57,6 +57,11 @@ _MAX_TABLE_ROWS = 100
 _SHORT_RUN_WARNING_S = 0.5
 
 
+def _sig(value: float, digits: int = 6) -> float:
+    """응답용 유효숫자 반올림."""
+    return float(f"{value:.{digits}g}")
+
+
 class BatchInputError(ValueError):
     def __init__(self, code: str, message: str, suggestion: str | None = None, details=None):
         super().__init__(message)
@@ -316,6 +321,7 @@ class BatchService:
         keep_smv: str | None = None,
         plot: bool = False,
         max_images: int = br.DEFAULT_MAX_IMAGES,
+        plot_window_s: float | None = None,
     ) -> dict:
         try:
             try:
@@ -325,6 +331,7 @@ class BatchService:
             # 그림 옵션도 워커 시작·study 폴더 생성 전에 검사한다.
             try:
                 max_images = br.validate_max_images(max_images)
+                plot_window_s = br.validate_plot_window_s(plot_window_s)
             except br.ReportInputError as e:
                 raise BatchInputError(e.code, str(e), e.suggestion) from e
             return await self._run_batch(
@@ -340,6 +347,7 @@ class BatchService:
                 policy,
                 bool(plot),
                 max_images,
+                plot_window_s,
             )
         except BatchInputError as e:
             return ResponseBuilder.error(e.code, str(e), e.suggestion, e.details)
@@ -367,6 +375,7 @@ class BatchService:
         policy: sp.StoragePolicy,
         plot: bool = False,
         max_images: int = br.DEFAULT_MAX_IMAGES,
+        plot_window_s: float | None = None,
     ) -> dict:
         schematic = self._resolve_schematic(schematic_path)
         # strict=False: 형식이 틀린 조건은 그 행만 오류로 남기고 나머지를 실행한다.
@@ -551,7 +560,7 @@ class BatchService:
         images: list[dict] = []
         if plot:
             images, plots, plot_notes = await self._make_plots(
-                records, table, policy, study_dir, float(skip_ratio), max_images
+                records, table, policy, study_dir, float(skip_ratio), max_images, plot_window_s
             )
             data["plots"] = plots
             notes.extend(plot_notes)
@@ -583,6 +592,7 @@ class BatchService:
         study_dir: Path,
         skip_ratio: float,
         max_images: int,
+        plot_window_s: float | None = None,
     ) -> tuple[list[dict], list[dict], list[str]]:
         """그림 1(조건-지표), 그림 2(상위 파형)를 그려 plots/에 저장하고 첨부 목록을 만든다.
 
@@ -608,12 +618,15 @@ class BatchService:
             return images, plots, notes
         plot_dir = study_dir / "plots"
 
-        def save(name: str, kind: str, png: bytes) -> None:
+        def save(name: str, kind: str, png: bytes, extra: dict | None = None) -> None:
             plot_dir.mkdir(exist_ok=True)
             path = plot_dir / name
             path.write_bytes(png)
             attached = len(images) < max_images
-            plots.append({"kind": kind, "path": str(path), "bytes": len(png), "attached": attached})
+            entry = {"kind": kind, "path": str(path), "bytes": len(png), "attached": attached}
+            if extra:
+                entry.update(extra)
+            plots.append(entry)
             if attached:
                 images.append({"data": png, "mime_type": "image/png", "name": name})
 
@@ -641,7 +654,9 @@ class BatchService:
             return images, plots, notes
         try:
             notes.extend(
-                await self._waveform_plot(records, policy, signal, highlight, skip_ratio, save)
+                await self._waveform_plot(
+                    records, policy, signal, highlight, skip_ratio, save, plot_window_s
+                )
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("run_batch plot 2 failed", exc_info=True)
@@ -655,11 +670,19 @@ class BatchService:
                 return col[: -len(".mean")]
         return None
 
-    async def _waveform_plot(self, records, policy, signal, highlight, skip_ratio, save):
-        """상위 run의 .smv에서 측정 구간 파형을 읽어 겹쳐 그린다. 반환: notes.
+    async def _waveform_plot(
+        self, records, policy, signal, highlight, skip_ratio, save, plot_window_s=None
+    ):
+        """상위 run의 .smv에서 파형을 읽어 그림 2(두 칸)를 그린다. 반환: notes.
 
-        파형은 기존 분석 경로와 같은 브리지 ``extract_signals``로 읽되, 메인 브리지가 아니라
-        이미 PSIM을 띄운 상주 워커에서 실행한다(``pool.call_one``).
+        - 아래 칸: 측정 구간 전체 min/max envelope(반투명 띠 + 테두리선).
+        - 위 칸: 측정 구간 끝 마지막 약 5 스위칭 주기를 원본 해상도로, 평균은 점선.
+          주기는 plot_window_s(확대 길이, 초)가 있으면 그 길이를 쓰고, 없으면 1위 run의 측정 구간
+          끝 원본 데이터 FFT로 추정한다. 추정 실패 시 측정 구간 마지막 1%.
+
+        파형은 기존 분석 경로와 같은 브리지 ``extract_signals``로 읽되(확대 구간은 t_start로
+        시간 범위 지정), 메인 브리지가 아니라 이미 PSIM을 띄운 상주 워커에서 실행한다
+        (``pool.call_one``).
         """
         notes: list[str] = []
         by_run = {r["run"]: r for r in records}
@@ -708,25 +731,201 @@ class BatchService:
             t = t or []
             rank_text = f"#{rec['rank']} " if rec.get("rank") else ""
             label = f"{rank_text}run {rec['run']} ({br.describe_inputs(rec['inputs'])})"
-            traces.append({"label": label, "x": t[: len(y)], "y": y})
+            span = data.get("time_span")
+            traces.append(
+                {
+                    "rec": rec,
+                    "label": label,
+                    "env_x": t[: len(y)],
+                    "env_y": y,
+                    "mean": br.metric_value(rec, signal, "mean"),
+                    "span": span if isinstance(span, list) and len(span) == 2 else None,
+                    "source_points": (data.get("source_points") or {}).get(signal),
+                }
+            )
         if not traces:
             notes.append("읽을 수 있는 파형이 없어 그림 2(파형)는 건너뛰었습니다.")
             return notes
-        # 시간 축이 하나라도 없으면 모두 측정 구간 안 샘플 번호로 맞춘다(축 섞임 방지).
-        if any(len(tr["x"]) != len(tr["y"]) for tr in traces):
+
+        # 시간 축이 하나라도 없으면 모두 측정 구간 안 샘플 번호로 맞추고(축 섞임 방지) 확대는 생략.
+        has_time = all(len(tr["env_x"]) == len(tr["env_y"]) and tr["span"] for tr in traces)
+        zoom: dict = {}
+        if has_time:
+            zoom, zoom_notes = await self._zoom_window(traces[0], signal, skip_ratio, plot_window_s)
+            notes.extend(zoom_notes)
+            zoom_reduced = await self._read_zoom(traces, signal, skip_ratio, zoom, notes)
+        else:
             x_label = "sample (measurement window)"
             for tr in traces:
-                tr["x"] = list(range(len(tr["y"])))
+                tr["env_x"] = list(range(len(tr["env_y"])))
+            notes.append("결과에 Time 곡선이 없어 그림 2 위 칸(확대 파형)은 그리지 않았습니다.")
+            zoom_reduced = False
+
         window = f"last {round((1 - skip_ratio) * 100)}%"
         method = "min/max envelope" if any_reduced else "full resolution"
-        title = f"{signal} waveform, {window} of run, {method}" + (
+        title = f"{signal} waveforms" + (
             f" (top {len(traces)} by {policy.rank.text})" if policy.rank else ""
         )
+        if zoom.get("low_resolution"):
+            title += f", low resolution: {zoom['samples_per_period']:g} samples/period"
+        zoom_title = self._zoom_title(zoom, zoom_reduced)
+        envelope_title = f"{window} of run, {method} (band = min..max)"
+        plot_traces = [
+            {k: tr.get(k) for k in ("label", "env_x", "env_y", "mean", "zoom_x", "zoom_y")}
+            for tr in traces
+        ]
         png = await asyncio.to_thread(
-            br.render_waveform_plot, traces, signal, x_label, title, method
+            br.render_waveform_plot,
+            plot_traces,
+            signal,
+            title,
+            zoom_title,
+            envelope_title,
+            x_label,
         )
-        save("fig2_waveforms.png", "waveforms", png)
+        save("fig2_waveforms.png", "waveforms", png, {"zoom": zoom} if zoom else None)
         return notes
+
+    async def _zoom_window(self, first: dict, signal: str, skip_ratio: float, plot_window_s):
+        """확대 구간 길이와 주기 정보. 반환: (zoom 정보, notes).
+
+        zoom 정보: ``window_s``, ``period_source``(plot_window_s·fft·fallback), ``period_s``,
+        ``samples_per_period``, ``low_resolution``.
+        """
+        notes: list[str] = []
+        t0, t1 = float(first["span"][0]), float(first["span"][1])
+        duration = t1 - t0
+        info: dict = {
+            "window_s": None,
+            "period_source": None,
+            "period_s": None,
+            "samples_per_period": None,
+            "low_resolution": False,
+        }
+        if not duration > 0:
+            notes.append("측정 구간 길이가 0이라 그림 2 위 칸(확대 파형)은 그리지 않았습니다.")
+            return info, notes
+        if plot_window_s is not None:
+            window = float(plot_window_s)
+            if window > duration:
+                notes.append(
+                    f"plot_window_s({plot_window_s:g} s)가 측정 구간({duration:.6g} s)보다 길어 "
+                    "측정 구간 전체를 확대 구간으로 썼습니다."
+                )
+                window = duration
+            info.update(window_s=_sig(window), period_source="plot_window_s")
+            return info, notes
+
+        # 측정 구간 끝 최대 FFT_MAX_POINTS점(원본 해상도)으로 주기를 추정한다.
+        n_src = int(first.get("source_points") or 0)
+        dt_est = duration / (n_src - 1) if n_src > 1 else None
+        chunk = duration if dt_est is None else min(duration, dt_est * (br.FFT_MAX_POINTS - 1))
+        estimate = None
+        res = await self._pool.call_one(
+            "extract_signals",
+            {
+                "graph_file": first["rec"]["smv_path"],
+                "signals": [signal, "Time"],
+                "skip_ratio": skip_ratio,
+                "t_start": t1 - chunk,
+                # dt 추정 오차 여유. 그래도 넘으면 envelope로 줄여 오므로 추정하지 않는다.
+                "max_points": 2 * br.FFT_MAX_POINTS,
+                "reduce": "minmax",
+            },
+        )
+        if res.get("success"):
+            data = res.get("data") or {}
+            y = (data.get("signals") or {}).get(signal) or []
+            t = (data.get("times") or {}).get(signal)
+            if y and t and not (data.get("reduced") or {}).get(signal):
+                y, t = y[-br.FFT_MAX_POINTS :], t[-br.FFT_MAX_POINTS :]
+                estimate = await asyncio.to_thread(br.estimate_period, y, t)
+        if estimate:
+            spp = estimate["samples_per_period"]
+            info.update(
+                window_s=_sig(min(br.ZOOM_PERIODS * estimate["period_s"], duration)),
+                period_source="fft",
+                period_s=_sig(estimate["period_s"]),
+                samples_per_period=spp,
+                low_resolution=bool(spp < br.LOW_RESOLUTION_SAMPLES),
+            )
+            if info["low_resolution"]:
+                notes.append(
+                    f"스위칭 주기당 샘플이 {spp:g}개뿐이라(기준 {br.LOW_RESOLUTION_SAMPLES}개) "
+                    "확대 파형이 거칠게 보입니다. 회로 Simulation Control의 PRINTSTEP을 줄이면"
+                    "(1이면 모든 계산 점 저장) 해상도가 올라갑니다(.smv 크기는 커짐)."
+                )
+        else:
+            info.update(
+                window_s=_sig(duration * br.FALLBACK_WINDOW_FRACTION), period_source="fallback"
+            )
+            notes.append(
+                "스위칭 주기를 FFT로 추정하지 못해 그림 2 위 칸은 측정 구간 마지막 1%를 "
+                "확대했습니다. 원하는 길이는 plot_window_s(초)로 지정하세요."
+            )
+        return info, notes
+
+    async def _read_zoom(self, traces, signal, skip_ratio, zoom: dict, notes: list[str]) -> bool:
+        """traces마다 확대 구간 원본을 읽어 ``zoom_x``(run 끝 기준 상대 시간)·``zoom_y``를 채운다.
+
+        반환: 점이 많아 envelope로 줄인 run이 있었는지.
+        """
+        window = zoom.get("window_s")
+        if not window:
+            return False
+        any_reduced = False
+        for i, tr in enumerate(traces):
+            end = float(tr["span"][1])
+            res = await self._pool.call_one(
+                "extract_signals",
+                {
+                    "graph_file": tr["rec"]["smv_path"],
+                    "signals": [signal, "Time"],
+                    "skip_ratio": skip_ratio,
+                    "t_start": end - window,
+                    "max_points": br.ZOOM_MAX_POINTS,
+                    "reduce": "minmax",
+                },
+            )
+            data = (res.get("data") or {}) if res.get("success") else {}
+            y = (data.get("signals") or {}).get(signal) or []
+            t = (data.get("times") or {}).get(signal) or []
+            if not y or len(t) != len(y):
+                err = None if res.get("success") else (res.get("error") or {}).get("message")
+                notes.append(
+                    f"run {tr['rec']['run']}의 확대 구간을 읽지 못해 그림 2 위 칸에서 뺐습니다"
+                    + (f"({err})." if err else ".")
+                )
+                continue
+            if (data.get("reduced") or {}).get(signal):
+                any_reduced = True
+            if i == 0:
+                zoom["window_samples"] = (data.get("source_points") or {}).get(signal, len(y))
+            tr["zoom_x"] = [tt - end for tt in t]
+            tr["zoom_y"] = y
+        if any_reduced:
+            notes.append(
+                f"확대 구간 점이 {br.ZOOM_MAX_POINTS}개를 넘어 min/max envelope로 줄였습니다. "
+                "원본 해상도로 보려면 plot_window_s를 줄이세요."
+            )
+        return any_reduced
+
+    @staticmethod
+    def _zoom_title(zoom: dict, reduced: bool) -> str:
+        window = zoom.get("window_s")
+        if not window:
+            return "zoom: not available"
+        res = "min/max envelope (too many points)" if reduced else "full resolution"
+        source = zoom.get("period_source")
+        if source == "fft":
+            return (
+                f"last {br.ZOOM_PERIODS} switching periods ({br.eng(window, 's')}), "
+                f"T = {br.eng(zoom['period_s'], 's')} by FFT, "
+                f"{zoom['samples_per_period']:g} samples/period, {res}"
+            )
+        if source == "plot_window_s":
+            return f"last {br.eng(window, 's')} (plot_window_s), {res}"
+        return f"last 1% of measurement window ({br.eng(window, 's')}, period not found), {res}"
 
     @staticmethod
     def _count_records(records: list[dict]) -> dict:

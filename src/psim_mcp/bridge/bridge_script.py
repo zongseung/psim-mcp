@@ -27,6 +27,7 @@ PSIM API 참조 (psimapipy 2026.0):
     - p.PsimReadGraphFile(path) → result with .Graph
 """
 
+import bisect
 import io
 import json
 import math
@@ -868,30 +869,83 @@ def _minmax_envelope_indices(values, max_points):
     return out
 
 
-def _extract_minmax(curves, signal_names, skip_ratio, max_points):
-    """reduce="minmax": 신호마다 envelope 값과 그 시점의 Time 값(있으면)."""
+def _window_values(values, skip_ratio, index_range):
+    """측정 구간 값. index_range(시간 범위로 찾은 (lo, hi))가 있으면 그 구간, 없으면 앞 skip_ratio 제외."""
+    if index_range is not None:
+        return values[index_range[0] : index_range[1]]
+    return values[int(len(values) * skip_ratio) :]
+
+
+def _time_index_range(curves, skip_ratio, t_start, t_end):
+    """Time 곡선에서 skip_ratio 이후이면서 t_start <= Time <= t_end인 인덱스 구간 (lo, hi).
+
+    Time은 증가한다고 가정하고 이분 탐색한다. Time 곡선이 없으면 None.
+    """
+    time_vals = None
+    for curve in curves:
+        if curve.Name == "Time":
+            time_vals = list(curve.Values[: curve.Rows])
+            break
+    if time_vals is None:
+        return None
+    skip = int(len(time_vals) * skip_ratio)
+    lo, hi = skip, len(time_vals)
+    if t_start is not None:
+        lo = max(lo, bisect.bisect_left(time_vals, t_start, skip))
+    if t_end is not None:
+        hi = min(hi, bisect.bisect_right(time_vals, t_end, skip))
+    return (lo, max(lo, hi))
+
+
+def _opt_float(value):
+    """None이면 None, 아니면 유한한 float. 틀리면 ValueError."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(value)
+    out = float(value)
+    if math.isnan(out) or math.isinf(out):
+        raise ValueError(value)
+    return out
+
+
+def _extract_minmax(curves, signal_names, skip_ratio, max_points, index_range=None):
+    """reduce="minmax": 신호마다 envelope 값과 그 시점의 Time 값(있으면), 원본 점 수."""
     sliced = {}
     for curve in curves:
         if signal_names and curve.Name not in signal_names:
             continue
         values = list(curve.Values[: curve.Rows])
-        sliced[curve.Name] = values[int(len(values) * skip_ratio) :]
+        sliced[curve.Name] = _window_values(values, skip_ratio, index_range)
     time_vals = sliced.pop("Time", None)
-    signals, times, reduced = {}, {}, {}
+    if time_vals is None and index_range is not None:
+        # Time을 요청하지 않았어도 시간 범위를 썼다면 times를 채울 수 있게 읽는다.
+        for curve in curves:
+            if curve.Name == "Time":
+                time_vals = _window_values(list(curve.Values[: curve.Rows]), 0.0, index_range)
+                break
+    signals, times, reduced, source_points = {}, {}, {}, {}
     for name, values in sliced.items():
         idx = _minmax_envelope_indices(values, max_points)
         signals[name] = [round(values[i], 9) for i in idx]
         reduced[name] = len(idx) < len(values)
+        source_points[name] = len(values)
         if time_vals is not None and len(time_vals) == len(values):
             times[name] = [round(time_vals[i], 12) for i in idx]
-    return signals, times, reduced
+    # 구간 처음·끝 시각(envelope 점은 구간 끝 샘플을 포함하지 않을 수 있어 따로 준다).
+    time_span = None
+    if time_vals:
+        time_span = [round(time_vals[0], 12), round(time_vals[-1], 12)]
+    return signals, times, reduced, source_points, time_span
 
 
 def handle_extract_signals(params):
     """Extract raw signal data from the last simulation or a graph file.
 
     reduce: "stride"(기본, 등간격 추출 — 기존 동작) | "minmax"(구간별 최솟값·최댓값 envelope,
-    응답에 신호별 times·reduced 추가, Time 곡선은 signals에서 빠짐).
+    응답에 신호별 times·reduced·source_points와 구간 time_span 추가, Time 곡선은 signals에서 빠짐).
+    t_start / t_end(선택, 초): 앞 skip_ratio를 뺀 구간 안에서 Time이 이 범위인 점만 쓴다
+    (확대 그림용 원본 구간). 둘 다 없으면 기존 동작과 같다.
     """
     graph_file = params.get("graph_file", "")
     signal_names = params.get("signals")  # None = all
@@ -900,6 +954,11 @@ def handle_extract_signals(params):
     reduce_mode = params.get("reduce") or "stride"
     if reduce_mode not in ("stride", "minmax"):
         return _error("INVALID_INPUT", "reduce는 stride 또는 minmax여야 합니다: %s" % reduce_mode)
+    try:
+        t_start = _opt_float(params.get("t_start"))
+        t_end = _opt_float(params.get("t_end"))
+    except (TypeError, ValueError):
+        return _error("INVALID_INPUT", "t_start·t_end는 숫자(초)여야 합니다.")
 
     p = _get_psim()
 
@@ -916,13 +975,25 @@ def handle_extract_signals(params):
     if res.Result == 0:
         return _error("READ_FAILED", "그래프 파일 읽기 실패")
 
+    curves = res.Graph
+    index_range = None
+    if t_start is not None or t_end is not None:
+        curves = list(curves)
+        index_range = _time_index_range(curves, skip_ratio, t_start, t_end)
+        if index_range is None:
+            return _error("NO_TIME_CURVE", "시간 범위를 쓰려면 결과에 Time 곡선이 있어야 합니다.")
+
     if reduce_mode == "minmax":
-        signals, times, reduced = _extract_minmax(res.Graph, signal_names, skip_ratio, max_points)
+        signals, times, reduced, source_points, time_span = _extract_minmax(
+            curves, signal_names, skip_ratio, max_points, index_range
+        )
         return _success(
             {
                 "signals": signals,
                 "times": times,
                 "reduced": reduced,
+                "source_points": source_points,
+                "time_span": time_span,
                 "reduce": "minmax",
                 "signal_names": list(signals.keys()),
                 "point_count": len(next(iter(signals.values()), [])),
@@ -931,12 +1002,11 @@ def handle_extract_signals(params):
         )
 
     output = {}
-    for curve in res.Graph:
+    for curve in curves:
         if signal_names and curve.Name not in signal_names:
             continue
         values = list(curve.Values[: curve.Rows])
-        start = int(len(values) * skip_ratio)
-        values = values[start:]
+        values = _window_values(values, skip_ratio, index_range)
         if len(values) > max_points:
             step = max(1, len(values) // max_points)
             values = values[::step]

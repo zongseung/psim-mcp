@@ -194,6 +194,13 @@ def _to_float(value: Any, default: float) -> float:
         return default
 
 
+# MockWorker extract_signals 파형: MOCK_WAVE_POINTS점, 간격 MOCK_WAVE_DT초, 주기 MOCK_WAVE_PERIOD 샘플
+# 삼각파(짝수). 테스트에서 바꿔 저해상도(주기 < 20 샘플)·주기 추정 실패(0 = 일정한 신호)를 만든다.
+MOCK_WAVE_POINTS = 20000
+MOCK_WAVE_DT = 1e-6
+MOCK_WAVE_PERIOD = 40
+
+
 class MockWorker:
     """PSIM 없이 결정적 요약값을 돌려주는 워커.
 
@@ -270,13 +277,26 @@ class MockWorker:
         skip = float(params.get("skip_ratio", 0.0))
         max_points = int(params.get("max_points", 2000))
         minmax = params.get("reduce") == "minmax"
-        total = 20000
-        idx = list(range(int(total * skip), total))
-        full: dict[str, list[float]] = {"Time": [round(i * 1e-6, 9) for i in idx]}
+        t_start, t_end = params.get("t_start"), params.get("t_end")
+        total = MOCK_WAVE_POINTS
+        period = MOCK_WAVE_PERIOD
+        idx = [
+            i
+            for i in range(int(total * skip), total)
+            if (t_start is None or i * MOCK_WAVE_DT >= t_start - 1e-15)
+            and (t_end is None or i * MOCK_WAVE_DT <= t_end + 1e-15)
+        ]
+        full: dict[str, list[float]] = {"Time": [round(i * MOCK_WAVE_DT, 12) for i in idx]}
+        half = period / 2.0
         for name, m in summary.items():
             mean, ripple = float(m["mean"]), float(m["ripple"])
-            # 주기 8 샘플 삼각파(envelope 구간보다 훨씬 짧음, 짝수라 정확히 mean ± ripple/2)
-            full[name] = [round(mean + ripple * (abs((i % 8) / 4.0 - 1.0) - 0.5), 9) for i in idx]
+            if period <= 0:  # 일정한 신호(주기 추정 실패 테스트용)
+                full[name] = [round(mean, 9) for _ in idx]
+                continue
+            # 짝수 주기 삼각파: 정확히 mean ± ripple/2
+            full[name] = [
+                round(mean + ripple * (abs((i % period) / half - 1.0) - 0.5), 9) for i in idx
+            ]
         wanted = [k for k in full if not names or k in names]
         if minmax:
             from psim_mcp.services.batch_report import minmax_envelope
@@ -284,16 +304,20 @@ class MockWorker:
             out: dict[str, list[float]] = {}
             times: dict[str, list[float] | None] = {}
             reduced: dict[str, bool] = {}
+            source_points: dict[str, int] = {}
             for name in wanted:
                 if name == "Time":
                     continue
                 out[name], times[name], reduced[name] = minmax_envelope(
                     full[name], full["Time"], max_points
                 )
+                source_points[name] = len(full[name])
             data: dict[str, Any] = {
                 "signals": out,
                 "times": times,
                 "reduced": reduced,
+                "source_points": source_points,
+                "time_span": [full["Time"][0], full["Time"][-1]] if full["Time"] else None,
                 "reduce": "minmax",
             }
         else:

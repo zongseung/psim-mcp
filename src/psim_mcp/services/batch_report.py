@@ -2,7 +2,9 @@
 
 - :func:`build_top`: rank_by 순위 상위 k행 요약(run, 입력값, rank_by 값).
 - :func:`render_metric_plot`: 그림 1 — 조건-지표 그래프.
-- :func:`render_waveform_plot`: 그림 2 — 상위 run 파형 겹쳐 그리기.
+- :func:`render_waveform_plot`: 그림 2 — 상위 run 파형 두 칸(위: 마지막 몇 주기 원본 해상도 확대,
+  아래: 측정 구간 전체 min/max envelope).
+- :func:`estimate_period`: 측정 구간 신호의 FFT 최대 성분으로 스위칭 주기 추정.
 
 그림은 MCP 서버(Python 3.12) 쪽에서 matplotlib **Figure 객체 API + Agg 캔버스**로 그린다
 (pyplot 전역 상태를 쓰지 않음 — 서버 안에서 동시에 불려도 서로 섞이지 않는다).
@@ -23,6 +25,16 @@ DEFAULT_MAX_IMAGES = 2
 MAX_IMAGES_LIMIT = 4
 IMAGE_MAX_BYTES = 150_000
 WAVEFORM_MAX_POINTS = 2000
+# 그림 2 위 칸(확대): 마지막 ZOOM_PERIODS 주기를 원본 해상도로. 주기 추정은 측정 구간 끝
+# 최대 FFT_MAX_POINTS점(원본 해상도)으로 한다. 확대 구간 점이 ZOOM_MAX_POINTS를 넘으면
+# (plot_window_s를 크게 준 경우) 그때만 envelope로 줄인다.
+ZOOM_PERIODS = 5
+FFT_MAX_POINTS = 32768
+ZOOM_MAX_POINTS = 40000
+FALLBACK_WINDOW_FRACTION = 0.01  # 주기 추정 실패 시 측정 구간 마지막 1%
+LOW_RESOLUTION_SAMPLES = 20  # 주기당 샘플 수가 이보다 적으면 저해상도 경고
+ENVELOPE_ALPHA = 0.3
+_BAND_GROUPS = 500  # 아래 칸 띠: envelope 점을 이만큼 묶어 위·아래 경계를 만든다
 FIG_WIDTH_IN = 9.0  # dpi 100 → 가로 900 px
 FIG_DPI = 100
 _COLORS = ("#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b")
@@ -64,6 +76,88 @@ def validate_max_images(value: Any) -> int:
             f"예: max_images={DEFAULT_MAX_IMAGES}",
         )
     return value
+
+
+def validate_plot_window_s(value: Any) -> float | None:
+    """plot_window_s는 생략(None) 또는 0보다 큰 유한한 숫자(초). 틀리면 INVALID_INPUT."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        bad = True
+    else:
+        bad = not math.isfinite(float(value)) or float(value) <= 0
+    if bad:
+        raise ReportInputError(
+            "INVALID_INPUT",
+            f"plot_window_s는 0보다 큰 숫자(초)여야 합니다(받은 값: {value!r}).",
+            "예: plot_window_s=0.001 (마지막 1 ms 확대). 생략하면 스위칭 주기 5개를 자동으로 잡습니다.",
+        )
+    return float(value)
+
+
+def signal_unit(signal: str) -> str | None:
+    """신호 이름으로 단위 추정: ``I(…)`` → A, ``V(…)`` → V, 그 밖은 모름(None)."""
+    if signal.startswith("I("):
+        return "A"
+    if signal.startswith("V("):
+        return "V"
+    return None
+
+
+def with_unit(label: str, signal: str) -> str:
+    unit = signal_unit(signal)
+    return f"{label} [{unit}]" if unit else label
+
+
+def estimate_period(
+    values: list[float],
+    times: list[float] | None,
+    min_cycles: int = 3,
+    min_peak_fraction: float = 0.01,
+) -> dict | None:
+    """평균을 뺀 신호의 FFT 최대 성분으로 주기를 추정한다. 실패하면 None.
+
+    반환: ``{"period_s", "dt_s", "samples_per_period"}``. 실패 조건: 점이 64개 미만, 시간 축이
+    없거나 간격이 0 이하, 신호가 사실상 일정, 최대 성분이 구간 안 ``min_cycles``주기 미만(너무
+    느림)이거나 나이퀴스트 끝, 최대 성분의 전력 비율이 ``min_peak_fraction`` 미만(잡음).
+    """
+    import numpy as np
+
+    n = len(values)
+    if n < 64 or times is None or len(times) != n:
+        return None
+    t = np.asarray(times, dtype=float)
+    dt = float(np.median(np.diff(t)))
+    if not math.isfinite(dt) or dt <= 0:
+        return None
+    x = np.asarray(values, dtype=float)
+    x = x - x.mean()
+    if not np.isfinite(x).all() or float(np.ptp(x)) <= 1e-12 * max(
+        1.0, float(np.abs(values).max())
+    ):
+        return None
+    spec = np.abs(np.fft.rfft(x * np.hanning(n)))
+    spec[0] = 0.0
+    k = int(np.argmax(spec))
+    if k < min_cycles or k >= len(spec) - 1:
+        return None
+    power = spec**2
+    if power[k] / power.sum() < min_peak_fraction:
+        return None
+    # 이웃 두 칸으로 2차 보간해 칸 사이 주파수를 맞춘다.
+    a, b, c = spec[k - 1], spec[k], spec[k + 1]
+    denom = a - 2 * b + c
+    delta = 0.5 * (a - c) / denom if denom != 0 else 0.0
+    freq = float((k + delta) / (n * dt))
+    if not freq > 0:
+        return None
+    period = 1.0 / freq
+    # 응답 JSON에 들어가므로 numpy 스칼라가 아닌 Python float로 돌려준다.
+    return {
+        "period_s": period,
+        "dt_s": dt,
+        "samples_per_period": round(period / dt, 1),
+    }
 
 
 def parse_number(value: Any) -> float | None:
@@ -234,7 +328,19 @@ def render_metric_plot(
     highlight: list[int],
     title: str,
 ) -> bytes:
-    """그림 1. series = [(신호, 지표)] 1~2개. highlight = 순위 순서의 run 번호(상위 k)."""
+    """그림 1 PNG. 인자는 :func:`build_metric_figure`와 같다."""
+    return _to_png(build_metric_figure(records, series, x_key, xs, highlight, title))
+
+
+def build_metric_figure(
+    records: list[dict],
+    series: list[tuple[str, str]],
+    x_key: str,
+    xs: dict[int, float],
+    highlight: list[int],
+    title: str,
+):
+    """그림 1 Figure. series = [(신호, 지표)] 1~2개. highlight = 순위 순서의 run 번호(상위 k)."""
     ok = [r for r in _ok(records) if r["run"] in xs]
     fig = _new_figure(2.6 + 2.0 * len(series))
     axes = fig.subplots(len(series), 1, sharex=True, squeeze=False)[:, 0]
@@ -267,49 +373,126 @@ def render_metric_plot(
                     fontsize=8,
                     color="#d62728",
                 )
-        ax.set_ylabel(f"{signal}.{metric}", fontsize=9)
+        ax.set_ylabel(with_unit(f"{signal}.{metric}", signal), fontsize=9)
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=8)
     axes[-1].set_xlabel(x_key if x_key != "run" else "run", fontsize=9)
+    if x_key != "run":
+        from matplotlib.ticker import EngFormatter
+
+        # 입력 축은 공학 표기(1m, 4.5m). 입력 단위는 모르므로 붙이지 않는다.
+        axes[-1].xaxis.set_major_formatter(EngFormatter(sep=""))
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
-    return _to_png(fig)
+    return fig
+
+
+def trace_color(i: int) -> str:
+    """그림 2에서 i번째(순위 순서) run의 색. 띠·선·범례가 모두 이 값을 쓴다."""
+    return _COLORS[i % len(_COLORS)]
+
+
+def eng(value: float, unit: str = "", places: int | None = None) -> str:
+    """제목용 공학 표기: ``eng(0.0002, "s")`` → ``"200 µs"``."""
+    from matplotlib.ticker import EngFormatter
+
+    return EngFormatter(unit=unit, places=places).format_eng(value)  # 단위까지 붙여 준다
+
+
+def envelope_band(x: list[float], y: list[float], groups: int = _BAND_GROUPS):
+    """envelope 점을 ``groups``개 묶음으로 나눠 (중앙 시각, 최솟값, 최댓값) 목록을 만든다.
+
+    묶음마다 최소·최대를 쓰므로 전체 최대·최소(띠 두께 = peak-to-peak)는 그대로다.
+    """
+    n = min(len(x), len(y))
+    if n == 0:
+        return [], [], []
+    groups = max(1, min(groups, n))
+    xs, lo, hi = [], [], []
+    for k in range(groups):
+        a, b = k * n // groups, (k + 1) * n // groups
+        if b <= a:
+            continue
+        seg = y[a:b]
+        xs.append((x[a] + x[b - 1]) / 2.0)
+        lo.append(min(seg))
+        hi.append(max(seg))
+    return xs, lo, hi
+
+
+def build_waveform_figure(
+    traces: list[dict],
+    signal: str,
+    title: str,
+    zoom_title: str,
+    envelope_title: str,
+    envelope_x_label: str = "Time (s)",
+):
+    """그림 2 Figure(두 칸). 테스트에서 범례·선·띠 색을 확인할 수 있게 PNG 변환과 분리했다.
+
+    traces(순위 순서) 항목: ``label``, ``env_x``·``env_y``(측정 구간 envelope), 선택 ``zoom_x``·
+    ``zoom_y``(확대 구간 원본, x는 run 끝 기준 상대 시간 초), ``mean``(점선, 없으면 생략).
+    """
+    from matplotlib.patches import Patch
+    from matplotlib.ticker import EngFormatter
+
+    fig = _new_figure(6.6)
+    ax_zoom, ax_env = fig.subplots(2, 1, gridspec_kw={"height_ratios": [3, 2]})
+    ylabel = with_unit(signal, signal)
+    handles = []
+    # 1위가 맨 위에 보이도록 뒤에서부터 그린다. 범례는 순위 순서.
+    for i in reversed(range(len(traces))):
+        tr = traces[i]
+        color = trace_color(i)
+        zx, zy = tr.get("zoom_x") or [], tr.get("zoom_y") or []
+        if zx and zy:
+            ax_zoom.plot(zx, zy, color=color, linewidth=1.6 if i == 0 else 1.1, gid=f"zoom{i}")
+        if tr.get("mean") is not None:
+            ax_zoom.axhline(tr["mean"], color=color, linestyle=":", linewidth=1.0, gid=f"mean{i}")
+        bx, blo, bhi = envelope_band(tr.get("env_x") or [], tr.get("env_y") or [])
+        if bx:
+            ax_env.fill_between(
+                bx, blo, bhi, color=color, alpha=ENVELOPE_ALPHA, linewidth=0, gid=f"band{i}"
+            )
+            ax_env.plot(bx, bhi, color=color, linewidth=1.2, gid=f"edge_hi{i}")
+            ax_env.plot(bx, blo, color=color, linewidth=1.2, gid=f"edge_lo{i}")
+    for i, tr in enumerate(traces):
+        handles.append(Patch(facecolor=trace_color(i), edgecolor=trace_color(i), label=tr["label"]))
+
+    ax_zoom.set_title(zoom_title, fontsize=9)
+    ax_zoom.set_xlabel("time before end of run", fontsize=9)
+    ax_zoom.xaxis.set_major_formatter(EngFormatter(unit="s"))
+    ax_zoom.set_ylabel(ylabel, fontsize=9)
+    ax_env.set_title(envelope_title, fontsize=9)
+    ax_env.set_xlabel(envelope_x_label, fontsize=9)
+    ax_env.set_ylabel(ylabel, fontsize=9)
+    for ax in (ax_zoom, ax_env):
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=8)
+    legend = ax_zoom.legend(
+        handles=handles,
+        fontsize=8,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        title="dotted: mean",
+    )
+    legend.get_title().set_fontsize(8)
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    return fig
 
 
 def render_waveform_plot(
-    traces: list[dict], signal: str, x_label: str, title: str, legend_title: str | None = None
+    traces: list[dict],
+    signal: str,
+    title: str,
+    zoom_title: str,
+    envelope_title: str,
+    envelope_x_label: str = "Time (s)",
 ) -> bytes:
-    """그림 2. traces = [{"label", "x", "y"}] — 측정 구간 파형 겹쳐 그리기."""
-    fig = _new_figure(4.6)
-    ax = fig.subplots()
-    # 1위가 맨 위에 보이도록 뒤에서부터 그리고, 범례는 순위 순서로 둔다.
-    lines = {}
-    for i in reversed(range(len(traces))):
-        tr = traces[i]
-        (lines[i],) = ax.plot(
-            tr["x"],
-            tr["y"],
-            linewidth=1.4 if i == 0 else 0.9,
-            alpha=0.9,
-            color=_COLORS[i % len(_COLORS)],
-            label=tr["label"],
-        )
-    ax.set_xlabel(x_label, fontsize=9)
-    ax.set_ylabel(signal, fontsize=9)
-    ax.grid(True, alpha=0.3)
-    ax.tick_params(labelsize=8)
-    ordered = [lines[i] for i in range(len(traces))]
-    legend = ax.legend(
-        ordered,
-        [ln.get_label() for ln in ordered],
-        fontsize=8,
-        loc="best",
-        title=legend_title,
-    )
-    if legend_title:
-        legend.get_title().set_fontsize(8)
-    fig.suptitle(title, fontsize=11)
-    fig.tight_layout()
+    """그림 2 PNG. 인자는 :func:`build_waveform_figure`와 같다."""
+    fig = build_waveform_figure(traces, signal, title, zoom_title, envelope_title, envelope_x_label)
     return _to_png(fig)
 
 
