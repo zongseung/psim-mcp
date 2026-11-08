@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from psim_mcp.parallel import settings as parallel_settings
 from psim_mcp.parallel.cpu import logical_cores, physical_cores
 from psim_mcp.parallel.pool import PoolError, WorkerError
+from psim_mcp.services import batch_report as br
 from psim_mcp.services import storage_policy as sp
 from psim_mcp.services.validators import (
     normalize_parameter_name,
@@ -313,11 +314,18 @@ class BatchService:
         rank_by: str | None = None,
         top_k: int | None = sp.DEFAULT_TOP_K,
         keep_smv: str | None = None,
+        plot: bool = False,
+        max_images: int = br.DEFAULT_MAX_IMAGES,
     ) -> dict:
         try:
             try:
                 policy = sp.resolve_policy(rank_by, keep_smv, top_k)
             except sp.StoragePolicyError as e:
+                raise BatchInputError(e.code, str(e), e.suggestion) from e
+            # 그림 옵션도 워커 시작·study 폴더 생성 전에 검사한다.
+            try:
+                max_images = br.validate_max_images(max_images)
+            except br.ReportInputError as e:
                 raise BatchInputError(e.code, str(e), e.suggestion) from e
             return await self._run_batch(
                 conditions,
@@ -330,6 +338,8 @@ class BatchService:
                 skip_ratio,
                 strict,
                 policy,
+                bool(plot),
+                max_images,
             )
         except BatchInputError as e:
             return ResponseBuilder.error(e.code, str(e), e.suggestion, e.details)
@@ -355,6 +365,8 @@ class BatchService:
         skip_ratio,
         strict,
         policy: sp.StoragePolicy,
+        plot: bool = False,
+        max_images: int = br.DEFAULT_MAX_IMAGES,
     ) -> dict:
         schematic = self._resolve_schematic(schematic_path)
         # strict=False: 형식이 틀린 조건은 그 행만 오류로 남기고 나머지를 실행한다.
@@ -529,6 +541,20 @@ class BatchService:
                 "하나라도 틀리면 전체를 거부하려면 strict=true를 쓰세요."
             )
         notes.extend(storage_notes)
+        if policy.rank is not None and storage["ranked"]:
+            data["top"] = br.build_top(records, policy.rank, policy.top_k)
+        else:
+            notes.append(
+                "top(상위 요약)은 생략했습니다: rank_by가 없거나 순위를 매긴 행이 없습니다. "
+                'rank_by="신호.지표"를 주면 상위 행 요약이 붙습니다.'
+            )
+        images: list[dict] = []
+        if plot:
+            images, plots, plot_notes = await self._make_plots(
+                records, table, policy, study_dir, float(skip_ratio), max_images
+            )
+            data["plots"] = plots
+            notes.extend(plot_notes)
         if info["workers"] < n_workers:
             notes.append(f"워커 {n_workers}개 중 {info['workers']}개만 시작됨(init_errors 참고).")
         if ok and sum_wall / max(ok, 1) < _SHORT_RUN_WARNING_S:
@@ -539,7 +565,157 @@ class BatchService:
             f"{len(records)}개 조건 중 성공 {ok}, 실행 실패 {counts['failed']}, "
             f"형식 오류(미실행) {invalid}. 워커 {info['workers']}개, {total_s:.1f}초."
         )
-        return ResponseBuilder.success(data, msg)
+        response = ResponseBuilder.success(data, msg)
+        if plot:
+            # tool_handler가 [TextContent, ImageContent...]로 바꾼다(그림이 없으면 텍스트만).
+            response["_images"] = images
+        return response
+
+    # ------------------------------------------------------------------
+    # 결과 그림 (2차 10번)
+    # ------------------------------------------------------------------
+
+    async def _make_plots(
+        self,
+        records: list[dict],
+        table: dict,
+        policy: sp.StoragePolicy,
+        study_dir: Path,
+        skip_ratio: float,
+        max_images: int,
+    ) -> tuple[list[dict], list[dict], list[str]]:
+        """그림 1(조건-지표), 그림 2(상위 파형)를 그려 plots/에 저장하고 첨부 목록을 만든다.
+
+        어떤 그림이 실패해도 예외를 밖으로 내지 않는다 — 배치 결과는 그대로 성공이고 note로 알린다.
+        """
+        images: list[dict] = []
+        plots: list[dict] = []
+        notes: list[str] = []
+        try:
+            ok_records = [r for r in records if r["executed"] and r["ok"]]
+            if not ok_records:
+                notes.append("성공한 조건이 없어 그림을 만들지 않았습니다.")
+                return images, plots, notes
+            signal = policy.rank.signal if policy.rank else self._first_signal(table)
+            if signal is None:
+                notes.append("결과 신호가 없어 그림을 만들지 않았습니다.")
+                return images, plots, notes
+            ranked = sorted((r for r in records if r.get("rank")), key=lambda r: r["rank"])
+            highlight = [r["run"] for r in ranked][: policy.top_k] if policy.rank else []
+        except Exception as e:  # noqa: BLE001 - 그림 실패는 배치 결과에 영향 없음
+            logger.warning("run_batch plot setup failed", exc_info=True)
+            notes.append(f"그림 생성 실패: {type(e).__name__}: {e}")
+            return images, plots, notes
+        plot_dir = study_dir / "plots"
+
+        def save(name: str, kind: str, png: bytes) -> None:
+            plot_dir.mkdir(exist_ok=True)
+            path = plot_dir / name
+            path.write_bytes(png)
+            attached = len(images) < max_images
+            plots.append({"kind": kind, "path": str(path), "bytes": len(png), "attached": attached})
+            if attached:
+                images.append({"data": png, "mime_type": "image/png", "name": name})
+
+        # 그림 1: 조건-지표
+        try:
+            x_key, xs = br.choose_x_axis(records)
+            if policy.rank:
+                series = [(policy.rank.signal, policy.rank.metric)]
+                order = "higher is better" if policy.rank.descending else "lower is better"
+                title = f"{policy.rank.column} vs {x_key} ({order}, top {len(highlight)} circled)"
+            else:
+                series = [(signal, "mean"), (signal, "ripple")]
+                title = f"{signal} mean / ripple vs {x_key}"
+            png = await asyncio.to_thread(
+                br.render_metric_plot, records, series, x_key, xs, highlight, title
+            )
+            save("fig1_metrics.png", "metrics", png)
+        except Exception as e:  # noqa: BLE001 - 그림 실패는 배치 결과에 영향 없음
+            logger.warning("run_batch plot 1 failed", exc_info=True)
+            notes.append(f"그림 1(조건-지표) 생성 실패: {type(e).__name__}: {e}")
+
+        # 그림 2: 파형이 남아 있는 상위 run 겹쳐 그리기
+        if max_images < 2:
+            notes.append("max_images=1이라 그림 2(파형)는 만들지 않았습니다.")
+            return images, plots, notes
+        try:
+            notes.extend(
+                await self._waveform_plot(records, policy, signal, highlight, skip_ratio, save)
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("run_batch plot 2 failed", exc_info=True)
+            notes.append(f"그림 2(파형) 생성 실패: {type(e).__name__}: {e}")
+        return images, plots, notes
+
+    @staticmethod
+    def _first_signal(table: dict) -> str | None:
+        for col in table["columns"]:
+            if col.endswith(".mean"):
+                return col[: -len(".mean")]
+        return None
+
+    async def _waveform_plot(self, records, policy, signal, highlight, skip_ratio, save):
+        """상위 run의 .smv에서 측정 구간 파형을 읽어 겹쳐 그린다. 반환: notes.
+
+        파형은 기존 분석 경로와 같은 브리지 ``extract_signals``로 읽되, 메인 브리지가 아니라
+        이미 PSIM을 띄운 상주 워커에서 실행한다(``pool.call_one``).
+        """
+        notes: list[str] = []
+        by_run = {r["run"]: r for r in records}
+        order = highlight or [r["run"] for r in records if r["executed"] and r["ok"]]
+        candidates = [
+            by_run[run]
+            for run in order
+            if by_run[run].get("smv_kept") and by_run[run].get("smv_path")
+        ][: policy.top_k]
+        if not candidates:
+            notes.append(
+                "남아 있는 파형(.smv)이 없어 그림 2(파형)는 건너뛰었습니다. "
+                'keep_smv="top_k"(rank_by 필요) 또는 "all"이면 그려집니다.'
+            )
+            return notes
+        traces = []
+        x_label = "Time (s)"
+        for rec in candidates:
+            res = await self._pool.call_one(
+                "extract_signals",
+                {
+                    "graph_file": rec["smv_path"],
+                    "signals": [signal, "Time"],
+                    "skip_ratio": skip_ratio,  # 측정 구간(기본 마지막 50%)만
+                    "max_points": br.WAVEFORM_MAX_POINTS,
+                },
+            )
+            sigs = ((res.get("data") or {}).get("signals") or {}) if res.get("success") else {}
+            y = sigs.get(signal)
+            if not y:
+                err = None if res.get("success") else (res.get("error") or {}).get("message")
+                notes.append(
+                    f"run {rec['run']}의 파형에서 '{signal}'을 읽지 못해 그림 2에서 뺐습니다"
+                    + (f"({err})." if err else ".")
+                )
+                continue
+            y = br.decimate(y)
+            t = br.decimate(sigs.get("Time") or [])
+            rank_text = f"#{rec['rank']} " if rec.get("rank") else ""
+            label = f"{rank_text}run {rec['run']} ({br.describe_inputs(rec['inputs'])})"
+            traces.append({"label": label, "x": t[: len(y)], "y": y})
+        if not traces:
+            notes.append("읽을 수 있는 파형이 없어 그림 2(파형)는 건너뛰었습니다.")
+            return notes
+        # 시간 축이 하나라도 없으면 모두 측정 구간 안 샘플 번호로 맞춘다(축 섞임 방지).
+        if any(len(tr["x"]) != len(tr["y"]) for tr in traces):
+            x_label = "sample (measurement window)"
+            for tr in traces:
+                tr["x"] = list(range(len(tr["y"])))
+        window = f"last {round((1 - skip_ratio) * 100)}%"
+        title = f"{signal} waveform, {window} of run" + (
+            f" (top {len(traces)} by {policy.rank.text})" if policy.rank else ""
+        )
+        png = await asyncio.to_thread(br.render_waveform_plot, traces, signal, x_label, title)
+        save("fig2_waveforms.png", "waveforms", png)
+        return notes
 
     @staticmethod
     def _count_records(records: list[dict]) -> dict:

@@ -245,7 +245,53 @@ class MockWorker:
             return {"success": True, "data": {"graph_file": params.get("graph_file")}}
         if action == "run_job":
             return await self._run_job(params)
+        if action == "extract_signals":
+            return self._extract_signals(params)
         return {"success": False, "error": {"code": "UNKNOWN_ACTION", "message": action}}
+
+    @staticmethod
+    def _extract_signals(params: dict) -> dict:
+        """mock .smv(JSON 요약)에서 평균·리플에 맞춘 삼각파를 만든다. 브리지와 같은 응답 형식."""
+        graph_file = params.get("graph_file") or ""
+        path = Path(graph_file)
+        if not graph_file or not path.is_file():
+            return {
+                "success": False,
+                "error": {
+                    "code": "NO_GRAPH_FILE",
+                    "message": "결과 파일을 찾을 수 없습니다: %s" % graph_file,
+                },
+            }
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8")).get("summary") or {}
+        except (ValueError, AttributeError):
+            return {"success": False, "error": {"code": "READ_FAILED", "message": "mock read"}}
+        names = params.get("signals")
+        skip = float(params.get("skip_ratio", 0.0))
+        max_points = int(params.get("max_points", 2000))
+        total = 4000
+        start = int(total * skip)
+        idx = list(range(start, total))
+        if len(idx) > max_points:
+            idx = idx[:: max(1, len(idx) // max_points)]
+        out: dict[str, list[float]] = {}
+        if not names or "Time" in names:
+            out["Time"] = [round(i * 1e-6, 9) for i in idx]
+        for name, m in summary.items():
+            if names and name not in names:
+                continue
+            mean, ripple = float(m["mean"]), float(m["ripple"])
+            # 주기 100 샘플 삼각파: mean ± ripple/2
+            out[name] = [round(mean + ripple * (abs((i % 100) / 50.0 - 1.0) - 0.5), 9) for i in idx]
+        return {
+            "success": True,
+            "data": {
+                "signals": out,
+                "signal_names": list(out),
+                "point_count": len(idx),
+                "graph_file": graph_file,
+            },
+        }
 
     async def _run_job(self, params: dict) -> dict:
         variables = params.get("variables") or {}
@@ -274,8 +320,6 @@ class MockWorker:
             copy_path.write_text("mock circuit copy", encoding="utf-8")
         smv = run_dir / "result.smv"
         keep = bool(params.get("keep_smv", True))
-        if keep:
-            smv.write_text("mock simulation result", encoding="utf-8")
         summary = {
             "Vo1": {"mean": vo, "ripple": ripple, "max": vo + ripple / 2, "min": vo - ripple / 2},
             "I(L1)": {"mean": vo / load, "ripple": ripple * 2, "max": 0.0, "min": 0.0},
@@ -285,6 +329,9 @@ class MockWorker:
         signals = params.get("signals")
         if signals:
             summary = {k: v for k, v in summary.items() if k in signals}
+        if keep:
+            # extract_signals(mock)가 읽을 수 있게 요약을 JSON으로 남긴다.
+            smv.write_text(json.dumps({"mock": True, "summary": summary}), encoding="utf-8")
         return {
             "success": True,
             "data": {

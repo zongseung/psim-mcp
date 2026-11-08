@@ -29,7 +29,13 @@ def register_tools(mcp, batch_service):
             "keep_smv는 'all'(파형 전부 보존)·'top_k'(순위 상위 top_k개만, 기본 3)·'none'(파형 안 남김) 중 하나이며, "
             "생략하면 rank_by가 있을 때 'top_k', 없을 때 'none'입니다 — 즉 기본적으로 파형(.smv)은 "
             "전부 남지 않습니다. 파형이 모두 필요하면 keep_smv='all'을 주세요. "
-            "동점은 run 번호가 작은 쪽이 앞이고, 실패·형식 오류 행과 값이 없거나 NaN인 행은 순위에서 빠집니다."
+            "동점은 run 번호가 작은 쪽이 앞이고, 실패·형식 오류 행과 값이 없거나 NaN인 행은 순위에서 빠집니다. "
+            "rank_by가 있으면 응답 top에 상위 top_k행 요약(run·입력값·rank_by 값)이 붙습니다. "
+            "plot=true면 그림을 PNG로 만들어 응답에 이미지로 첨부하고 study 폴더 plots/에도 저장합니다: "
+            "그림 1 조건-지표 그래프(입력 하나만 바뀌면 x축=그 입력, 아니면 run 번호; "
+            "y=rank_by 지표, 없으면 첫 신호의 평균·리플), "
+            "그림 2 상위 run 파형 겹쳐 그리기(.smv가 남은 run만, 측정 구간). "
+            "max_images(1~4, 기본 2)는 응답에 첨부할 그림 수입니다. 그림 생성이 실패해도 결과 표는 그대로 반환합니다."
         ),
     )
     @tool_handler("run_batch")
@@ -46,6 +52,8 @@ def register_tools(mcp, batch_service):
         rank_by: str | None = None,
         top_k: int = 3,
         keep_smv: str | None = None,
+        plot: bool = False,
+        max_images: int = 2,
     ) -> dict:
         return await batch_service.run_batch(
             conditions,
@@ -60,6 +68,8 @@ def register_tools(mcp, batch_service):
             rank_by=rank_by,
             top_k=top_k,
             keep_smv=keep_smv,
+            plot=plot,
+            max_images=max_images,
         )
 
     @mcp.tool(
